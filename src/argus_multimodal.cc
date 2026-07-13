@@ -188,6 +188,8 @@ int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitma
             *out_bitmap = nullptr;
             strncpy(out_text, mtmd_t, max_chars - 1);
             out_text[max_chars - 1] = '\0';
+            // Verification: Checked tools/mtmd/mtmd-helper.cpp; mtmd_helper_video_read_next 
+            // uses standard strdup() for out_text. Calling standard free() here is correct.
             free(mtmd_t);
         } else {
             *out_bitmap = nullptr;

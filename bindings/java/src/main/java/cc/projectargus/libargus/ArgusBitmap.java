@@ -18,6 +18,10 @@ public final class ArgusBitmap implements AutoCloseable {
         this.bitmapPtr = Objects.requireNonNull(bitmapPtr);
     }
 
+    void setHandle(MemorySegment handle) {
+        this.bitmapPtr = Objects.requireNonNull(handle);
+    }
+
     /**
      * Creates a bitmap from a raw RGB image segment (RGBRGB... format).
      */

@@ -337,7 +337,9 @@ int32_t argus_synthesize_speech(
     const char * text,
     int32_t voice_seed,
     float * out_pcm,
-    int32_t max_samples) {
+    int32_t max_samples,
+    float * workspace,
+    int64_t workspace_size_floats) {
 
     if (!ctx || !wavtokenizer_model || !text || !out_pcm || max_samples <= 0) {
         return -1;
@@ -520,11 +522,12 @@ int32_t argus_synthesize_speech(
     // Add spaces for irfft scratchpad arrays:
     // scratch_real_inp: 641, scratch_imag_inp: 641, scratch_real_out: 1280, scratch_imag_out: 1280
     size_t scratch_floats = 641 * 2 + 1280 * 2;
-    float * workspace = (float *)malloc((total_floats + scratch_floats) * sizeof(float));
-    if (!workspace) {
+    size_t required_floats = total_floats + scratch_floats;
+
+    if (!workspace || workspace_size_floats < (int64_t)required_floats) {
         llama_batch_free(vocoder_batch);
         llama_free(vocoder_ctx);
-        return -1;
+        return -(int32_t)required_floats; // Signal workspace resize required
     }
 
     float * E = workspace;
@@ -596,7 +599,6 @@ int32_t argus_synthesize_speech(
         out_pcm[i] = 0.0f;
     }
 
-    free(workspace);
     llama_batch_free(vocoder_batch);
     llama_free(vocoder_ctx);
 

@@ -41,7 +41,7 @@ int main() {
     std::cout << "[Test] Verifying speech synthesis dummy float generator..." << std::endl;
     float dummy_pcm[100];
     // Passing null context should return -1
-    int32_t samples = argus_synthesize_speech(nullptr, nullptr, "Hello test", 42, dummy_pcm, 100);
+    int32_t samples = argus_synthesize_speech(nullptr, nullptr, "Hello test", 42, dummy_pcm, 100, nullptr, 0);
     assert(samples == -1);
 
     // 6. Test Multimodal initialization and load boundaries with invalid/null params

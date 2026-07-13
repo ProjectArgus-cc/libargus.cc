@@ -239,7 +239,7 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
  * @param max_samples Sizing ceiling constraints of the destination floating-point data buffer segment.
  * @return Absolute element sample count written directly to the memory address.
  */
-int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, int32_t voice_seed, float * out_pcm, int32_t max_samples);
+int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, int32_t voice_seed, float * out_pcm, int32_t max_samples, float * workspace, int64_t workspace_size_floats);
 
 // =========================================================================
 // 4. Audio Stream Transcription Subsystem (ASR / STT)

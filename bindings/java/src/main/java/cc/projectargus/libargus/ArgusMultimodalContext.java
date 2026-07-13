@@ -38,29 +38,32 @@ public final class ArgusMultimodalContext implements AutoCloseable {
         Objects.requireNonNull(model);
         Objects.requireNonNull(mmprojPath);
 
-        MemorySegment pathSeg = arena.allocateFrom(mmprojPath.toAbsolutePath().toString());
-        MemorySegment paramsSeg = arena.allocate(ArgusLayouts.MULTIMODAL_PARAMS);
-
-        paramsSeg.set(ValueLayout.ADDRESS,
-            ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("mmproj_path")),
-            pathSeg
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT,
-            ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("cpu_threads")),
-            cpuThreads
-        );
-        paramsSeg.set(ValueLayout.JAVA_BOOLEAN,
-            ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("use_gpu")),
-            useGpu
-        );
+        model.acquire();
 
         try {
+            MemorySegment pathSeg = arena.allocateFrom(mmprojPath.toAbsolutePath().toString());
+            MemorySegment paramsSeg = arena.allocate(ArgusLayouts.MULTIMODAL_PARAMS);
+
+            paramsSeg.set(ValueLayout.ADDRESS,
+                ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("mmproj_path")),
+                pathSeg
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT,
+                ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("cpu_threads")),
+                cpuThreads
+            );
+            paramsSeg.set(ValueLayout.JAVA_BOOLEAN,
+                ArgusLayouts.MULTIMODAL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("use_gpu")),
+                useGpu
+            );
+
             MemorySegment mctxPtr = (MemorySegment) ArgusBindings.argus_multimodal_init.invokeExact(model.getHandle(), paramsSeg);
             if (mctxPtr.equals(MemorySegment.NULL)) {
                 throw new RuntimeException("Native argus_multimodal_init returned NULL for: " + mmprojPath);
             }
             return new ArgusMultimodalContext(mctxPtr, model);
         } catch (Throwable t) {
+            model.release();
             throw new RuntimeException("Failed to load native multimodal projector context", t);
         }
     }
@@ -150,6 +153,7 @@ public final class ArgusMultimodalContext implements AutoCloseable {
                 throw new RuntimeException("Failed to release native multimodal projector context", t);
             } finally {
                 mctxPtr = MemorySegment.NULL;
+                modelRef.release();
             }
         }
     }

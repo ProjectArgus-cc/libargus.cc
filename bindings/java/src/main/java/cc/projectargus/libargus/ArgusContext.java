@@ -15,11 +15,26 @@ import java.util.Objects;
 public final class ArgusContext implements AutoCloseable {
     private MemorySegment ctxPtr;
     private final ArgusModel modelRef;
+    private final ArgusModel draftModelRef;
     private final MemorySegment batchSeg;
+    private final Arena arena;
 
-    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, Arena arena) {
+    private MemorySegment ttsWorkspace = MemorySegment.NULL;
+    private long ttsWorkspaceSizeFloats = 0;
+
+    MemorySegment getTtsWorkspace() {
+        return ttsWorkspace;
+    }
+
+    long getTtsWorkspaceSizeFloats() {
+        return ttsWorkspaceSizeFloats;
+    }
+
+    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, ArgusModel draftModelRef, Arena arena) {
         this.ctxPtr = Objects.requireNonNull(ctxPtr);
         this.modelRef = Objects.requireNonNull(modelRef);
+        this.draftModelRef = draftModelRef;
+        this.arena = Objects.requireNonNull(arena);
         this.batchSeg = arena.allocate(ArgusLayouts.TOKEN_BATCH);
     }
 
@@ -36,48 +51,57 @@ public final class ArgusContext implements AutoCloseable {
         Objects.requireNonNull(model);
         Objects.requireNonNull(config);
 
-        MemorySegment paramsSeg = arena.allocate(ArgusLayouts.CONTEXT_PARAMS);
-
-        MemorySegment draftModelHandle = (config.draftModel() != null) 
-            ? config.draftModel().getHandle() 
-            : MemorySegment.NULL;
-
-        paramsSeg.set(ValueLayout.ADDRESS, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("draft_model")), 
-            draftModelHandle
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("context_length")), 
-            config.contextLength()
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("cpu_threads")), 
-            config.cpuThreads()
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("type_k")), 
-            config.typeK()
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("type_v")), 
-            config.typeV()
-        );
-        paramsSeg.set(ValueLayout.JAVA_INT, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("spec_draft_n_max")), 
-            config.specDraftNMax()
-        );
-        paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
-            ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("enable_draft_mtp")), 
-            config.enableDraftMtp()
-        );
+        model.acquire();
+        if (config.draftModel() != null) {
+            config.draftModel().acquire();
+        }
 
         try {
+            MemorySegment paramsSeg = arena.allocate(ArgusLayouts.CONTEXT_PARAMS);
+
+            MemorySegment draftModelHandle = (config.draftModel() != null) 
+                ? config.draftModel().getHandle() 
+                : MemorySegment.NULL;
+
+            paramsSeg.set(ValueLayout.ADDRESS, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("draft_model")), 
+                draftModelHandle
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("context_length")), 
+                config.contextLength()
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("cpu_threads")), 
+                config.cpuThreads()
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("type_k")), 
+                config.typeK()
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("type_v")), 
+                config.typeV()
+            );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("spec_draft_n_max")), 
+                config.specDraftNMax()
+            );
+            paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("enable_draft_mtp")), 
+                config.enableDraftMtp()
+            );
+
             MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(model.getHandle(), paramsSeg);
             if (ctxPtr.equals(MemorySegment.NULL)) {
                 throw new RuntimeException("Native argus_context_init returned NULL");
             }
-            return new ArgusContext(ctxPtr, model, arena);
+            return new ArgusContext(ctxPtr, model, config.draftModel(), arena);
         } catch (Throwable t) {
+            model.release();
+            if (config.draftModel() != null) {
+                config.draftModel().release();
+            }
             throw new RuntimeException("Failed to initialize native context", t);
         }
     }
@@ -267,14 +291,40 @@ public final class ArgusContext implements AutoCloseable {
         try {
             MemorySegment wavModelHandle = (wavtokenizerModel != null) ? wavtokenizerModel.getHandle() : MemorySegment.NULL;
 
-            return (int) ArgusBindings.argus_synthesize_speech.invokeExact(
+            int res = (int) ArgusBindings.argus_synthesize_speech.invokeExact(
                 ctxPtr,
                 wavModelHandle,
                 textSeg,
                 voiceSeed,
                 outPcmSeg,
-                maxSamples
+                maxSamples,
+                ttsWorkspace,
+                ttsWorkspaceSizeFloats
             );
+
+            if (res < -1) {
+                // Resize off-heap workspace buffer
+                long requiredFloats = -res;
+                this.ttsWorkspace = arena.allocate(
+                    requiredFloats * ValueLayout.JAVA_FLOAT.byteSize(),
+                    ValueLayout.JAVA_FLOAT.byteAlignment()
+                );
+                this.ttsWorkspaceSizeFloats = requiredFloats;
+
+                // Retry execution
+                res = (int) ArgusBindings.argus_synthesize_speech.invokeExact(
+                    ctxPtr,
+                    wavModelHandle,
+                    textSeg,
+                    voiceSeed,
+                    outPcmSeg,
+                    maxSamples,
+                    ttsWorkspace,
+                    ttsWorkspaceSizeFloats
+                );
+            }
+
+            return res;
         } catch (Throwable t) {
             throw new RuntimeException("Failed to synthesize speech", t);
         }
@@ -296,6 +346,12 @@ public final class ArgusContext implements AutoCloseable {
                 throw new RuntimeException("Failed to release native context resources", t);
             } finally {
                 ctxPtr = MemorySegment.NULL;
+                ttsWorkspace = MemorySegment.NULL;
+                ttsWorkspaceSizeFloats = 0;
+                modelRef.release();
+                if (draftModelRef != null) {
+                    draftModelRef.release();
+                }
             }
         }
     }

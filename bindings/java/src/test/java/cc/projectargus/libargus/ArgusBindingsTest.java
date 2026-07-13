@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Paths;
 import java.util.List;
 
@@ -58,5 +59,96 @@ public class ArgusBindingsTest {
             }
         }
         System.out.println("[Java Test] FFM multimodal wrappers successfully validated.");
+    }
+
+    @Test
+    public void testModelRefCountProtection() {
+        System.out.println("[Java Test] Validating model reference counting...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyPtr = arena.allocate(16);
+            ArgusModel model = new ArgusModel(dummyPtr);
+            assertEquals(1, model.getRefCount());
+
+            model.acquire();
+            assertEquals(2, model.getRefCount());
+
+            model.close(); // decrements ref count to 1, native model is NOT closed
+            assertEquals(1, model.getRefCount());
+            assertNotEquals(MemorySegment.NULL, model.getHandle());
+
+            model.clearHandleForTesting();
+            model.close(); // decrements to 0, native model IS closed
+            assertEquals(0, model.getRefCount());
+            assertEquals(MemorySegment.NULL, model.getHandle());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testContextInitExceptionSafety() {
+        System.out.println("[Java Test] Validating context init exception safety...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyPtr = arena.allocate(16);
+            ArgusModel model = new ArgusModel(dummyPtr);
+            assertEquals(1, model.getRefCount());
+
+            ArgusContextConfig config = ArgusContextConfig.createDefault(1024);
+            assertThrows(RuntimeException.class, () -> {
+                // This will fail in native init on a dummy model handle
+                ArgusContext.init(arena, model, config);
+            });
+
+            // The exception handler must have safely cleaned up the acquired reference!
+            assertEquals(1, model.getRefCount());
+            model.clearHandleForTesting();
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testReusableVideoItemLoop() {
+        System.out.println("[Java Test] Validating reusable ArgusVideoItem loop...");
+        boolean initStatus = ArgusBackend.init();
+        assertTrue(initStatus);
+
+        try (Arena arena = Arena.ofConfined()) {
+            try (ArgusVideoItem item = new ArgusVideoItem()) {
+                assertNull(item.bitmap());
+                assertNull(item.text());
+
+                // Update item with timestamp text only (no bitmap)
+                item.update(MemorySegment.NULL, "[00m10s]");
+                assertNull(item.bitmap());
+                assertEquals("[00m10s]", item.text());
+
+                // Create a real native bitmap using ArgusBitmap.fromRgb
+                MemorySegment rgbData = arena.allocate(3); // 1 pixel
+                ArgusBitmap realBitmap1 = ArgusBitmap.fromRgb(1, 1, rgbData);
+                MemorySegment handle1 = realBitmap1.getHandle();
+
+                // Pass the handle to item. Note that realBitmap1 must NOT be closed manually,
+                // because item will take ownership of this handle and close it when updated/closed.
+                item.update(handle1, null);
+                assertNotNull(item.bitmap());
+                assertEquals(handle1, item.bitmap().getHandle());
+                assertNull(item.text());
+
+                // Create another native bitmap
+                ArgusBitmap realBitmap2 = ArgusBitmap.fromRgb(1, 1, rgbData);
+                MemorySegment handle2 = realBitmap2.getHandle();
+
+                // Updating item with handle2 will automatically close/free handle1!
+                item.update(handle2, "frame 2");
+                assertNotNull(item.bitmap());
+                assertEquals(handle2, item.bitmap().getHandle());
+                assertEquals("frame 2", item.text());
+            } // item.close() will automatically close/free handle2!
+        } finally {
+            ArgusBackend.free();
+        }
     }
 }

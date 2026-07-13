@@ -15,9 +15,46 @@ import java.util.Objects;
  */
 public final class ArgusModel implements AutoCloseable {
     private MemorySegment modelPtr;
+    private final java.util.concurrent.atomic.AtomicInteger refCount = new java.util.concurrent.atomic.AtomicInteger(1);
 
-    private ArgusModel(MemorySegment modelPtr) {
+    ArgusModel(MemorySegment modelPtr) {
         this.modelPtr = Objects.requireNonNull(modelPtr);
+    }
+
+    void acquire() {
+        int current;
+        do {
+            current = refCount.get();
+            if (current <= 0) {
+                throw new IllegalStateException("Cannot acquire reference; ArgusModel has already been closed");
+            }
+        } while (!refCount.compareAndSet(current, current + 1));
+    }
+
+    void release() {
+        if (refCount.decrementAndGet() == 0) {
+            freeNativeModel();
+        }
+    }
+
+    int getRefCount() {
+        return refCount.get();
+    }
+
+    void clearHandleForTesting() {
+        this.modelPtr = MemorySegment.NULL;
+    }
+
+    private synchronized void freeNativeModel() {
+        if (modelPtr != null && !modelPtr.equals(MemorySegment.NULL)) {
+            try {
+                ArgusBindings.argus_model_free.invokeExact(modelPtr);
+            } catch (Throwable t) {
+                throw new RuntimeException("Failed to free native model resources", t);
+            } finally {
+                modelPtr = MemorySegment.NULL;
+            }
+        }
     }
 
     /**
@@ -72,15 +109,7 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
-        if (modelPtr != null && !modelPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_model_free.invokeExact(modelPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to free native model resources", t);
-            } finally {
-                modelPtr = MemorySegment.NULL;
-            }
-        }
+    public void close() {
+        release();
     }
 }

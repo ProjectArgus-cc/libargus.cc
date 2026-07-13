@@ -79,7 +79,9 @@ public final class ArgusVideo implements AutoCloseable {
      * Reads the next frame bitmap or text timestamp from the video stream.
      *
      * @return a VideoItem, or null if EOF is reached
+     * @deprecated Use {@link #readNext(ArgusVideoItem)} to prevent JVM allocation churn on hot paths.
      */
+    @Deprecated
     public VideoItem readNext() {
         try (Arena local = Arena.ofConfined()) {
             MemorySegment outBitmapSeg = local.allocate(ValueLayout.ADDRESS);
@@ -95,16 +97,44 @@ public final class ArgusVideo implements AutoCloseable {
 
                 ArgusBitmap bitmap = null;
                 if (!bitmapHandle.equals(MemorySegment.NULL)) {
-                    // We must wrap the native pointer in our custom wrapper class.
-                    // Construct a new instance manually. We can do a private/package-private constructor mapping.
-                    // To do this, we use a custom factory method, but since the constructor is package-private here,
-                    // we can just construct it.
                     bitmap = new ArgusBitmap(bitmapHandle);
                 }
 
                 return new VideoItem(bitmap, text);
             } else if (res == -1) {
                 return null; // EOF
+            } else {
+                throw new RuntimeException("Native argus_video_read_next failed with code: " + res);
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to read next item from video stream", t);
+        }
+    }
+
+    /**
+     * Reads the next frame bitmap or text timestamp from the video stream into the provided mutable carrier.
+     * Reuses off-heap resources and prevents JVM heap allocation.
+     *
+     * @param item the mutable carrier container to update
+     * @return true if an item was successfully read, false if EOF is reached
+     */
+    public boolean readNext(ArgusVideoItem item) {
+        Objects.requireNonNull(item);
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment outBitmapSeg = local.allocate(ValueLayout.ADDRESS);
+            MemorySegment outTextSeg = local.allocate(256);
+
+            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoPtr, outBitmapSeg, outTextSeg, 256);
+            if (res == 0) {
+                MemorySegment bitmapHandle = outBitmapSeg.get(ValueLayout.ADDRESS, 0);
+                String text = outTextSeg.getString(0);
+                if (text.isEmpty()) {
+                    text = null;
+                }
+                item.update(bitmapHandle, text);
+                return true;
+            } else if (res == -1) {
+                return false; // EOF
             } else {
                 throw new RuntimeException("Native argus_video_read_next failed with code: " + res);
             }

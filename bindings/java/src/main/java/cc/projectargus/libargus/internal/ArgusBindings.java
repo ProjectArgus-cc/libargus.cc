@@ -161,7 +161,8 @@ public final class ArgusBindings {
     // Speech Synthesis
     public static final MethodHandle argus_synthesize_speech = bind("argus_synthesize_speech",
         FunctionDescriptor.of(ValueLayout.JAVA_INT,
-            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
 
     // Whisper Audio (STT)
