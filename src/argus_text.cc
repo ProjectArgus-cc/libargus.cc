@@ -193,6 +193,9 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     cparams.type_k = (enum ggml_type)params->type_k;
     cparams.type_v = (enum ggml_type)params->type_v;
 
+    // Embeddings support
+    cparams.embeddings = params->embeddings;
+
     struct llama_context * ctx = llama_init_from_model(model->model, cparams);
     if (!ctx) {
         return nullptr;
@@ -283,6 +286,27 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
     llama_batch_free(batch);
 
     return result;
+}
+
+int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats) {
+    if (!ctx || !out_embeddings || max_floats <= 0) {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
+    if (!embd) {
+        return -1;
+    }
+
+    int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
+    if (n_embd > max_floats) {
+        return -2;
+    }
+
+    std::memcpy(out_embeddings, embd, n_embd * sizeof(float));
+    return n_embd;
 }
 
 int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty) {

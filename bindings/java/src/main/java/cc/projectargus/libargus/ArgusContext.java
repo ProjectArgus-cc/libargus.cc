@@ -91,6 +91,10 @@ public final class ArgusContext implements AutoCloseable {
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("enable_draft_mtp")), 
                 config.enableDraftMtp()
             );
+            paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("embeddings")), 
+                config.embeddings()
+            );
 
             MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(model.getHandle(), paramsSeg);
             if (ctxPtr.equals(MemorySegment.NULL)) {
@@ -327,6 +331,27 @@ public final class ArgusContext implements AutoCloseable {
             return res;
         } catch (Throwable t) {
             throw new RuntimeException("Failed to synthesize speech", t);
+        }
+    }
+
+    /**
+     * Retrieves the embedding vector for a specific sequence ID.
+     * Mutex-locked inside the native layer.
+     *
+     * @param seqId          target sequence tracking ID
+     * @param outEmbeddings  destination buffer memory segment to receive the float embedding vector
+     * @param maxFloats      maximum capacity of the output buffer in float elements
+     * @return the number of float elements written, or negative on failure
+     */
+    public int getEmbeddings(int seqId, MemorySegment outEmbeddings, int maxFloats) {
+        Objects.requireNonNull(outEmbeddings);
+        if (maxFloats <= 0) {
+            return 0;
+        }
+        try {
+            return (int) ArgusBindings.argus_get_embeddings.invokeExact(ctxPtr, seqId, outEmbeddings, maxFloats);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve embeddings from native context", t);
         }
     }
 

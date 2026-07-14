@@ -158,6 +158,11 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );
 
+    public static final MethodHandle argus_get_embeddings = bind("argus_get_embeddings",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
     // Speech Synthesis
     public static final MethodHandle argus_synthesize_speech = bind("argus_synthesize_speech",
         FunctionDescriptor.of(ValueLayout.JAVA_INT,

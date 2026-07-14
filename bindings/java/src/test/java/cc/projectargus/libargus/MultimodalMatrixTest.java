@@ -278,6 +278,63 @@ public class MultimodalMatrixTest {
         }
     }
 
+    @Test
+    public void testCell_JinaEmbeddings() {
+        System.out.println("[MultimodalMatrixTest] Verifying Cell: Jina Embeddings v3...");
+        Path jinaModelPath = MODELS_DIR.resolve("jina-embeddings-v3-Q4_K_M.gguf");
+        Assumptions.assumeTrue(Files.exists(jinaModelPath), "Skipping: Jina Embeddings v3 model missing at: " + jinaModelPath);
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, jinaModelPath, 99, true)) {
+
+            // Create context configuration with embeddings enabled
+            ArgusContextConfig config = new ArgusContextConfig(null, 512, 4, 0, 0, 0, false, true);
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                // Jina v3 prompt prefix task
+                String text = "text-matching: This is a semantic text embeddings test pattern for libargus Panama FFM bindings.";
+                MemorySegment textSeg = arena.allocateFrom(text);
+
+                // Tokenize input prompt
+                int maxTokens = 512;
+                MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, maxTokens);
+                int nTokens = context.tokenize(textSeg, tokenBuf, true);
+                assertTrue(nTokens > 0, "Tokenized output token count must be greater than 0");
+
+                // Evaluate batch
+                int decodeRes = context.decodeBatch(tokenBuf, nTokens, 0, 0, false);
+                assertEquals(0, decodeRes, "Batch evaluation for embeddings decoding failed");
+
+                // Expected Jina Embeddings v3 output dimension (1024 floats)
+                int expectedDim = 1024;
+                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, expectedDim);
+
+                // Retrieve embedding vector
+                int nFloats = context.getEmbeddings(0, embeddingsBuf, expectedDim);
+                assertEquals(expectedDim, nFloats, "Retrieved embedding vector dimension mismatch");
+
+                // Fanged test: passing a buffer size that is too small must return -2 (error)
+                MemorySegment tooSmallBuf = arena.allocate(ValueLayout.JAVA_FLOAT, expectedDim - 1);
+                int resTooSmall = context.getEmbeddings(0, tooSmallBuf, expectedDim - 1);
+                assertEquals(-2, resTooSmall, "Retrieving embeddings with a buffer size too small must return -2 error");
+
+                // Verify the values are not all zeros (validating actual content generation)
+                boolean hasNonZero = false;
+                for (int i = 0; i < expectedDim; i++) {
+                    float val = embeddingsBuf.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+                    if (val != 0.0f) {
+                        hasNonZero = true;
+                        break;
+                    }
+                }
+                assertTrue(hasNonZero, "Retrieved embedding vector contains only zeros");
+                System.out.println("  - Jina Embeddings test completed. Dim: " + nFloats + ", Has non-zero: " + hasNonZero);
+            }
+        } catch (Exception e) {
+            fail("Jina embeddings test failed with exception", e);
+        }
+    }
+
     private static boolean isCommandAvailable(String cmd) {
         try {
             Process process = new ProcessBuilder(cmd, "-version").start();

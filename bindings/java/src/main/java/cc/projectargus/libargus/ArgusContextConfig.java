@@ -10,6 +10,7 @@ package cc.projectargus.libargus;
  * @param typeV            value cache quantization format (0 = F16, 8 = Q8_0, 2 = Q4_0, 3 = Q4_1)
  * @param specDraftNMax    maximum tokens to evaluate speculatively per step
  * @param enableDraftMtp   enable Multi-Token Prediction (MTP) draft head
+ * @param embeddings       enable embeddings output
  */
 public record ArgusContextConfig(
     ArgusModel draftModel,
@@ -18,12 +19,28 @@ public record ArgusContextConfig(
     int typeK,
     int typeV,
     int specDraftNMax,
-    boolean enableDraftMtp
+    boolean enableDraftMtp,
+    boolean embeddings
 ) {
     public static final int KV_TYPE_F16 = 0;
     public static final int KV_TYPE_Q8_0 = 8;
     public static final int KV_TYPE_Q4_0 = 2;
     public static final int KV_TYPE_Q4_1 = 3;
+
+    /**
+     * Backwards-compatible constructor without embeddings parameter (defaulting to false).
+     */
+    public ArgusContextConfig(
+        ArgusModel draftModel,
+        int contextLength,
+        int cpuThreads,
+        int typeK,
+        int typeV,
+        int specDraftNMax,
+        boolean enableDraftMtp
+    ) {
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, enableDraftMtp, false);
+    }
 
     /**
      * Creates a default configuration optimized for general-purpose inference.
@@ -36,6 +53,7 @@ public record ArgusContextConfig(
             KV_TYPE_F16,
             KV_TYPE_F16,
             0,
+            false,
             false
         );
     }

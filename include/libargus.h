@@ -76,7 +76,8 @@ typedef struct argus_context_params {
     int32_t               type_v;          /**< Value cache quantization format (argus_kv_type_t) (4 bytes) */
     int32_t               spec_draft_n_max;/**< Max speculative draft tokens to check (4 bytes) */
     bool                  enable_draft_mtp;/**< Enable Multi-Token Prediction draft head (1 byte) */
-    uint8_t               reserved_padding[3];/**< Struct alignment padding (3 bytes) */
+    bool                  embeddings;      /**< Enable embeddings output (1 byte) */
+    uint8_t               reserved_padding[2];/**< Struct alignment padding (2 bytes) */
 } argus_context_params_t;
 
 /**
@@ -205,6 +206,17 @@ int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * 
  * @return Status code mapping (0 denotes clean execution, non-zero alerts structural errors).
  */
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch);
+
+/**
+ * @brief Retrieves the embeddings vector for a specific sequence ID.
+ * This is a synchronized context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence tracking ID.
+ * @param out_embeddings Flat floating-point buffer to receive the embedding vector.
+ * @param max_floats Size of the output buffer in float elements.
+ * @return Number of floats written to out_embeddings, or negative on failure.
+ */
+int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats);
 
 /**
  * @brief Samples a single token from the last computed layer logits matrix.

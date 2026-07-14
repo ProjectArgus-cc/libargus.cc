@@ -52,7 +52,8 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("type_v"),
         ValueLayout.JAVA_INT.withName("spec_draft_n_max"),
         ValueLayout.JAVA_BOOLEAN.withName("enable_draft_mtp"),
-        MemoryLayout.paddingLayout(3)
+        ValueLayout.JAVA_BOOLEAN.withName("embeddings"),
+        MemoryLayout.paddingLayout(2)
     ).withName("argus_context_params");
 
     /**
