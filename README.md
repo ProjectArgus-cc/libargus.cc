@@ -39,20 +39,20 @@ libargus/
 │   ├── argus_audio.cc     # Whisper model contexts & transcription (ASR)
 │   └── argus_multimodal.cc# Multimodal context, media loaders, video pipes, and evaluation
 └── bindings/java/         # Idiomatic Project Panama FFM binding module
-    ├── src/main/java/cc/projectargus/libargus/
-    │   ├── ArgusBackend.java          # Global device telemetry & backend initialization
-    │   ├── ArgusModel.java            # Unmanaged GGUF weights manager (AutoCloseable)
-    │   ├── ArgusContext.java          # Core text evaluation context session
-    │   ├── ArgusContextConfig.java    # Text context generation parameters
-    │   ├── ArgusAudioContext.java     # Whisper speech-to-text transcription engine
-    │   ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
-    │   ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer
-    │   ├── ArgusVideo.java            # Frame iterator for video files or buffer pipes
-    │   ├── ArgusVideoItem.java        # Reusable frame/timestamp container for video processing
-    │   ├── ArgusInputChunks.java      # Tokenized multimodal prompt chunks container
-    │   └── internal/
-    │       ├── ArgusLayouts.java      # Panama C-to-Java struct layout definitions
-    │       └── ArgusBindings.java     # Dynamic shared library method handle loader
+    └── src/main/java/cc/projectargus/libargus/
+        ├── ArgusBackend.java          # Global device telemetry & backend initialization
+        ├── ArgusModel.java            # Unmanaged GGUF weights manager (AutoCloseable)
+        ├── ArgusContext.java          # Core text evaluation context session
+        ├── ArgusContextConfig.java    # Text context generation parameters
+        ├── ArgusAudioContext.java     # Whisper speech-to-text transcription engine
+        ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
+        ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer
+        ├── ArgusVideo.java            # Frame iterator for video files or buffer pipes
+        ├── ArgusVideoItem.java        # Reusable frame/timestamp container for video processing
+        ├── ArgusInputChunks.java      # Tokenized multimodal prompt chunks container
+        └── internal/
+            ├── ArgusLayouts.java      # Panama C-to-Java struct layout definitions
+            └── ArgusBindings.java     # Dynamic shared library method handle loader
 ```
 
 ---
@@ -284,6 +284,15 @@ cd bindings/java && gradle test
 ```
 
 ---
+
+## Engineering Methodology & Development Velocity
+
+`libargus` was architected, engineered, and brought to stable release in a single continuous sprint. To achieve this velocity without compromising performance or memory safety, a distinct division of execution was enforced:
+
+* **Human Core (Architecture & Systems Design):** Every critical memory semantic, low-level constraint, and hardware optimization boundary was explicitly designed and driven by human engineering. This includes off-heap Arena lifecycle boundaries (`Arena.ofConfined`), strict 1:1 manual struct alignment packing to prevent cross-compiler layout drift, mutable off-heap asset recycling paths (`ArgusVideoItem`) to bypass JVM GC overhead, and the $O(1)$ zero-copy interleaved logit steering matrix (`argus_logit_bias_t`).
+* **AI Core (Boilerplate Compilation Pass):** Large Language Models were leveraged strictly as high-speed syntactic compilers. AI was used to rapidly generate repetitive unmanaged C-to-Java downcall bindings, parameter builder boilerplate, and tedious structural Java mapping layout strings based directly on explicit engineering blueprints.
+
+This hybrid methodology treats AI not as an unguided code generator, but as an advanced text compiler—accelerating the delivery of zero-allocation, mechanically sympathetic systems code while ensuring total architectural control remains human-driven.
 
 ## Licensing & Attribution
 
