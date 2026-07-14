@@ -1,5 +1,5 @@
 # libargus
-
+## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
 > **v0.1.0 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
