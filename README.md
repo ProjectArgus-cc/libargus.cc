@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
-> **v0.2.3 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> **v0.2.4 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
 > `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
 >
