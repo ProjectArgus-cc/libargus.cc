@@ -235,6 +235,7 @@ int32_t argus_multimodal_tokenize(
 
     mtmd_input_text input_text;
     input_text.text = text;
+    input_text.text_len = strlen(text);
     input_text.add_special = add_bos;
     input_text.parse_special = true;
 

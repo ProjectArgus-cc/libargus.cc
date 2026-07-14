@@ -348,6 +348,9 @@ int32_t argus_synthesize_speech(
     std::lock_guard<std::mutex> lock(ctx->mtx);
     (void)voice_seed;
 
+    // Clear KV cache for sequence 0 to prevent position conflicts on retries
+    llama_memory_seq_rm(llama_get_memory(ctx->ctx), 0, -1, -1);
+
     const struct llama_vocab * vocab = ctx->model_ref->vocab;
 
     // Default speaker setup matching en_male_1
