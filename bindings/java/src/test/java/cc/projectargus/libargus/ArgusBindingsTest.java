@@ -244,4 +244,20 @@ public class ArgusBindingsTest {
         assertNotNull(ArgusBindings.EXTRACTED_DIR);
         System.out.println("[Java Test] EXTRACTED_DIR was resolved to: " + ArgusBindings.EXTRACTED_DIR);
     }
+
+    @Test
+    public void testLibraryVersionAssertion() {
+        System.out.println("[Java Test] Validating compiled native library version...");
+        assertEquals("0.2.3", ArgusBindings.VERSION);
+        try {
+            MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
+            assertNotNull(verPtr);
+            assertFalse(verPtr.equals(MemorySegment.NULL));
+            String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
+            assertEquals("0.2.3", nativeVer);
+            System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
+        } catch (Throwable t) {
+            fail("Failed to verify native version: " + t.getMessage());
+        }
+    }
 }

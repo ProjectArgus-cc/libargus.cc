@@ -80,4 +80,8 @@ const char * argus_backend_get_name(int32_t index) {
     return ggml_backend_dev_name(device);
 }
 
+const char * argus_version(void) {
+    return LIBARGUS_VERSION;
+}
+
 } // extern "C"

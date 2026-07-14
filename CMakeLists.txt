@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
-project(libargus VERSION 0.2.3 LANGUAGES C CXX)
+
+# Load project version from the single source of truth version.txt file
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" LIBARGUS_VERSION_RAW)
+string(STRIP "${LIBARGUS_VERSION_RAW}" LIBARGUS_VERSION)
+
+project(libargus VERSION ${LIBARGUS_VERSION} LANGUAGES C CXX)
+
+add_compile_definitions(LIBARGUS_VERSION="${LIBARGUS_VERSION}")
 
 # Force modern C++ standards across all compiled objects
 set(CMAKE_CXX_STANDARD 17)

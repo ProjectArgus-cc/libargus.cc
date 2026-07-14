@@ -123,6 +123,12 @@ typedef struct argus_multimodal_params {
 bool argus_backend_init(const char * custom_plugin_path);
 
 /**
+ * @brief Retrieves the compiled library version.
+ * @return Null-terminated project version string (e.g. "0.2.3").
+ */
+const char * argus_version(void);
+
+/**
  * @brief Deallocates global hardware device links and cleans process space.
  */
 void argus_backend_free(void);

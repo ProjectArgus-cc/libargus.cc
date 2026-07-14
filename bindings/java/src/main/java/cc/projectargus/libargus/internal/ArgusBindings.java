@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 
 /**
@@ -17,10 +18,23 @@ import java.io.InputStream;
  */
 public final class ArgusBindings {
     private static final Linker LINKER = Linker.nativeLinker();
+    public static final String VERSION;
     private static final SymbolLookup LOOKUP;
     public static final String EXTRACTED_DIR;
 
     static {
+        // 1. Resolve version from classpath resource
+        String resolvedVersion = "0.0.0";
+        try (InputStream is = ArgusBindings.class.getResourceAsStream("/version.txt")) {
+            if (is != null) {
+                resolvedVersion = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+            }
+        } catch (IOException e) {
+            // ignore
+        }
+        VERSION = resolvedVersion;
+
+        // 2. Load native library
         String resolvedExtractedDir = null;
         String customPath = System.getProperty("cc.projectargus.libargus.path");
         if (customPath != null) {
@@ -75,13 +89,10 @@ public final class ArgusBindings {
         }
         
         String libName = System.mapLibraryName("argus");
+        String libVersionName = System.mapLibraryName("argus-" + VERSION);
         String resourcePath = "/natives/" + osDir + "/" + libName;
         
-        try (InputStream is = ArgusBindings.class.getResourceAsStream(resourcePath)) {
-            if (is == null) {
-                return null;
-            }
-            
+        try {
             // Resolve output directory
             String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
             File destDir;
@@ -95,16 +106,42 @@ public final class ArgusBindings {
                 throw new RuntimeException("Failed to create native extraction directory: " + destDir);
             }
             
-            File targetFile = new File(destDir, libName);
+            File targetFile = new File(destDir, libVersionName);
             
-            // Copy contents
-            Files.copy(is, targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            // If target file already exists and is complete, skip extraction
+            if (targetFile.exists() && targetFile.length() > 0) {
+                System.load(targetFile.getAbsolutePath());
+                return destDir.getAbsolutePath();
+            }
             
-            // Load the unpacked library
+            // Otherwise extract concurrency-safely via atomic rename
+            File tempFile = File.createTempFile("libargus_extract_", ".tmp", destDir);
+            try {
+                try (InputStream is = ArgusBindings.class.getResourceAsStream(resourcePath)) {
+                    if (is == null) {
+                        return null;
+                    }
+                    Files.copy(is, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                }
+                
+                // OS-level atomic move prevents partial-write corruption visibility
+                Files.move(tempFile.toPath(), targetFile.toPath(), 
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                // If move failed, another concurrent process might have written it
+                if (!targetFile.exists() || targetFile.length() == 0) {
+                    throw e;
+                }
+            } finally {
+                if (tempFile.exists()) {
+                    tempFile.delete();
+                }
+            }
+            
             System.load(targetFile.getAbsolutePath());
             return destDir.getAbsolutePath();
         } catch (Exception e) {
-            System.err.println("Warning: Failed to extract and load " + libName + " from classpath resources: " + e.getMessage());
+            System.err.println("Warning: Failed to extract and load " + libVersionName + " from classpath resources: " + e.getMessage());
             return null;
         }
     }
@@ -122,6 +159,10 @@ public final class ArgusBindings {
     // Lifecycle
     public static final MethodHandle argus_backend_init = bind("argus_backend_init",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_version = bind("argus_version",
+        FunctionDescriptor.of(ValueLayout.ADDRESS)
     );
 
     public static final MethodHandle argus_backend_free = bind("argus_backend_free",

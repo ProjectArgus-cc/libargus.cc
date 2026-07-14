@@ -6,6 +6,8 @@
 #include "libargus.h"
 #include <iostream>
 #include <cassert>
+#include <string>
+#include <cstring>
 
 int main() {
     std::cout << "[Test] Starting libargus lifecycle integration verification..." << std::endl;
@@ -17,6 +19,10 @@ int main() {
         return 1;
     }
     std::cout << "[Test] Backend initialized successfully." << std::endl;
+
+    // Assert compiled version query matches expectations
+    std::cout << "[Test] Library Version: " << argus_version() << std::endl;
+    assert(std::strcmp(argus_version(), "0.2.3") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();

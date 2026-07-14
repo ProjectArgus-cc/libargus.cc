@@ -3,7 +3,8 @@ plugins {
 }
 
 group = "cc.projectargus"
-version = "0.2.3"
+val versionFile = file("${project.rootDir}/version.txt")
+version = versionFile.readText().trim()
 
 java {
     toolchain {
@@ -55,8 +56,14 @@ val copyNativeLibrary = tasks.register<Copy>("copyNativeLibrary") {
     into(layout.buildDirectory.dir("generated/resources/natives/$osDir"))
 }
 
+val copyVersionFile = tasks.register<Copy>("copyVersionFile") {
+    from("${project.rootDir}/version.txt")
+    into(layout.buildDirectory.dir("generated/resources"))
+}
+
 tasks.processResources {
     dependsOn(copyNativeLibrary)
+    dependsOn(copyVersionFile)
 }
 
 tasks.test {
