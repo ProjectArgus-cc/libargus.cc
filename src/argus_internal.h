@@ -17,6 +17,8 @@ struct argus_context {
     argus_model          * draft_model_ref;
     int32_t                spec_draft_n_max;
     bool                   enable_draft_mtp;
+    struct llama_context * vocoder_ctx;
+    const argus_model    * vocoder_model_ref;
     std::mutex             mtx;        // per-context concurrency guard
 };
 

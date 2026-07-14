@@ -223,6 +223,8 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     argus_ctx->draft_model_ref  = const_cast<argus_model_t *>(params->draft_model);
     argus_ctx->spec_draft_n_max = params->spec_draft_n_max;
     argus_ctx->enable_draft_mtp = params->enable_draft_mtp;
+    argus_ctx->vocoder_ctx      = nullptr;
+    argus_ctx->vocoder_model_ref = nullptr;
 
     return argus_ctx;
 }
@@ -234,6 +236,9 @@ void argus_context_free(argus_context_t * ctx) {
         }
         if (ctx->draft_ctx) {
             llama_free(ctx->draft_ctx);
+        }
+        if (ctx->vocoder_ctx) {
+            llama_free(ctx->vocoder_ctx);
         }
         delete ctx;
     }
@@ -617,17 +622,46 @@ int32_t argus_synthesize_speech(
         return 0;
     }
 
-    // Initialize vocoder context (WavTokenizer)
-    struct llama_context_params vocoder_cparams = llama_context_default_params();
-    vocoder_cparams.n_ctx    = n_codes + 16;
-    vocoder_cparams.n_batch  = n_codes + 16;
-    vocoder_cparams.n_ubatch = 512;
-    vocoder_cparams.n_threads = 4;
-    vocoder_cparams.embeddings = true;
+    // Check if we need to initialize or update the persistent vocoder context
+    if (ctx->vocoder_ctx && ctx->vocoder_model_ref != wavtokenizer_model) {
+        llama_free(ctx->vocoder_ctx);
+        ctx->vocoder_ctx = nullptr;
+        ctx->vocoder_model_ref = nullptr;
+    }
 
-    struct llama_context * vocoder_ctx = llama_init_from_model(wavtokenizer_model->model, vocoder_cparams);
-    if (!vocoder_ctx) {
-        return -1;
+    if (!ctx->vocoder_ctx) {
+        struct llama_context_params vocoder_cparams = llama_context_default_params();
+        vocoder_cparams.n_ctx    = 4096;
+        vocoder_cparams.n_batch  = 4096;
+        vocoder_cparams.n_ubatch = 512;
+        vocoder_cparams.n_threads = 4;
+        vocoder_cparams.embeddings = true;
+
+        ctx->vocoder_ctx = llama_init_from_model(wavtokenizer_model->model, vocoder_cparams);
+        if (!ctx->vocoder_ctx) {
+            return -1;
+        }
+        ctx->vocoder_model_ref = wavtokenizer_model;
+    }
+
+    struct llama_context * active_vocoder_ctx = ctx->vocoder_ctx;
+    bool is_temporary_vocoder_ctx = false;
+
+    if (n_codes + 16 > 4096) {
+        struct llama_context_params vocoder_cparams = llama_context_default_params();
+        vocoder_cparams.n_ctx    = n_codes + 16;
+        vocoder_cparams.n_batch  = n_codes + 16;
+        vocoder_cparams.n_ubatch = 512;
+        vocoder_cparams.n_threads = 4;
+        vocoder_cparams.embeddings = true;
+
+        active_vocoder_ctx = llama_init_from_model(wavtokenizer_model->model, vocoder_cparams);
+        if (!active_vocoder_ctx) {
+            return -1;
+        }
+        is_temporary_vocoder_ctx = true;
+    } else {
+        llama_memory_seq_rm(llama_get_memory(active_vocoder_ctx), 0, -1, -1);
     }
 
     struct llama_batch vocoder_batch = llama_batch_init(n_codes, 0, 1);
@@ -640,18 +674,22 @@ int32_t argus_synthesize_speech(
         vocoder_batch.logits[i]    = false;
     }
 
-    if (llama_decode(vocoder_ctx, vocoder_batch) != 0) {
+    if (llama_decode(active_vocoder_ctx, vocoder_batch) != 0) {
         llama_batch_free(vocoder_batch);
-        llama_free(vocoder_ctx);
+        if (is_temporary_vocoder_ctx) {
+            llama_free(active_vocoder_ctx);
+        }
         return -1;
     }
-    llama_synchronize(vocoder_ctx);
+    llama_synchronize(active_vocoder_ctx);
 
     const int n_embd = llama_model_n_embd_out(wavtokenizer_model->model);
-    const float * embd = llama_get_embeddings(vocoder_ctx);
+    const float * embd = llama_get_embeddings(active_vocoder_ctx);
     if (!embd) {
         llama_batch_free(vocoder_batch);
-        llama_free(vocoder_ctx);
+        if (is_temporary_vocoder_ctx) {
+            llama_free(active_vocoder_ctx);
+        }
         return -1;
     }
 
@@ -673,7 +711,9 @@ int32_t argus_synthesize_speech(
 
     if (!workspace || workspace_size_floats < (int64_t)required_floats) {
         llama_batch_free(vocoder_batch);
-        llama_free(vocoder_ctx);
+        if (is_temporary_vocoder_ctx) {
+            llama_free(active_vocoder_ctx);
+        }
         return -(int32_t)required_floats; // Signal workspace resize required
     }
 
@@ -747,7 +787,9 @@ int32_t argus_synthesize_speech(
     }
 
     llama_batch_free(vocoder_batch);
-    llama_free(vocoder_ctx);
+    if (is_temporary_vocoder_ctx) {
+        llama_free(active_vocoder_ctx);
+    }
 
     return count_to_write;
 }

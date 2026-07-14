@@ -1,15 +1,8 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
-> [!IMPORTANT]
-> **v0.2.4 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> [!NOTE]
+> **v1.0.0 Stable — Unified Hardware Orchestration & Zero-Allocation ABI**
 >
-> `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
->
-> **Current Architecture & Active Refactoring Targets:**
-> * **Panama FFM ABI Stability:** The unmanaged C ABI, manually packed structure padding (`reserved_padding[2]`), and pointer-only downcall boundaries are frozen and stable for JDK 22/25 integration.
-> * **TTS Vocoder Execution:** The speech synthesis pipeline currently initializes ephemeral vocoder contexts per execution; migration to persistent session state to eliminate thread pool churn and achieve true zero-allocation execution is under active development.
-> * **ASR Buffer Assembly:** The Whisper acoustic transcription buffer is undergoing optimization from linear accumulation to zero-copy linear pointer tracking with strict UTF-8 continuation byte boundary enforcement.
-> * **SIMD Compilation Target:** The CMake build matrix currently defaults to host-native SIMD instruction generation (`-march=native`).
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 

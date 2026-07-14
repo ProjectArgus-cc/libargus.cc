@@ -88,13 +88,30 @@ int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_da
 
             // Check absolute buffer boundary ceilings before running memory mutations
             if (total_written_chars + segment_len + 1 < (size_t)max_chars) {
-                strcat(out_text, segment_text);
+                // Zero-copy linear copying using memcpy instead of quadratic strcat
+                std::memcpy(out_text + total_written_chars, segment_text, segment_len);
                 total_written_chars += segment_len;
+                out_text[total_written_chars] = '\0';
             } else {
                 // Execute clean truncation right up to the maximum character allocation cap
                 size_t remaining_space = max_chars - total_written_chars - 1;
-                strncat(out_text, segment_text, remaining_space);
-                total_written_chars += remaining_space;
+                if (remaining_space > 0) {
+                    std::memcpy(out_text + total_written_chars, segment_text, remaining_space);
+                    total_written_chars += remaining_space;
+                    out_text[total_written_chars] = '\0';
+
+                    // Strict UTF-8 continuation byte boundary enforcement:
+                    // If the last character was cut off (continuation byte high two bits are '10xxxxxx'),
+                    // backtrack to the starting leading byte of the multi-byte char and terminate.
+                    int32_t idx = total_written_chars - 1;
+                    while (idx >= 0 && (out_text[idx] & 0xC0) == 0x80) {
+                        idx--;
+                    }
+                    if (idx >= 0 && (out_text[idx] & 0x80) != 0) {
+                        out_text[idx] = '\0';
+                        total_written_chars = idx;
+                    }
+                }
                 break;
             }
         }
