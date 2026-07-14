@@ -294,6 +294,16 @@ cd bindings/java && gradle test
 
 This hybrid methodology treats AI not as an unguided code generator, but as an advanced text compiler—accelerating the delivery of zero-allocation, mechanically sympathetic systems code while ensuring total architectural control remains human-driven.
 
+---
+
+## Upstream Integration & Project Roadmap
+
+`libargus` is engineered strictly as **Layer 0 (The Core Execution Bedrock)** for low-latency, performance-critical JVM platforms. It provides the raw compute foundation required for zero-allocation native tensor orchestration via Project Panama.
+
+This engine serves as the high-throughput infrastructure for a broader cognitive platform. To view the high-level roadmap detailing how this runtime block interfaces with the upcoming Layer 1 stateful cognitive core (L-TABB) and the unified system dashboard, visit the master project organization landing page at [ProjectArgus.cc](https://github.com/projectargus-cc).
+
+---
+
 ## Licensing & Attribution
 
 `libargus` is released open-source under the MIT License. This software integrates and links against computational tensor primitives derived from `llama.cpp` (including `libmtmd`) and `whisper.cpp`.
