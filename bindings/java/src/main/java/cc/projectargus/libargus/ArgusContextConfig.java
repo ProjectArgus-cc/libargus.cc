@@ -57,4 +57,77 @@ public record ArgusContextConfig(
             false
         );
     }
+
+    /**
+     * Fluent, zero-dependency builder for creating ArgusContextConfig instances.
+     */
+    public static class Builder {
+        private ArgusModel draftModel = null;
+        private int contextLength = 2048;
+        private int cpuThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+        private int typeK = KV_TYPE_F16;
+        private int typeV = KV_TYPE_F16;
+        private int specDraftNMax = 0;
+        private boolean enableDraftMtp = false;
+        private boolean embeddings = false;
+
+        public Builder() {}
+
+        public Builder(int contextLength) {
+            this.contextLength = contextLength;
+        }
+
+        public Builder draftModel(ArgusModel draftModel) {
+            this.draftModel = draftModel;
+            return this;
+        }
+
+        public Builder contextLength(int contextLength) {
+            this.contextLength = contextLength;
+            return this;
+        }
+
+        public Builder cpuThreads(int cpuThreads) {
+            this.cpuThreads = cpuThreads;
+            return this;
+        }
+
+        public Builder typeK(int typeK) {
+            this.typeK = typeK;
+            return this;
+        }
+
+        public Builder typeV(int typeV) {
+            this.typeV = typeV;
+            return this;
+        }
+
+        public Builder specDraftNMax(int specDraftNMax) {
+            this.specDraftNMax = specDraftNMax;
+            return this;
+        }
+
+        public Builder enableDraftMtp(boolean enableDraftMtp) {
+            this.enableDraftMtp = enableDraftMtp;
+            return this;
+        }
+
+        public Builder embeddings(boolean embeddings) {
+            this.embeddings = embeddings;
+            return this;
+        }
+
+        public ArgusContextConfig build() {
+            return new ArgusContextConfig(
+                draftModel,
+                contextLength,
+                cpuThreads,
+                typeK,
+                typeV,
+                specDraftNMax,
+                enableDraftMtp,
+                embeddings
+            );
+        }
+    }
 }

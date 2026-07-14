@@ -151,4 +151,37 @@ public class ArgusBindingsTest {
             ArgusBackend.free();
         }
     }
+
+    @Test
+    public void testContextConfigBuilder() {
+        System.out.println("[Java Test] Validating ArgusContextConfig.Builder...");
+        
+        // Test default constructor
+        ArgusContextConfig.Builder builder1 = new ArgusContextConfig.Builder();
+        ArgusContextConfig config1 = builder1.build();
+        assertNull(config1.draftModel());
+        assertEquals(2048, config1.contextLength());
+        assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeK());
+        assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeV());
+        assertFalse(config1.enableDraftMtp());
+        assertFalse(config1.embeddings());
+        
+        // Test custom constructor and fluent setters
+        ArgusContextConfig.Builder builder2 = new ArgusContextConfig.Builder(1024)
+            .cpuThreads(4)
+            .typeK(ArgusContextConfig.KV_TYPE_Q4_0)
+            .typeV(ArgusContextConfig.KV_TYPE_Q8_0)
+            .specDraftNMax(5)
+            .enableDraftMtp(true)
+            .embeddings(true);
+            
+        ArgusContextConfig config2 = builder2.build();
+        assertEquals(1024, config2.contextLength());
+        assertEquals(4, config2.cpuThreads());
+        assertEquals(ArgusContextConfig.KV_TYPE_Q4_0, config2.typeK());
+        assertEquals(ArgusContextConfig.KV_TYPE_Q8_0, config2.typeV());
+        assertEquals(5, config2.specDraftNMax());
+        assertTrue(config2.enableDraftMtp());
+        assertTrue(config2.embeddings());
+    }
 }

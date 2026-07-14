@@ -99,16 +99,12 @@ public class Main {
         try (Arena arena = Arena.ofConfined();
              ArgusModel model = ArgusModel.load(arena, Path.of("models/llama-3-8b.gguf"), 99, true)) {
              
-             // Initialize context configurations (backwards-compatible constructor)
-             ArgusContextConfig config = new ArgusContextConfig(
-                 null, // draft model
-                 4096, // context length
-                 8,    // CPU threads
-                 ArgusContextConfig.KV_TYPE_Q4_0, // KV Type K
-                 ArgusContextConfig.KV_TYPE_Q4_0, // KV Type V
-                 0,    // specDraftNMax
-                 false // enableDraftMtp
-             );
+             // Initialize context configurations
+             ArgusContextConfig config = new ArgusContextConfig.Builder(4096)
+                 .cpuThreads(8)
+                 .typeK(ArgusContextConfig.KV_TYPE_Q4_0) // Quantize KV Cache
+                 .typeV(ArgusContextConfig.KV_TYPE_Q4_0)
+                 .build();
                  
              try (ArgusContext context = ArgusContext.init(arena, model, config)) {
                  // Run text evaluation & generation loop...
@@ -135,7 +131,7 @@ public class MultimodalApp {
 
         try (Arena arena = Arena.ofConfined();
               ArgusModel baseModel = ArgusModel.load(arena, Path.of("models/qwen2-vl-7b-it.gguf"), 99, true);
-              ArgusContext context = ArgusContext.init(arena, baseModel, ArgusContextConfig.createDefault(8192));
+              ArgusContext context = ArgusContext.init(arena, baseModel, new ArgusContextConfig.Builder(8192).build());
               // Load the multimodal adapter context
               ArgusMultimodalContext mctx = ArgusMultimodalContext.init(arena, baseModel, Path.of("models/qwen2-vl-7b-it.mmproj"), 4, true)) {
 
@@ -193,7 +189,10 @@ public class EmbeddingsApp {
              ArgusModel model = ArgusModel.load(arena, Path.of("models/jina-embeddings-v3-Q4_K_M.gguf"), 99, true)) {
 
             // Initialize context configuration with embeddings enabled
-            ArgusContextConfig config = new ArgusContextConfig(null, 512, 4, 0, 0, 0, false, true);
+            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
+                .cpuThreads(4)
+                .embeddings(true)
+                .build();
 
             try (ArgusContext context = ArgusContext.init(arena, model, config)) {
                 // Tokenize and evaluate prompt
