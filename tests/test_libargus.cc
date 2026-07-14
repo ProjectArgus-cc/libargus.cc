@@ -82,6 +82,22 @@ int main() {
     argus_input_chunks_free(chunks);
     std::cout << "[Test] Multimodal C API tests completed successfully." << std::endl;
 
+    // 6.5. Test new Vocabulary and Metadata null checks
+    std::cout << "[Test] Verifying vocab and metadata null safety checks..." << std::endl;
+    assert(argus_vocab_bos(nullptr) == -1);
+    assert(argus_vocab_eos(nullptr) == -1);
+    assert(argus_vocab_eot(nullptr) == -1);
+    assert(argus_vocab_pad(nullptr) == -1);
+    assert(argus_vocab_n_tokens(nullptr) == -1);
+    assert(argus_vocab_is_eog(nullptr, 0) == false);
+
+    char dummy_meta_buf[10];
+    assert(argus_model_meta_val_str(nullptr, "some_key", dummy_meta_buf, 10) == -1);
+    assert(argus_model_meta_count(nullptr) == -1);
+    assert(argus_model_meta_key_by_index(nullptr, 0, dummy_meta_buf, 10) == -1);
+    assert(argus_model_meta_val_str_by_index(nullptr, 0, dummy_meta_buf, 10) == -1);
+    std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
+
     // 7. Free the global backends
     argus_backend_free();
     std::cout << "[Test] Backend freed successfully." << std::endl;

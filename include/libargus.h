@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 0.2.0
+ * @version 0.2.1
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -197,6 +197,86 @@ int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t *
  * @return Written character byte length count inside the buffer segment.
  */
 int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size);
+
+/**
+ * @brief Retrieves the Beginning-Of-Sentence (BOS) token ID.
+ * @param model Reference model containing the vocabulary mapping.
+ * @return The BOS token ID, or -1 if not defined/failed.
+ */
+int32_t argus_vocab_bos(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the End-Of-Sentence (EOS) token ID.
+ * @param model Reference model containing the vocabulary mapping.
+ * @return The EOS token ID, or -1 if not defined/failed.
+ */
+int32_t argus_vocab_eos(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the End-Of-Turn (EOT) token ID.
+ * @param model Reference model containing the vocabulary mapping.
+ * @return The EOT token ID, or -1 if not defined/failed.
+ */
+int32_t argus_vocab_eot(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the Padding (PAD) token ID.
+ * @param model Reference model containing the vocabulary mapping.
+ * @return The PAD token ID, or -1 if not defined/failed.
+ */
+int32_t argus_vocab_pad(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the total size of the vocabulary.
+ * @param model Reference model containing the vocabulary mapping.
+ * @return The total token count, or -1 on failure.
+ */
+int32_t argus_vocab_n_tokens(const argus_model_t * model);
+
+/**
+ * @brief Checks if a token is an End-Of-Generation (EOG) token.
+ * @param model Reference model containing the vocabulary mapping.
+ * @param token The token ID to inspect.
+ * @return True if the token is an EOG token, false otherwise.
+ */
+bool argus_vocab_is_eog(const argus_model_t * model, int32_t token);
+
+/**
+ * @brief Extracts model GGUF metadata string values by key name.
+ * @param model Reference model containing the metadata.
+ * @param key Null-terminated string key to look up.
+ * @param buf Output character buffer to populate.
+ * @param buf_size Character size capacity limits of the provided target output buffer.
+ * @return String character length written, or negative on failure.
+ */
+int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size);
+
+/**
+ * @brief Retrieves the total count of metadata entries in the GGUF model.
+ * @param model Reference model containing the metadata.
+ * @return The total number of key-value pairs, or negative on failure.
+ */
+int32_t argus_model_meta_count(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the metadata key name at a specified index.
+ * @param model Reference model containing the metadata.
+ * @param index Registry index.
+ * @param buf Output character buffer to populate.
+ * @param buf_size Character size capacity limits of the provided target output buffer.
+ * @return String character length written, or negative on failure.
+ */
+int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
+
+/**
+ * @brief Retrieves the metadata value string at a specified index.
+ * @param model Reference model containing the metadata.
+ * @param index Registry index.
+ * @param buf Output character buffer to populate.
+ * @param buf_size Character size capacity limits of the provided target output buffer.
+ * @return String character length written, or negative on failure.
+ */
+int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
 
 /**
  * @brief Evaluates an unmanaged batch payload through the model's compute graph.

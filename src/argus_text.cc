@@ -259,6 +259,58 @@ int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * 
     return llama_token_to_piece(model->vocab, token, out_buf, buf_size, 0, true);
 }
 
+int32_t argus_vocab_bos(const argus_model_t * model) {
+    return model && model->vocab ? (int32_t)llama_vocab_bos(model->vocab) : -1;
+}
+
+int32_t argus_vocab_eos(const argus_model_t * model) {
+    return model && model->vocab ? (int32_t)llama_vocab_eos(model->vocab) : -1;
+}
+
+int32_t argus_vocab_eot(const argus_model_t * model) {
+    return model && model->vocab ? (int32_t)llama_vocab_eot(model->vocab) : -1;
+}
+
+int32_t argus_vocab_pad(const argus_model_t * model) {
+    return model && model->vocab ? (int32_t)llama_vocab_pad(model->vocab) : -1;
+}
+
+int32_t argus_vocab_n_tokens(const argus_model_t * model) {
+    return model && model->vocab ? (int32_t)llama_vocab_n_tokens(model->vocab) : -1;
+}
+
+bool argus_vocab_is_eog(const argus_model_t * model, int32_t token) {
+    return model && model->vocab ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
+}
+
+int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size) {
+    if (!model || !model->model || !key || !buf || buf_size <= 0) {
+        return -1;
+    }
+    return llama_model_meta_val_str(model->model, key, buf, (size_t)buf_size);
+}
+
+int32_t argus_model_meta_count(const argus_model_t * model) {
+    if (!model || !model->model) {
+        return -1;
+    }
+    return llama_model_meta_count(model->model);
+}
+
+int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
+    if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+        return -1;
+    }
+    return llama_model_meta_key_by_index(model->model, index, buf, (size_t)buf_size);
+}
+
+int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
+    if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+        return -1;
+    }
+    return llama_model_meta_val_str_by_index(model->model, index, buf, (size_t)buf_size);
+}
+
 // =========================================================================
 // Synchronized Context Operations
 // =========================================================================

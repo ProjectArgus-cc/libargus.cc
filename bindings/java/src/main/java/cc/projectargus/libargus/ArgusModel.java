@@ -102,6 +102,163 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Returns the Beginning-Of-Sentence (BOS) token ID.
+     */
+    public int vocabBos() {
+        try {
+            return (int) ArgusBindings.argus_vocab_bos.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve BOS token", t);
+        }
+    }
+
+    /**
+     * Returns the End-Of-Sentence (EOS) token ID.
+     */
+    public int vocabEos() {
+        try {
+            return (int) ArgusBindings.argus_vocab_eos.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve EOS token", t);
+        }
+    }
+
+    /**
+     * Returns the End-Of-Turn (EOT) token ID.
+     */
+    public int vocabEot() {
+        try {
+            return (int) ArgusBindings.argus_vocab_eot.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve EOT token", t);
+        }
+    }
+
+    /**
+     * Returns the Padding (PAD) token ID.
+     */
+    public int vocabPad() {
+        try {
+            return (int) ArgusBindings.argus_vocab_pad.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve PAD token", t);
+        }
+    }
+
+    /**
+     * Returns the total vocabulary token size count.
+     */
+    public int vocabNTokens() {
+        try {
+            return (int) ArgusBindings.argus_vocab_n_tokens.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve vocabulary size", t);
+        }
+    }
+
+    /**
+     * Checks if the given token ID is an End-Of-Generation (EOG) token.
+     */
+    public boolean vocabIsEog(int token) {
+        try {
+            return (boolean) ArgusBindings.argus_vocab_is_eog.invokeExact(modelPtr, token);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to check EOG token: " + token, t);
+        }
+    }
+
+    /**
+     * Extracts model GGUF metadata string values by key name.
+     * Uses caller-provided buffers for absolute zero-allocation lookup.
+     *
+     * @param keySegment  off-heap address containing null-terminated UTF-8 key string
+     * @param valueBuffer destination off-heap character array segment
+     * @param bufferSize  maximum capacity limit of target buffer segment
+     * @return character length successfully written, or negative on failure.
+     */
+    public int getMetadataValue(MemorySegment keySegment, MemorySegment valueBuffer, int bufferSize) {
+        Objects.requireNonNull(keySegment);
+        Objects.requireNonNull(valueBuffer);
+        try {
+            return (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySegment, valueBuffer, bufferSize);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve metadata string", t);
+        }
+    }
+
+    /**
+     * Extracts model GGUF metadata string values by key name.
+     *
+     * @param key metadata key name
+     * @return metadata value string, or null if key is missing or failed
+     */
+    public String getMetadataValue(String key) {
+        Objects.requireNonNull(key);
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment keySeg = localArena.allocateFrom(key);
+            int initialSize = 512;
+            MemorySegment valSeg = localArena.allocate(initialSize);
+            int len = (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySeg, valSeg, initialSize);
+            if (len < 0) {
+                return null;
+            }
+            if (len >= initialSize) {
+                MemorySegment largerSeg = localArena.allocate(len + 1);
+                len = (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySeg, largerSeg, len + 1);
+                if (len < 0) {
+                    return null;
+                }
+                return largerSeg.getString(0);
+            }
+            return valSeg.getString(0);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve metadata string for key: " + key, t);
+        }
+    }
+
+    /**
+     * Traverses and retrieves all GGUF metadata key-value pairs stored in the model.
+     *
+     * @return a map containing the model's metadata dictionary
+     */
+    public java.util.Map<String, String> getMetadataMap() {
+        java.util.Map<String, String> map = new java.util.LinkedHashMap<>();
+        try {
+            int count = (int) ArgusBindings.argus_model_meta_count.invokeExact(modelPtr);
+            if (count < 0) {
+                return map;
+            }
+            try (Arena localArena = Arena.ofConfined()) {
+                int bufferSize = 1024;
+                MemorySegment keyBuffer = localArena.allocate(bufferSize);
+                MemorySegment valBuffer = localArena.allocate(bufferSize);
+                for (int i = 0; i < count; i++) {
+                    int keyLen = (int) ArgusBindings.argus_model_meta_key_by_index.invokeExact(modelPtr, i, keyBuffer, bufferSize);
+                    int valLen = (int) ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(modelPtr, i, valBuffer, bufferSize);
+                    
+                    MemorySegment keySeg = keyBuffer;
+                    if (keyLen >= bufferSize) {
+                        keySeg = localArena.allocate(keyLen + 1);
+                        ArgusBindings.argus_model_meta_key_by_index.invokeExact(modelPtr, i, keySeg, keyLen + 1);
+                    }
+                    MemorySegment valSeg = valBuffer;
+                    if (valLen >= bufferSize) {
+                        valSeg = localArena.allocate(valLen + 1);
+                        ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(modelPtr, i, valSeg, valLen + 1);
+                    }
+                    
+                    if (keyLen >= 0 && valLen >= 0) {
+                        map.put(keySeg.getString(0), valSeg.getString(0));
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve model metadata map", t);
+        }
+        return map;
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged model structure.
      */
     public MemorySegment getHandle() {

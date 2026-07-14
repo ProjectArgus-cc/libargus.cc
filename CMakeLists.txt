@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(libargus VERSION 0.2.0 LANGUAGES C CXX)
+project(libargus VERSION 0.2.1 LANGUAGES C CXX)
 
 # Force modern C++ standards across all compiled objects
 set(CMAKE_CXX_STANDARD 17)

@@ -144,6 +144,49 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
+    public static final MethodHandle argus_vocab_bos = bind("argus_vocab_bos",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_vocab_eos = bind("argus_vocab_eos",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_vocab_eot = bind("argus_vocab_eot",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_vocab_pad = bind("argus_vocab_pad",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_vocab_n_tokens = bind("argus_vocab_n_tokens",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_vocab_is_eog = bind("argus_vocab_is_eog",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_meta_val_str = bind("argus_model_meta_val_str",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, 
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_meta_count = bind("argus_model_meta_count",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_meta_key_by_index = bind("argus_model_meta_key_by_index",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_meta_val_str_by_index = bind("argus_model_meta_val_str_by_index",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
     // Evaluation & Pruning
     public static final MethodHandle argus_decode_batch = bind("argus_decode_batch",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

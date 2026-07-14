@@ -184,4 +184,31 @@ public class ArgusBindingsTest {
         assertTrue(config2.enableDraftMtp());
         assertTrue(config2.embeddings());
     }
+
+    @Test
+    public void testModelVocabAndMetadataNullChecks() {
+        System.out.println("[Java Test] Validating vocab and metadata null/error pathways on dummy model...");
+        ArgusBackend.init();
+        try {
+            ArgusModel dummyModel = new ArgusModel(MemorySegment.NULL);
+            assertEquals(-1, dummyModel.vocabBos());
+            assertEquals(-1, dummyModel.vocabEos());
+            assertEquals(-1, dummyModel.vocabEot());
+            assertEquals(-1, dummyModel.vocabPad());
+            assertEquals(-1, dummyModel.vocabNTokens());
+            assertFalse(dummyModel.vocabIsEog(0));
+            
+            assertNull(dummyModel.getMetadataValue("some_key"));
+            assertTrue(dummyModel.getMetadataMap().isEmpty());
+            
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment keySeg = arena.allocateFrom("some_key");
+                MemorySegment valSeg = arena.allocate(10);
+                int res = dummyModel.getMetadataValue(keySeg, valSeg, 10);
+                assertEquals(-1, res);
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
 }

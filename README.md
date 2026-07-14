@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
-> **v0.2.0 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> **v0.2.1 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
 > `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
 >
@@ -28,6 +28,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
 *   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
+*   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
 
 ---
 
@@ -216,6 +217,27 @@ public class EmbeddingsApp {
         }
     }
 }
+```
+
+### Model Metadata & Vocabulary Introspection
+
+Query special tokens and traverse GGUF model configurations directly from unmanaged memory:
+
+```java
+// Access model vocabulary metadata
+int bos = model.vocabBos();
+int eos = model.vocabEos();
+int eot = model.vocabEot(); // End-Of-Turn token for chat models
+int nTokens = model.vocabNTokens(); // Vocabulary capacity
+boolean isEog = model.vocabIsEog(sampledToken); // Native End-Of-Generation verification
+
+// Retrieve metadata strings by key name
+String modelArch = model.getMetadataValue("general.architecture"); // e.g. "qwen2vl"
+String modelName = model.getMetadataValue("general.name"); // e.g. "Qwen2 VL 2B Instruct"
+
+// Traverse and inspect the complete metadata dictionary
+java.util.Map<String, String> metadata = model.getMetadataMap();
+metadata.forEach((key, val) -> System.out.println(key + " -> " + val));
 ```
 
 ---
