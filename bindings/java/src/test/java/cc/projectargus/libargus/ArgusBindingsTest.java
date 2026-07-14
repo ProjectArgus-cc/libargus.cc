@@ -3,6 +3,7 @@ package cc.projectargus.libargus;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
+import cc.projectargus.libargus.internal.ArgusBindings;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Paths;
@@ -217,5 +218,30 @@ public class ArgusBindingsTest {
         } finally {
             ArgusBackend.free();
         }
+    }
+
+    @Test
+    public void testSampleTokenWithBiasNullChecks() {
+        System.out.println("[Java Test] Validating sampleTokenWithBias null/error pathways...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyTokens = arena.allocate(12);
+            MemorySegment dummyValues = arena.allocate(12);
+            int token = (int) ArgusBindings.argus_sample_token_with_bias.invokeExact(
+                MemorySegment.NULL, 0, 0.0f, 0.0f, dummyTokens, dummyValues, 3
+            );
+            assertEquals(-1, token);
+        } catch (Throwable t) {
+            fail("Exception thrown in native downcall: " + t.getMessage());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testCustomNativeDirExtraction() {
+        System.out.println("[Java Test] Validating custom native dir property...");
+        assertNotNull(ArgusBindings.EXTRACTED_DIR);
+        System.out.println("[Java Test] EXTRACTED_DIR was resolved to: " + ArgusBindings.EXTRACTED_DIR);
     }
 }

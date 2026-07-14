@@ -1,6 +1,7 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -14,17 +15,26 @@ public final class ArgusBackend {
 
     private ArgusBackend() {}
 
+    public static synchronized boolean init() {
+        return init(ArgusBindings.EXTRACTED_DIR);
+    }
+
     /**
-     * Initializes the process-global hardware execution registry.
+     * Initializes the process-global hardware execution registry with a custom backend plugin path.
      * Must be called once before loading models or executing transcription/speech.
+     *
+     * @param customPluginPath directory path to search for dynamic ggml plugin libraries (like CUDA)
      * @return true if backend registers successfully, false otherwise.
      */
-    public static synchronized boolean init() {
+    public static synchronized boolean init(String customPluginPath) {
         if (initialized) {
             return true;
         }
-        try {
-            initialized = (boolean) ArgusBindings.argus_backend_init.invokeExact();
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment pathSeg = (customPluginPath != null && !customPluginPath.isEmpty())
+                ? localArena.allocateFrom(customPluginPath)
+                : MemorySegment.NULL;
+            initialized = (boolean) ArgusBindings.argus_backend_init.invokeExact(pathSeg);
             return initialized;
         } catch (Throwable t) {
             throw new RuntimeException("Fatal error running argus_backend_init", t);

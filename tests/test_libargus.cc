@@ -11,7 +11,7 @@ int main() {
     std::cout << "[Test] Starting libargus lifecycle integration verification..." << std::endl;
 
     // 1. Initialize the global backends
-    bool init_success = argus_backend_init();
+    bool init_success = argus_backend_init(nullptr);
     if (!init_success) {
         std::cerr << "[Test] Failed to initialize argus backends!" << std::endl;
         return 1;
@@ -104,6 +104,9 @@ int main() {
     assert(argus_model_n_head(nullptr) == -1);
     assert(argus_model_n_head_kv(nullptr) == -1);
     assert(argus_model_n_params(nullptr) == 0);
+
+    // Test new logit bias sampling null checks
+    assert(argus_sample_token_with_bias(nullptr, 0, 0.0f, 0.0f, nullptr, nullptr, 0) == -1);
 
     std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
 

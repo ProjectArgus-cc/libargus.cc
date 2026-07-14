@@ -18,13 +18,20 @@ import java.io.InputStream;
 public final class ArgusBindings {
     private static final Linker LINKER = Linker.nativeLinker();
     private static final SymbolLookup LOOKUP;
+    public static final String EXTRACTED_DIR;
 
     static {
+        String resolvedExtractedDir = null;
         String customPath = System.getProperty("cc.projectargus.libargus.path");
         if (customPath != null) {
-            System.load(Paths.get(customPath).toAbsolutePath().toString());
+            java.nio.file.Path path = Paths.get(customPath).toAbsolutePath();
+            System.load(path.toString());
+            resolvedExtractedDir = path.getParent().toString();
         } else {
-            if (!tryLoadFromResources()) {
+            String tempExtracted = tryLoadFromResources();
+            if (tempExtracted != null) {
+                resolvedExtractedDir = tempExtracted;
+            } else {
                 try {
                     System.loadLibrary("argus");
                 } catch (UnsatisfiedLinkError e) {
@@ -34,10 +41,12 @@ public final class ArgusBindings {
                     File localLib = Paths.get(userDir, "build", libName).toFile();
                     if (localLib.exists()) {
                         System.load(localLib.getAbsolutePath());
+                        resolvedExtractedDir = localLib.getParent();
                     } else {
                         localLib = Paths.get(userDir, "..", "build", libName).toFile(); // check workspace parent build
                         if (localLib.exists()) {
                             System.load(localLib.getAbsolutePath());
+                            resolvedExtractedDir = localLib.getParent();
                         } else {
                             throw new UnsatisfiedLinkError("Could not locate native " + libName + 
                                 " in java.library.path, classpath resources, or workspace build output. Please specify -Dcc.projectargus.libargus.path");
@@ -46,10 +55,11 @@ public final class ArgusBindings {
                 }
             }
         }
+        EXTRACTED_DIR = resolvedExtractedDir;
         LOOKUP = SymbolLookup.loaderLookup();
     }
 
-    private static boolean tryLoadFromResources() {
+    private static String tryLoadFromResources() {
         String osName = System.getProperty("os.name").toLowerCase();
         String osArch = System.getProperty("os.arch").toLowerCase();
         
@@ -61,7 +71,7 @@ public final class ArgusBindings {
         } else if (osName.contains("mac")) {
             osDir = "macos-" + osArch;
         } else {
-            return false;
+            return null;
         }
         
         String libName = System.mapLibraryName("argus");
@@ -69,22 +79,33 @@ public final class ArgusBindings {
         
         try (InputStream is = ArgusBindings.class.getResourceAsStream(resourcePath)) {
             if (is == null) {
-                return false;
+                return null;
             }
             
-            // Create a temporary file that will be deleted on exit
-            File tempFile = File.createTempFile("libargus_", "_" + libName);
-            tempFile.deleteOnExit();
+            // Resolve output directory
+            String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
+            File destDir;
+            if (customDir != null && !customDir.trim().isEmpty()) {
+                destDir = new File(customDir.trim());
+            } else {
+                destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache");
+            }
+            
+            if (!destDir.exists() && !destDir.mkdirs()) {
+                throw new RuntimeException("Failed to create native extraction directory: " + destDir);
+            }
+            
+            File targetFile = new File(destDir, libName);
             
             // Copy contents
-            Files.copy(is, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(is, targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             
             // Load the unpacked library
-            System.load(tempFile.getAbsolutePath());
-            return true;
+            System.load(targetFile.getAbsolutePath());
+            return destDir.getAbsolutePath();
         } catch (Exception e) {
             System.err.println("Warning: Failed to extract and load " + libName + " from classpath resources: " + e.getMessage());
-            return false;
+            return null;
         }
     }
 
@@ -100,7 +121,7 @@ public final class ArgusBindings {
 
     // Lifecycle
     public static final MethodHandle argus_backend_init = bind("argus_backend_init",
-        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 
     public static final MethodHandle argus_backend_free = bind("argus_backend_free",
@@ -219,6 +240,12 @@ public final class ArgusBindings {
     public static final MethodHandle argus_sample_token = bind("argus_sample_token",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, 
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT)
+    );
+
+    public static final MethodHandle argus_sample_token_with_bias = bind("argus_sample_token_with_bias",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",

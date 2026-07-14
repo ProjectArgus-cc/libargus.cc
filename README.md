@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
-> **v0.2.2 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> **v0.2.3 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
 > `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
 >
@@ -245,6 +245,32 @@ String modelName = model.getMetadataValue("general.name"); // e.g. "Qwen2 VL 2B 
 // Traverse and inspect the complete metadata dictionary
 java.util.Map<String, String> metadata = model.getMetadataMap();
 metadata.forEach((key, val) -> System.out.println(key + " -> " + val));
+```
+
+### Model-Agnostic Logit Bias Sampling
+
+Enforce strict zero-allocation logit steering (e.g. banning reasoning tokens or boosting specific completions) by allocating bias segments once at the start of a generation session and reusing them across hot-path sampling steps:
+
+```java
+try (Arena sessionArena = Arena.ofConfined()) {
+    // Define biased tokens and their steering weights (e.g. -Float.MAX_VALUE to ban)
+    int[] steerTokens = new int[] { 151644, 151645 }; // <__think__> tags
+    float[] steerValues = new float[] { -Float.MAX_VALUE, -Float.MAX_VALUE };
+
+    // Allocate unmanaged segments ONCE outside the hot generation loop
+    MemorySegment tokensSeg = sessionArena.allocateFrom(ValueLayout.JAVA_INT, steerTokens);
+    MemorySegment valuesSeg = sessionArena.allocateFrom(ValueLayout.JAVA_FLOAT, steerValues);
+
+    while (generating) {
+        context.decodeBatch(batch);
+        
+        // Zero-copy, zero-allocation token generation downcall passing raw pointers
+        int token = context.sampleTokenWithBias(
+            seqId, temperature, repeatPenalty, tokensSeg, valuesSeg, steerTokens.length
+        );
+        if (token == model.vocabEos()) break;
+    }
+}
 ```
 
 ---

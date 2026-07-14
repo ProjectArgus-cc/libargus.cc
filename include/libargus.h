@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 0.2.2
+ * @version 0.2.3
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -120,7 +120,7 @@ typedef struct argus_multimodal_params {
  * Must be executed exactly once per runtime lifespan prior to model instantiations.
  * @return true if compute nodes are successfully prepared, false otherwise.
  */
-bool argus_backend_init(void);
+bool argus_backend_init(const char * custom_plugin_path);
 
 /**
  * @brief Deallocates global hardware device links and cleans process space.
@@ -350,6 +350,28 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
  * @return The resolved token ID primitive.
  */
 int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty);
+
+/**
+ * @brief Samples a single token applying specified logit bias weightings.
+ * This is a synchronized mutating context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence track track being sampled.
+ * @param temperature Mathematical extraction entropy control value.
+ * @param repeat_penalty Token frequency suppression multiplier factor.
+ * @param bias_tokens Destination off-heap segment containing 32-bit integer token IDs.
+ * @param bias_values Destination off-heap segment containing 32-bit float bias values.
+ * @param bias_count Total count of biased tokens in segments.
+ * @return The resolved token ID primitive.
+ */
+int32_t argus_sample_token_with_bias(
+    argus_context_t * ctx, 
+    int32_t           seq_id, 
+    float             temperature, 
+    float             repeat_penalty, 
+    const int32_t   * bias_tokens, 
+    const float     * bias_values, 
+    int32_t           bias_count
+);
 
 /**
  * @brief Prunes targeted token chains out of the active unmanaged L1 VRAM sequence cache.

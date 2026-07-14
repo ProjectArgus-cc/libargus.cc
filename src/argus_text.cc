@@ -416,6 +416,56 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
     return token;
 }
 
+int32_t argus_sample_token_with_bias(
+    argus_context_t * ctx, 
+    int32_t           seq_id, 
+    float             temperature, 
+    float             repeat_penalty, 
+    const int32_t   * bias_tokens, 
+    const float     * bias_values, 
+    int32_t           bias_count
+) {
+    if (!ctx) {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    struct llama_sampler * sampler = llama_sampler_chain_init(sparams);
+
+    // Apply repetition penalty mitigation parameters
+    if (repeat_penalty > 1.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, repeat_penalty, 0.0f, 0.0f));
+    }
+
+    // Apply logit bias sampler if biases are provided
+    if (bias_tokens && bias_values && bias_count > 0 && ctx->model_ref && ctx->model_ref->vocab) {
+        std::vector<llama_logit_bias> logit_biases;
+        logit_biases.reserve(bias_count);
+        for (int32_t i = 0; i < bias_count; ++i) {
+            logit_biases.push_back({ (llama_token)bias_tokens[i], bias_values[i] });
+        }
+        int32_t n_vocab = llama_vocab_n_tokens(ctx->model_ref->vocab);
+        llama_sampler_chain_add(sampler, llama_sampler_init_logit_bias(n_vocab, (int32_t)logit_biases.size(), logit_biases.data()));
+    }
+
+    // Intercept and inject temperature parameters if above absolute floor boundaries
+    if (temperature > 0.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
+    }
+
+    // Default fallback to greedy calculation pass
+    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+
+    // Pull from index -1 targeting the last populated logits matrix
+    int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
+    (void)seq_id; // Parameter retained for forward compatibility transitions
+
+    llama_sampler_free(sampler);
+    return token;
+}
+
 void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
     if (!ctx) {
         return;

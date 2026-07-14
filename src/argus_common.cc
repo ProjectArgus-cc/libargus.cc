@@ -21,7 +21,7 @@ static int32_t    g_active_context_count = 0;
 
 extern "C" {
 
-bool argus_backend_init(void) {
+bool argus_backend_init(const char * custom_plugin_path) {
     std::lock_guard<std::mutex> lock(g_backend_mutex);
 
     if (g_backend_initialized) {
@@ -32,7 +32,11 @@ bool argus_backend_init(void) {
     // Initialize the process-wide physical and virtual device backends
 #if defined(GGML_USE_CUDA) || defined(GGML_USE_METAL)
     // Dynamic loading pass for compiled runtime variants
-    ggml_backend_load_all();
+    if (custom_plugin_path && custom_plugin_path[0] != '\0') {
+        ggml_backend_load_all_from_path(custom_plugin_path);
+    } else {
+        ggml_backend_load_all();
+    }
 #endif
 
     // Bootstrap primary transformer execution runtime properties

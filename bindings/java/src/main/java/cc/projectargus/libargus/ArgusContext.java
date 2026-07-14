@@ -260,6 +260,31 @@ public final class ArgusContext implements AutoCloseable {
     }
 
     /**
+     * Samples the next token ID from the last computed logits matrix, applying logit steering biases.
+     * Enforces strict zero-allocation boundaries via pre-allocated unmanaged memory segments.
+     *
+     * @param seqId              sequence ID
+     * @param temperature        sampling temperature
+     * @param repeatPenalty      repetition penalty
+     * @param biasTokensSegment  off-heap segment containing 32-bit integer token IDs
+     * @param biasValuesSegment  off-heap segment containing 32-bit float bias values
+     * @param biasCount          total count of biased tokens in segments
+     * @return the sampled token ID
+     */
+    public int sampleTokenWithBias(int seqId, float temperature, float repeatPenalty,
+                                   MemorySegment biasTokensSegment, MemorySegment biasValuesSegment, int biasCount) {
+        Objects.requireNonNull(biasTokensSegment);
+        Objects.requireNonNull(biasValuesSegment);
+        try {
+            return (int) ArgusBindings.argus_sample_token_with_bias.invokeExact(
+                ctxPtr, seqId, temperature, repeatPenalty, biasTokensSegment, biasValuesSegment, biasCount
+            );
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to sample token with bias", t);
+        }
+    }
+
+    /**
      * Removes/prunes a segment from the KV cache sequence tracking lists.
      * Mutex-locked inside the native layer.
      *
