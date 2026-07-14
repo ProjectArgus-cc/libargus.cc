@@ -259,6 +259,72 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Returns the model's embedding dimension.
+     */
+    public int nEmbd() {
+        try {
+            return (int) ArgusBindings.argus_model_n_embd.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve embedding dimension", t);
+        }
+    }
+
+    /**
+     * Returns the model's training context length limit.
+     */
+    public int nCtxTrain() {
+        try {
+            return (int) ArgusBindings.argus_model_n_ctx_train.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve training context limit", t);
+        }
+    }
+
+    /**
+     * Returns the model's transformer layer count.
+     */
+    public int nLayer() {
+        try {
+            return (int) ArgusBindings.argus_model_n_layer.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve layer count", t);
+        }
+    }
+
+    /**
+     * Returns the model's attention query head count.
+     */
+    public int nHead() {
+        try {
+            return (int) ArgusBindings.argus_model_n_head.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve query head count", t);
+        }
+    }
+
+    /**
+     * Returns the model's attention key-value head count.
+     */
+    public int nHeadKv() {
+        try {
+            return (int) ArgusBindings.argus_model_n_head_kv.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve key-value head count", t);
+        }
+    }
+
+    /**
+     * Returns the model's total parameter count.
+     */
+    public long nParams() {
+        try {
+            return (long) ArgusBindings.argus_model_n_params.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to retrieve parameter count", t);
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged model structure.
      */
     public MemorySegment getHandle() {

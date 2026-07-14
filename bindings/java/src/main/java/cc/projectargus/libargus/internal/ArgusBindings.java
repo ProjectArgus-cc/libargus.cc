@@ -187,6 +187,30 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
+    public static final MethodHandle argus_model_n_embd = bind("argus_model_n_embd",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_ctx_train = bind("argus_model_n_ctx_train",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_layer = bind("argus_model_n_layer",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_head = bind("argus_model_n_head",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_head_kv = bind("argus_model_n_head_kv",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_params = bind("argus_model_n_params",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+    );
+
     // Evaluation & Pruning
     public static final MethodHandle argus_decode_batch = bind("argus_decode_batch",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

@@ -96,6 +96,15 @@ int main() {
     assert(argus_model_meta_count(nullptr) == -1);
     assert(argus_model_meta_key_by_index(nullptr, 0, dummy_meta_buf, 10) == -1);
     assert(argus_model_meta_val_str_by_index(nullptr, 0, dummy_meta_buf, 10) == -1);
+
+    // Test new Model Shape queries null safety checks
+    assert(argus_model_n_embd(nullptr) == -1);
+    assert(argus_model_n_ctx_train(nullptr) == -1);
+    assert(argus_model_n_layer(nullptr) == -1);
+    assert(argus_model_n_head(nullptr) == -1);
+    assert(argus_model_n_head_kv(nullptr) == -1);
+    assert(argus_model_n_params(nullptr) == 0);
+
     std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
 
     // 7. Free the global backends

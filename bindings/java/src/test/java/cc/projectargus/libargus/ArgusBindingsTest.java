@@ -198,6 +198,13 @@ public class ArgusBindingsTest {
             assertEquals(-1, dummyModel.vocabNTokens());
             assertFalse(dummyModel.vocabIsEog(0));
             
+            assertEquals(-1, dummyModel.nEmbd());
+            assertEquals(-1, dummyModel.nCtxTrain());
+            assertEquals(-1, dummyModel.nLayer());
+            assertEquals(-1, dummyModel.nHead());
+            assertEquals(-1, dummyModel.nHeadKv());
+            assertEquals(0L, dummyModel.nParams());
+            
             assertNull(dummyModel.getMetadataValue("some_key"));
             assertTrue(dummyModel.getMetadataMap().isEmpty());
             

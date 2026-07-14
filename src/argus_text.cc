@@ -311,6 +311,30 @@ int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t i
     return llama_model_meta_val_str_by_index(model->model, index, buf, (size_t)buf_size);
 }
 
+int32_t argus_model_n_embd(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_embd(model->model) : -1;
+}
+
+int32_t argus_model_n_ctx_train(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_ctx_train(model->model) : -1;
+}
+
+int32_t argus_model_n_layer(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_layer(model->model) : -1;
+}
+
+int32_t argus_model_n_head(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_head(model->model) : -1;
+}
+
+int32_t argus_model_n_head_kv(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_head_kv(model->model) : -1;
+}
+
+uint64_t argus_model_n_params(const argus_model_t * model) {
+    return model && model->model ? llama_model_n_params(model->model) : 0;
+}
+
 // =========================================================================
 // Synchronized Context Operations
 // =========================================================================

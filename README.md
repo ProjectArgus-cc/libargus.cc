@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
-> **v0.2.1 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> **v0.2.2 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
 > `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
 >
@@ -230,6 +230,13 @@ int eos = model.vocabEos();
 int eot = model.vocabEot(); // End-Of-Turn token for chat models
 int nTokens = model.vocabNTokens(); // Vocabulary capacity
 boolean isEog = model.vocabIsEog(sampledToken); // Native End-Of-Generation verification
+
+// Query model architecture dimensions & parameters
+int nEmbd = model.nEmbd(); // Embedding dimension size (e.g. 1024)
+int nCtxTrain = model.nCtxTrain(); // Context length training ceiling
+int nLayer = model.nLayer(); // Transformer layers count
+int nHead = model.nHead(); // Attention head count
+long nParams = model.nParams(); // Total model parameters count
 
 // Retrieve metadata strings by key name
 String modelArch = model.getMetadataValue("general.architecture"); // e.g. "qwen2vl"

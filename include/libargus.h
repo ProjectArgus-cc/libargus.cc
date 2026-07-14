@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 0.2.1
+ * @version 0.2.2
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -277,6 +277,48 @@ int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index
  * @return String character length written, or negative on failure.
  */
 int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
+
+/**
+ * @brief Retrieves the model's embedding dimension.
+ * @param model Reference model weights handler.
+ * @return The embedding dimension length, or -1 on failure/not defined.
+ */
+int32_t argus_model_n_embd(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's training context length limit.
+ * @param model Reference model weights handler.
+ * @return The training context size ceiling, or -1 on failure/not defined.
+ */
+int32_t argus_model_n_ctx_train(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's transformer layer count.
+ * @param model Reference model weights handler.
+ * @return The transformer layer count, or -1 on failure/not defined.
+ */
+int32_t argus_model_n_layer(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's attention query head count.
+ * @param model Reference model weights handler.
+ * @return The attention query head count, or -1 on failure/not defined.
+ */
+int32_t argus_model_n_head(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's attention key-value head count.
+ * @param model Reference model weights handler.
+ * @return The attention key-value head count, or -1 on failure/not defined.
+ */
+int32_t argus_model_n_head_kv(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's total parameter count.
+ * @param model Reference model weights handler.
+ * @return The total parameter count, or 0 on failure.
+ */
+uint64_t argus_model_n_params(const argus_model_t * model);
 
 /**
  * @brief Evaluates an unmanaged batch payload through the model's compute graph.
