@@ -1,12 +1,12 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!IMPORTANT]
-> **v0.1.0 Alpha — Architectural Proof-of-Concept & ABI Freeze**
+> **v0.2.0 Alpha — Architectural Proof-of-Concept & ABI Freeze**
 >
 > `libargus` is public to solicit adversarial peer review on its low-level systems architecture, unmanaged compute graph consolidation, and Project Panama Foreign Function & Memory (FFM) boundary alignment.
 >
 > **Current Architecture & Active Refactoring Targets:**
-> * **Panama FFM ABI Stability:** The unmanaged C ABI, manually packed structure padding (`reserved_padding[3]`), and pointer-only downcall boundaries are frozen and stable for JDK 22/25 integration.
+> * **Panama FFM ABI Stability:** The unmanaged C ABI, manually packed structure padding (`reserved_padding[2]`), and pointer-only downcall boundaries are frozen and stable for JDK 22/25 integration.
 > * **TTS Vocoder Execution:** The speech synthesis pipeline currently initializes ephemeral vocoder contexts per execution; migration to persistent session state to eliminate thread pool churn and achieve true zero-allocation execution is under active development.
 > * **ASR Buffer Assembly:** The Whisper acoustic transcription buffer is undergoing optimization from linear accumulation to zero-copy linear pointer tracking with strict UTF-8 continuation byte boundary enforcement.
 > * **SIMD Compilation Target:** The CMake build matrix currently defaults to host-native SIMD instruction generation (`-march=native`).
@@ -54,6 +54,7 @@ libargus/
     │   ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
     │   ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer
     │   ├── ArgusVideo.java            # Frame iterator for video files or buffer pipes
+    │   ├── ArgusVideoItem.java        # Reusable frame/timestamp container for video processing
     │   ├── ArgusInputChunks.java      # Tokenized multimodal prompt chunks container
     │   └── internal/
     │       ├── ArgusLayouts.java      # Panama C-to-Java struct layout definitions
@@ -98,13 +99,16 @@ public class Main {
         try (Arena arena = Arena.ofConfined();
              ArgusModel model = ArgusModel.load(arena, Path.of("models/llama-3-8b.gguf"), 99, true)) {
              
-             // Initialize context configurations
-             ArgusContextConfig config = new ArgusContextConfig.Builder()
-                 .contextLength(4096)
-                 .cpuThreads(8)
-                 .typeK(ArgusBackend.KV_TYPE_Q4_0) // Quantize KV Cache
-                 .typeV(ArgusBackend.KV_TYPE_Q4_0)
-                 .build();
+             // Initialize context configurations (backwards-compatible constructor)
+             ArgusContextConfig config = new ArgusContextConfig(
+                 null, // draft model
+                 4096, // context length
+                 8,    // CPU threads
+                 ArgusContextConfig.KV_TYPE_Q4_0, // KV Type K
+                 ArgusContextConfig.KV_TYPE_Q4_0, // KV Type V
+                 0,    // specDraftNMax
+                 false // enableDraftMtp
+             );
                  
              try (ArgusContext context = ArgusContext.init(arena, model, config)) {
                  // Run text evaluation & generation loop...
@@ -130,10 +134,10 @@ public class MultimodalApp {
         ArgusBackend.init();
 
         try (Arena arena = Arena.ofConfined();
-             ArgusModel baseModel = ArgusModel.load(arena, Path.of("models/qwen2-vl-7b-it.gguf"), 99, true);
-             ArgusContext context = ArgusContext.init(arena, baseModel, new ArgusContextConfig.Builder().build());
-             // Load the multimodal adapter context
-             ArgusMultimodalContext mctx = ArgusMultimodalContext.init(arena, baseModel, Path.of("models/qwen2-vl-7b-it.mmproj"), 4, true)) {
+              ArgusModel baseModel = ArgusModel.load(arena, Path.of("models/qwen2-vl-7b-it.gguf"), 99, true);
+              ArgusContext context = ArgusContext.init(arena, baseModel, ArgusContextConfig.createDefault(8192));
+              // Load the multimodal adapter context
+              ArgusMultimodalContext mctx = ArgusMultimodalContext.init(arena, baseModel, Path.of("models/qwen2-vl-7b-it.mmproj"), 4, true)) {
 
             // 1. Load an image or audio file into unmanaged memory
             try (ArgusBitmap image = ArgusBitmap.loadFile(arena, mctx, Path.of("media/cat.png"), false)) {
@@ -157,17 +161,59 @@ public class MultimodalApp {
 ### Frame-by-Frame Video Stream Processing
 ```java
 // Iterate and read frames/timestamps from a video file sequentially
-try (ArgusVideo video = ArgusVideo.loadFile(arena, mctx, Path.of("media/video.mp4"), 4.0f, 5000)) {
-    ArgusVideo.VideoItem item;
-    while ((item = video.readNext()) != null) {
+try (ArgusVideo video = ArgusVideo.loadFile(arena, mctx, Path.of("media/video.mp4"), 4.0f, 5000);
+     ArgusVideoItem item = new ArgusVideoItem()) {
+    while (video.readNext(item)) {
         if (item.bitmap() != null) {
-            // Process the extracted RGB frame bitmap
-            try (ArgusBitmap frame = item.bitmap()) {
-                // Tokenize and evaluate frame...
-            }
+            // Process the extracted RGB frame bitmap (ownership is managed by ArgusVideoItem)
+            ArgusBitmap frame = item.bitmap();
+            // ...
         } else if (item.text() != null) {
             // Received a video timestamp chunk (e.g. "[00m05s]")
             System.out.println("At timestamp: " + item.text());
+        }
+    }
+}
+```
+
+### Extracting Semantic Text Embeddings
+Retrieve float embedding vectors from dedicated models (e.g., `jina-embeddings-v3`):
+```java
+import cc.projectargus.libargus.*;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.nio.file.Path;
+
+public class EmbeddingsApp {
+    public static void main(String[] args) {
+        ArgusBackend.init();
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, Path.of("models/jina-embeddings-v3-Q4_K_M.gguf"), 99, true)) {
+
+            // Initialize context configuration with embeddings enabled
+            ArgusContextConfig config = new ArgusContextConfig(null, 512, 4, 0, 0, 0, false, true);
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                // Tokenize and evaluate prompt
+                String text = "text-matching: Retrieve semantic vector for this sentence.";
+                MemorySegment textSeg = arena.allocateFrom(text);
+                
+                MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, 512);
+                int nTokens = context.tokenize(textSeg, tokenBuf, true);
+                
+                context.decodeBatch(tokenBuf, nTokens, 0, 0, false);
+
+                // Retrieve embedding vector (e.g., 1024 dimensions)
+                int expectedDim = 1024;
+                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, expectedDim);
+                int nFloats = context.getEmbeddings(0, embeddingsBuf, expectedDim);
+                
+                System.out.println("Retrieved embeddings containing " + nFloats + " floats.");
+            }
+        } finally {
+            ArgusBackend.free();
         }
     }
 }
