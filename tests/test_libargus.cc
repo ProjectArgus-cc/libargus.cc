@@ -112,7 +112,7 @@ int main() {
     assert(argus_model_n_params(nullptr) == 0);
 
     // Test new logit bias sampling null checks
-    assert(argus_sample_token_with_bias(nullptr, 0, 0.0f, 0.0f, nullptr, nullptr, 0) == -1);
+    assert(argus_sample_token_with_bias(nullptr, 0, 0.0f, 0.0f, nullptr, 0) == -1);
 
     std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
 

@@ -225,10 +225,9 @@ public class ArgusBindingsTest {
         System.out.println("[Java Test] Validating sampleTokenWithBias null/error pathways...");
         ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment dummyTokens = arena.allocate(12);
-            MemorySegment dummyValues = arena.allocate(12);
+            MemorySegment dummyBiases = arena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS, 3);
             int token = (int) ArgusBindings.argus_sample_token_with_bias.invokeExact(
-                MemorySegment.NULL, 0, 0.0f, 0.0f, dummyTokens, dummyValues, 3
+                MemorySegment.NULL, 0, 0.0f, 0.0f, dummyBiases, 3
             );
             assertEquals(-1, token);
         } catch (Throwable t) {

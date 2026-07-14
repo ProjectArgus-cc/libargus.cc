@@ -286,7 +286,7 @@ public final class ArgusBindings {
     public static final MethodHandle argus_sample_token_with_bias = bind("argus_sample_token_with_bias",
         FunctionDescriptor.of(ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
-            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",

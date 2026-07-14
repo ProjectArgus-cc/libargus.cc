@@ -417,13 +417,12 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
 }
 
 int32_t argus_sample_token_with_bias(
-    argus_context_t * ctx, 
-    int32_t           seq_id, 
-    float             temperature, 
-    float             repeat_penalty, 
-    const int32_t   * bias_tokens, 
-    const float     * bias_values, 
-    int32_t           bias_count
+    argus_context_t          * ctx, 
+    int32_t                    seq_id, 
+    float                      temperature, 
+    float                      repeat_penalty, 
+    const argus_logit_bias_t * biases, 
+    int32_t                    bias_count
 ) {
     if (!ctx) {
         return -1;
@@ -439,15 +438,10 @@ int32_t argus_sample_token_with_bias(
         llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, repeat_penalty, 0.0f, 0.0f));
     }
 
-    // Apply logit bias sampler if biases are provided
-    if (bias_tokens && bias_values && bias_count > 0 && ctx->model_ref && ctx->model_ref->vocab) {
-        std::vector<llama_logit_bias> logit_biases;
-        logit_biases.reserve(bias_count);
-        for (int32_t i = 0; i < bias_count; ++i) {
-            logit_biases.push_back({ (llama_token)bias_tokens[i], bias_values[i] });
-        }
+    // Apply logit bias sampler if biases are provided (zero-copy direct pass)
+    if (biases && bias_count > 0 && ctx->model_ref && ctx->model_ref->vocab) {
         int32_t n_vocab = llama_vocab_n_tokens(ctx->model_ref->vocab);
-        llama_sampler_chain_add(sampler, llama_sampler_init_logit_bias(n_vocab, (int32_t)logit_biases.size(), logit_biases.data()));
+        llama_sampler_chain_add(sampler, llama_sampler_init_logit_bias(n_vocab, bias_count, (const llama_logit_bias *)biases));
     }
 
     // Intercept and inject temperature parameters if above absolute floor boundaries

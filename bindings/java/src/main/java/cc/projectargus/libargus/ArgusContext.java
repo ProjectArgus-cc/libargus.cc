@@ -261,23 +261,21 @@ public final class ArgusContext implements AutoCloseable {
 
     /**
      * Samples the next token ID from the last computed logits matrix, applying logit steering biases.
-     * Enforces strict zero-allocation boundaries via pre-allocated unmanaged memory segments.
+     * Enforces strict zero-allocation boundaries via a pre-allocated unmanaged struct segment.
      *
      * @param seqId              sequence ID
      * @param temperature        sampling temperature
      * @param repeatPenalty      repetition penalty
-     * @param biasTokensSegment  off-heap segment containing 32-bit integer token IDs
-     * @param biasValuesSegment  off-heap segment containing 32-bit float bias values
-     * @param biasCount          total count of biased tokens in segments
+     * @param biasSegment        off-heap contiguous segment of argus_logit_bias_t structs (see ArgusLayouts.LOGIT_BIAS)
+     * @param biasCount          total count of biased tokens in the segment
      * @return the sampled token ID
      */
     public int sampleTokenWithBias(int seqId, float temperature, float repeatPenalty,
-                                   MemorySegment biasTokensSegment, MemorySegment biasValuesSegment, int biasCount) {
-        Objects.requireNonNull(biasTokensSegment);
-        Objects.requireNonNull(biasValuesSegment);
+                                   MemorySegment biasSegment, int biasCount) {
+        Objects.requireNonNull(biasSegment);
         try {
             return (int) ArgusBindings.argus_sample_token_with_bias.invokeExact(
-                ctxPtr, seqId, temperature, repeatPenalty, biasTokensSegment, biasValuesSegment, biasCount
+                ctxPtr, seqId, temperature, repeatPenalty, biasSegment, biasCount
             );
         } catch (Throwable t) {
             throw new RuntimeException("Failed to sample token with bias", t);

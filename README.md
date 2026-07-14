@@ -257,16 +257,19 @@ try (Arena sessionArena = Arena.ofConfined()) {
     int[] steerTokens = new int[] { 151644, 151645 }; // <__think__> tags
     float[] steerValues = new float[] { -Float.MAX_VALUE, -Float.MAX_VALUE };
 
-    // Allocate unmanaged segments ONCE outside the hot generation loop
-    MemorySegment tokensSeg = sessionArena.allocateFrom(ValueLayout.JAVA_INT, steerTokens);
-    MemorySegment valuesSeg = sessionArena.allocateFrom(ValueLayout.JAVA_FLOAT, steerValues);
+    // Allocate unmanaged struct segment ONCE outside the hot generation loop
+    MemorySegment biasSeg = sessionArena.allocate(ArgusLayouts.LOGIT_BIAS, steerTokens.length);
+    for (int i = 0; i < steerTokens.length; i++) {
+        biasSeg.setAtIndex(ValueLayout.JAVA_INT, i * 2, steerTokens[i]);
+        biasSeg.setAtIndex(ValueLayout.JAVA_FLOAT, i * 2 + 1, steerValues[i]);
+    }
 
     while (generating) {
         context.decodeBatch(batch);
         
-        // Zero-copy, zero-allocation token generation downcall passing raw pointers
+        // Zero-copy, zero-allocation token generation downcall passing raw pointer
         int token = context.sampleTokenWithBias(
-            seqId, temperature, repeatPenalty, tokensSeg, valuesSeg, steerTokens.length
+            seqId, temperature, repeatPenalty, biasSeg, steerTokens.length
         );
         if (token == model.vocabEos()) break;
     }

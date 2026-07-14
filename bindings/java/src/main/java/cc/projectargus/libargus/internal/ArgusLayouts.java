@@ -111,4 +111,18 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_BOOLEAN.withName("use_gpu"),
         MemoryLayout.paddingLayout(3)
     ).withName("argus_multimodal_params");
+
+    /**
+     * Memory layout for argus_logit_bias_t
+     * <pre>
+     * typedef struct argus_logit_bias {
+     *     int32_t token;                        // 4 bytes
+     *     float   bias;                         // 4 bytes
+     * } argus_logit_bias_t;
+     * </pre>
+     */
+    public static final StructLayout LOGIT_BIAS = MemoryLayout.structLayout(
+        ValueLayout.JAVA_INT.withName("token"),
+        ValueLayout.JAVA_FLOAT.withName("bias")
+    ).withName("argus_logit_bias");
 }

@@ -111,6 +111,14 @@ typedef struct argus_multimodal_params {
     uint8_t      reserved_padding[3];     /**< Align struct layout boundary (3 bytes) */
 } argus_multimodal_params_t;
 
+/**
+ * @brief Representation of a single token logit steering bias.
+ */
+typedef struct argus_logit_bias {
+    int32_t token;                        /**< Target vocabulary token ID (4 bytes) */
+    float   bias;                         /**< Logit adjustment bias weight multiplier (4 bytes) */
+} argus_logit_bias_t;
+
 // =========================================================================
 // 1. Process-Global Subsystem Lifecycle Control
 // =========================================================================
@@ -364,19 +372,17 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
  * @param seq_id Target sequence track track being sampled.
  * @param temperature Mathematical extraction entropy control value.
  * @param repeat_penalty Token frequency suppression multiplier factor.
- * @param bias_tokens Destination off-heap segment containing 32-bit integer token IDs.
- * @param bias_values Destination off-heap segment containing 32-bit float bias values.
- * @param bias_count Total count of biased tokens in segments.
+ * @param biases Contiguous unmanaged array containing target tokens and bias values.
+ * @param bias_count Total count of biased tokens in the array.
  * @return The resolved token ID primitive.
  */
 int32_t argus_sample_token_with_bias(
-    argus_context_t * ctx, 
-    int32_t           seq_id, 
-    float             temperature, 
-    float             repeat_penalty, 
-    const int32_t   * bias_tokens, 
-    const float     * bias_values, 
-    int32_t           bias_count
+    argus_context_t          * ctx, 
+    int32_t                    seq_id, 
+    float                      temperature, 
+    float                      repeat_penalty, 
+    const argus_logit_bias_t * biases, 
+    int32_t                    bias_count
 );
 
 /**
