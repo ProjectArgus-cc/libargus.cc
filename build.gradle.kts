@@ -17,6 +17,7 @@ tasks.register<Exec>("configureCMake") {
     description = "Configures the CMake build directory"
     
     inputs.file("CMakeLists.txt")
+    inputs.file("version.txt")
     outputs.file("build/CMakeCache.txt")
     
     commandLine(
@@ -35,6 +36,7 @@ tasks.register<Exec>("compileCMake") {
     inputs.dir("src")
     inputs.dir("include")
     inputs.file("CMakeLists.txt")
+    inputs.file("version.txt")
     outputs.file("build/$libName")
     
     val nproc = try {
