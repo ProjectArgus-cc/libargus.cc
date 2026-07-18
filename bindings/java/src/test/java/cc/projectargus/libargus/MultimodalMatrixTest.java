@@ -335,6 +335,71 @@ public class MultimodalMatrixTest {
         }
     }
 
+    @Test
+    public void testAutoChunkingPrefill() {
+        System.out.println("[MultimodalMatrixTest] Verifying auto-chunking of large prefill...");
+        Assumptions.assumeTrue(Files.exists(VLM_BASE), "Skipping: VLM Base model missing");
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, VLM_BASE, 99, true)) {
+            
+            // n_batch will be configured to 128 (matching contextLength of 128)
+            ArgusContextConfig config = new ArgusContextConfig.Builder(128)
+                .cpuThreads(4)
+                .build();
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                // Allocate a prompt batch larger than n_batch (e.g., 200 tokens)
+                int nTokens = 200;
+                MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, nTokens);
+                for (int i = 0; i < nTokens; i++) {
+                    tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, 1); // Fill with token ID 1
+                }
+
+                // Evaluate prompt batch. This would crash or error out under old logic since 200 > 128
+                int res = context.decodeBatch(tokensSeg, nTokens, 0, 0, false);
+                assertEquals(0, res, "Decode batch failed with code: " + res);
+                System.out.println("  - Auto-chunking test completed. Evaluated " + nTokens + " tokens successfully (n_batch = 128).");
+            }
+        } catch (Exception e) {
+            fail("Auto-chunking test failed with exception", e);
+        }
+    }
+
+    @Test
+    public void testPrefillCancellation() {
+        System.out.println("[MultimodalMatrixTest] Verifying early prefill cancellation...");
+        Assumptions.assumeTrue(Files.exists(VLM_BASE), "Skipping: VLM Base model missing");
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, VLM_BASE, 99, true)) {
+            
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .cpuThreads(4)
+                .build();
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config);
+                 ArgusAbortFlag abortFlag = new ArgusAbortFlag()) {
+                int nTokens = 50;
+                MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, nTokens);
+                for (int i = 0; i < nTokens; i++) {
+                    tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, 1);
+                }
+
+                // Signal abort prior to execution
+                abortFlag.abort();
+                assertTrue(abortFlag.isAborted());
+
+                // Evaluate prompt batch with abortFlag set. Should abort immediately and return -2
+                int res = context.decodeBatch(tokensSeg, nTokens, 0, 0, false, abortFlag);
+                assertEquals(-2, res, "Expected status -2 (Aborted) but got: " + res);
+                System.out.println("  - Early cancellation test completed. Aborted successfully with code: " + res);
+            }
+        } catch (Exception e) {
+            fail("Cancellation test failed with exception", e);
+        }
+    }
+
     private static boolean isCommandAvailable(String cmd) {
         try {
             Process process = new ProcessBuilder(cmd, "-version").start();

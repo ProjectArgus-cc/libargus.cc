@@ -82,6 +82,7 @@ public final class ArgusLayouts {
      *     int32_t         seq_id;               // 4 bytes
      *     bool            request_logits;       // 1 byte
      *     uint8_t         reserved_padding[3];  // 3 bytes padding
+     *     const int32_t * abort_flag;           // 8 bytes pointer
      * } argus_token_batch_t;
      * </pre>
      */
@@ -91,7 +92,8 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("start_pos"),
         ValueLayout.JAVA_INT.withName("seq_id"),
         ValueLayout.JAVA_BOOLEAN.withName("request_logits"),
-        MemoryLayout.paddingLayout(3)
+        MemoryLayout.paddingLayout(3),
+        ValueLayout.ADDRESS.withName("abort_flag")
     ).withName("argus_token_batch");
 
     /**

@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!NOTE]
-> **v1.0.0 Stable — Unified Hardware Orchestration & Zero-Allocation ABI**
+> **v1.1.0 Stable — Unified Hardware Orchestration & Zero-Allocation ABI**
 >
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -238,6 +238,26 @@ String modelName = model.getMetadataValue("general.name"); // e.g. "Qwen2 VL 2B 
 // Traverse and inspect the complete metadata dictionary
 java.util.Map<String, String> metadata = model.getMetadataMap();
 metadata.forEach((key, val) -> System.out.println(key + " -> " + val));
+```
+
+### Cancelable Native Prefill Batching
+
+Execute long sequence prefilling with automatic native auto-chunking (preventing context batch overflows) and clean, cross-thread Java cancellation:
+
+```java
+try (ArgusContext context = ArgusContext.init(arena, model, config);
+     ArgusAbortFlag abortFlag = new ArgusAbortFlag()) {
+
+    // 1. Submit a large tokenized prompt. If it exceeds n_batch, libargus chunks it natively.
+    // Pass the abortFlag directly to allow safe cancellation from other threads.
+    int res = context.decodeBatch(tokensSeg, nTokens, 0, 0, true, abortFlag);
+    if (res == -2) {
+        System.out.println("Prefill decoding was cancelled early!");
+    }
+
+    // 2. In your UI or coroutine cancel handler thread, simply call:
+    // abortFlag.abort();
+}
 ```
 
 ### Model-Agnostic Logit Bias Sampling

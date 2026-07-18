@@ -175,7 +175,39 @@ public final class ArgusContext implements AutoCloseable {
      * @return 0 on success, non-zero on failure
      */
     public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits) {
+        return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, MemorySegment.NULL);
+    }
+
+    /**
+     * Synchronously decodes a batch of tokens in the context with optional early cancellation.
+     * Mutex-locked inside the native layer to prevent concurrency issues.
+     *
+     * @param tokens        tokens to evaluate
+     * @param startPos      KV cache offset position
+     * @param seqId         sequence tracking ID
+     * @param requestLogits true to evaluate logits on the final token of the batch
+     * @param abortFlag     optional safe cancellation flag object
+     * @return 0 on success, -2 if aborted, non-zero on failure
+     */
+    public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits, ArgusAbortFlag abortFlag) {
+        MemorySegment abortFlagSeg = (abortFlag != null) ? abortFlag.getHandle() : MemorySegment.NULL;
+        return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, abortFlagSeg);
+    }
+
+    /**
+     * Synchronously decodes a batch of tokens in the context with optional early cancellation.
+     * Mutex-locked inside the native layer to prevent concurrency issues.
+     *
+     * @param tokens        tokens to evaluate
+     * @param startPos      KV cache offset position
+     * @param seqId         sequence tracking ID
+     * @param requestLogits true to evaluate logits on the final token of the batch
+     * @param abortFlagSeg  optional memory segment (pointer targeting 4-byte int) for cancellation
+     * @return 0 on success, -2 if aborted, non-zero on failure
+     */
+    public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits, MemorySegment abortFlagSeg) {
         Objects.requireNonNull(tokensSeg);
+        Objects.requireNonNull(abortFlagSeg);
         if (nTokens == 0) {
             return 0;
         }
@@ -200,6 +232,10 @@ public final class ArgusContext implements AutoCloseable {
             batchSeg.set(ValueLayout.JAVA_BOOLEAN, 
                 ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("request_logits")), 
                 requestLogits
+            );
+            batchSeg.set(ValueLayout.ADDRESS, 
+                ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("abort_flag")), 
+                abortFlagSeg
             );
 
             return (int) ArgusBindings.argus_decode_batch.invokeExact(ctxPtr, batchSeg);

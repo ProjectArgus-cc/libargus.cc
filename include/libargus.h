@@ -99,6 +99,7 @@ typedef struct argus_token_batch {
     int32_t         seq_id;               /**< Target sequence slot tracking ID (4 bytes) */
     bool            request_logits;       /**< Evaluate output logits on terminal slot (1 byte) */
     uint8_t         reserved_padding[3];  /**< Alignment padding securing 4-byte boundaries (3 bytes) */
+    const int32_t * abort_flag;           /**< Optional pointer targeting a cancellation flag (8 bytes) */
 } argus_token_batch_t;
 
 /**

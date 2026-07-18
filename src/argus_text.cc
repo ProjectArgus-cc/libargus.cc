@@ -344,6 +344,53 @@ uint64_t argus_model_n_params(const argus_model_t * model) {
 // Synchronized Context Operations
 // =========================================================================
 
+// Evaluates a sequence of tokens in chunks conforming to the model's native n_batch limit.
+// Precondition: Caller must hold the context level synchronization mutex (ctx->mtx).
+static int32_t decode_tokens_chunked(
+    struct llama_context * lctx,
+    const int32_t        * tokens,
+    int32_t                n_tokens,
+    int32_t                start_pos,
+    int32_t                seq_id,
+    bool                   request_logits,
+    const int32_t        * abort_flag
+) {
+    int32_t n_batch = (int32_t)llama_n_batch(lctx);
+    int32_t decoded = 0;
+
+    while (decoded < n_tokens) {
+        int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
+        bool request_logits_chunk = request_logits && (decoded + chunk_size == n_tokens);
+
+        struct llama_batch batch = llama_batch_init(chunk_size, 0, 1);
+        batch.n_tokens = chunk_size;
+
+        for (int32_t i = 0; i < chunk_size; ++i) {
+            batch.token[i]     = tokens[decoded + i];
+            batch.pos[i]       = start_pos + decoded + i;
+            batch.n_seq_id[i]  = 1;
+            batch.seq_id[i][0] = seq_id;
+            batch.logits[i]    = (request_logits_chunk && (i == chunk_size - 1)) ? 1 : 0;
+        }
+
+        if (abort_flag && *abort_flag) {
+            llama_batch_free(batch);
+            return -2; // Aborted
+        }
+
+        int32_t result = llama_decode(lctx, batch);
+        llama_batch_free(batch);
+
+        if (result != 0) {
+            return result;
+        }
+
+        decoded += chunk_size;
+    }
+
+    return 0;
+}
+
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch_payload) {
     if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
         return -1;
@@ -351,22 +398,15 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
-    struct llama_batch batch = llama_batch_init(batch_payload->n_tokens, 0, 1);
-    batch.n_tokens = batch_payload->n_tokens;
-
-    for (int32_t i = 0; i < batch_payload->n_tokens; ++i) {
-        batch.token[i]     = batch_payload->tokens[i];
-        batch.pos[i]       = batch_payload->start_pos + i;
-        batch.n_seq_id[i]  = 1;
-        batch.seq_id[i][0] = batch_payload->seq_id;
-        // Request logits solely on the terminal processing slot of the batch
-        batch.logits[i]    = (batch_payload->request_logits && (i == batch_payload->n_tokens - 1)) ? 1 : 0;
-    }
-
-    int32_t result = llama_decode(ctx->ctx, batch);
-    llama_batch_free(batch);
-
-    return result;
+    return decode_tokens_chunked(
+        ctx->ctx,
+        batch_payload->tokens,
+        batch_payload->n_tokens,
+        batch_payload->start_pos,
+        batch_payload->seq_id,
+        batch_payload->request_logits,
+        batch_payload->abort_flag
+    );
 }
 
 int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats) {
@@ -553,26 +593,13 @@ int32_t argus_synthesize_speech(
     // add default speaker codes data
     tokenize_to_vector(vocab, audio_data, prompt_inp, false);
 
-    // run decode batch for initial prompt evaluation
-    struct llama_batch batch = llama_batch_init(prompt_inp.size() + 256, 0, 1);
-    batch.n_tokens = prompt_inp.size();
-    for (size_t i = 0; i < prompt_inp.size(); ++i) {
-        batch.token[i]     = prompt_inp[i];
-        batch.pos[i]       = i;
-        batch.n_seq_id[i]  = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i]    = false;
-    }
-    // only request logits on the last token of the prompt batch
-    batch.logits[batch.n_tokens - 1] = true;
-
-    if (llama_decode(ctx->ctx, batch) != 0) {
-        llama_batch_free(batch);
+    // run decode batch for initial prompt evaluation using DRY chunked helper
+    if (decode_tokens_chunked(ctx->ctx, prompt_inp.data(), (int32_t)prompt_inp.size(), 0, 0, true, nullptr) != 0) {
         return -1;
     }
 
     std::vector<llama_token> generated_codes;
-    int n_past = batch.n_tokens;
+    int n_past = prompt_inp.size();
     int n_decode = 0;
     const int n_predict = 4096;
 
@@ -581,6 +608,8 @@ int32_t argus_synthesize_speech(
     // Apply repeating penalty and temperature
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.1f));
     llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+
+    struct llama_batch batch = llama_batch_init(1, 0, 1);
 
     while (n_decode <= n_predict) {
         llama_token new_token_id = llama_sampler_sample(sampler, ctx->ctx, -1);
