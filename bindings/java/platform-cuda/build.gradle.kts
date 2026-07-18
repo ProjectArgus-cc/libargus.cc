@@ -34,11 +34,13 @@ val copyNativeLibrary = tasks.register<Copy>("copyNativeLibrary") {
     }
     
     val buildDir = file("${project.rootDir}/build")
-    if (buildDir.exists() && file("${buildDir}/${libExtension}").exists()) {
-        from(buildDir) {
-            include(libExtension)
-        }
-        into(layout.buildDirectory.dir("generated/resources/natives/$osDir/cuda"))
+    from(buildDir) {
+        include(libExtension)
+    }
+    into(layout.buildDirectory.dir("generated/resources/natives/$osDir/cuda"))
+
+    onlyIf {
+        file("${buildDir}/${libExtension}").exists()
     }
 }
 
