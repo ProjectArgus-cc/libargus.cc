@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!NOTE]
-> **v1.1.0 Stable — Unified Hardware Orchestration & Zero-Allocation ABI**
+> **v1.2.0 Stable — Modular SPI Runtime & Dynamic Multi-GPU Loader**
 >
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.

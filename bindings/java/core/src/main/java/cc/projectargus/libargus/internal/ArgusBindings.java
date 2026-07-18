@@ -11,6 +11,13 @@ import java.nio.file.StandardCopyOption;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import cc.projectargus.libargus.spi.NativeLibraryProvider;
+import java.util.ServiceLoader;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+
 
 /**
  * Low-level MethodHandles linked to the compiled libargus shared library.
@@ -42,109 +49,144 @@ public final class ArgusBindings {
             System.load(path.toString());
             resolvedExtractedDir = path.getParent().toString();
         } else {
-            String tempExtracted = tryLoadFromResources();
+            String tempExtracted = tryLoadFromSPI();
             if (tempExtracted != null) {
                 resolvedExtractedDir = tempExtracted;
             } else {
-                try {
-                    System.loadLibrary("argus");
-                } catch (UnsatisfiedLinkError e) {
-                    // Fallback: try finding the shared library in common local build spots
+                    // Fallback: try finding the shared library in common local build spots by traversing up the directory tree
                     String userDir = System.getProperty("user.dir");
                     String libName = System.mapLibraryName("argus");
-                    File localLib = Paths.get(userDir, "build", libName).toFile();
-                    if (localLib.exists()) {
-                        System.load(localLib.getAbsolutePath());
-                        resolvedExtractedDir = localLib.getParent();
-                    } else {
-                        localLib = Paths.get(userDir, "..", "build", libName).toFile(); // check workspace parent build
+                    File currentDir = new File(userDir).getAbsoluteFile();
+                    boolean found = false;
+                    while (currentDir != null) {
+                        File localLib = new File(new File(currentDir, "build"), libName);
                         if (localLib.exists()) {
                             System.load(localLib.getAbsolutePath());
                             resolvedExtractedDir = localLib.getParent();
-                        } else {
-                            throw new UnsatisfiedLinkError("Could not locate native " + libName + 
-                                " in java.library.path, classpath resources, or workspace build output. Please specify -Dcc.projectargus.libargus.path");
+                            found = true;
+                            break;
                         }
+                        currentDir = currentDir.getParentFile();
                     }
-                }
+                    if (!found) {
+                        throw new UnsatisfiedLinkError("Could not locate native " + libName + 
+                            " in java.library.path, SPI classpath providers, or workspace build directory hierarchy. Please specify -Dcc.projectargus.libargus.path");
+                    }
             }
         }
         EXTRACTED_DIR = resolvedExtractedDir;
         LOOKUP = SymbolLookup.loaderLookup();
     }
 
-    private static String tryLoadFromResources() {
+    private static String tryLoadFromSPI() {
         String osName = System.getProperty("os.name").toLowerCase();
         String osArch = System.getProperty("os.arch").toLowerCase();
-        
-        String osDir;
+
+        String normalizedOs;
         if (osName.contains("linux")) {
-            osDir = "linux-" + osArch;
+            normalizedOs = "linux";
         } else if (osName.contains("windows")) {
-            osDir = "windows-" + osArch;
+            normalizedOs = "windows";
         } else if (osName.contains("mac")) {
-            osDir = "macos-" + osArch;
+            normalizedOs = "macos";
         } else {
+            normalizedOs = osName;
+        }
+
+        String normalizedArch;
+        if (osArch.equals("amd64") || osArch.equals("x86_64")) {
+            normalizedArch = "amd64";
+        } else if (osArch.equals("aarch64") || osArch.equals("arm64")) {
+            normalizedArch = "aarch64";
+        } else {
+            normalizedArch = osArch;
+        }
+
+        ServiceLoader<NativeLibraryProvider> loader = ServiceLoader.load(NativeLibraryProvider.class);
+        List<NativeLibraryProvider> providers = new ArrayList<>();
+        for (NativeLibraryProvider provider : loader) {
+            String pOs = provider.getOs().toLowerCase();
+            String pArch = provider.getArch().toLowerCase();
+            
+            boolean osMatch = pOs.contains(normalizedOs) || normalizedOs.contains(pOs);
+            boolean archMatch = false;
+            if ((normalizedArch.equals("amd64") && (pArch.equals("amd64") || pArch.equals("x86_64") || pArch.equals("x64"))) ||
+                (normalizedArch.equals("aarch64") && (pArch.equals("aarch64") || pArch.equals("arm64"))) ||
+                pArch.equals(normalizedArch)) {
+                archMatch = true;
+            }
+
+            if (osMatch && archMatch) {
+                providers.add(provider);
+            }
+        }
+
+        if (providers.isEmpty()) {
             return null;
         }
-        
-        String libName = System.mapLibraryName("argus");
-        String libVersionName = System.mapLibraryName("argus-" + VERSION);
-        String resourcePath = "/natives/" + osDir + "/" + libName;
-        
-        try {
-            // Resolve output directory
-            String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
-            File destDir;
-            if (customDir != null && !customDir.trim().isEmpty()) {
-                destDir = new File(customDir.trim());
-            } else {
-                destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache");
+
+        // Sort by priority descending
+        providers.sort(new Comparator<NativeLibraryProvider>() {
+            @Override
+            public int compare(NativeLibraryProvider p1, NativeLibraryProvider p2) {
+                return Integer.compare(p2.getPriority(), p1.getPriority());
             }
-            
-            if (!destDir.exists() && !destDir.mkdirs()) {
-                throw new RuntimeException("Failed to create native extraction directory: " + destDir);
-            }
-            
+        });
+
+        // Resolve output extraction cache directory
+        String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
+        File destDir;
+        if (customDir != null && !customDir.trim().isEmpty()) {
+            destDir = new File(customDir.trim());
+        } else {
+            destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache");
+        }
+
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            throw new RuntimeException("Failed to create native extraction directory: " + destDir);
+        }
+
+        for (NativeLibraryProvider provider : providers) {
+            String libVersionName = System.mapLibraryName("argus-" + provider.getBackend() + "-" + VERSION);
             File targetFile = new File(destDir, libVersionName);
-            
-            // If target file already exists and is complete, skip extraction
-            if (targetFile.exists() && targetFile.length() > 0) {
+
+            try {
+                if (targetFile.exists() && targetFile.length() > 0) {
+                    System.load(targetFile.getAbsolutePath());
+                    return destDir.getAbsolutePath();
+                }
+
+                File tempFile = File.createTempFile("libargus_extract_", ".tmp", destDir);
+                try {
+                    try (InputStream is = provider.getLibraryStream()) {
+                        if (is == null) {
+                            continue;
+                        }
+                        Files.copy(is, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    Files.move(tempFile.toPath(), targetFile.toPath(),
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException e) {
+                    if (!targetFile.exists() || targetFile.length() == 0) {
+                        throw e;
+                    }
+                } finally {
+                    if (tempFile.exists()) {
+                        tempFile.delete();
+                    }
+                }
+
                 System.load(targetFile.getAbsolutePath());
                 return destDir.getAbsolutePath();
+            } catch (UnsatisfiedLinkError | Exception e) {
+                System.err.println("Warning: Failed to load native library from provider [" + 
+                    provider.getClass().getName() + " | Backend: " + provider.getBackend() + "]: " + e.getMessage());
             }
-            
-            // Otherwise extract concurrency-safely via atomic rename
-            File tempFile = File.createTempFile("libargus_extract_", ".tmp", destDir);
-            try {
-                try (InputStream is = ArgusBindings.class.getResourceAsStream(resourcePath)) {
-                    if (is == null) {
-                        return null;
-                    }
-                    Files.copy(is, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                }
-                
-                // OS-level atomic move prevents partial-write corruption visibility
-                Files.move(tempFile.toPath(), targetFile.toPath(), 
-                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                // If move failed, another concurrent process might have written it
-                if (!targetFile.exists() || targetFile.length() == 0) {
-                    throw e;
-                }
-            } finally {
-                if (tempFile.exists()) {
-                    tempFile.delete();
-                }
-            }
-            
-            System.load(targetFile.getAbsolutePath());
-            return destDir.getAbsolutePath();
-        } catch (Exception e) {
-            System.err.println("Warning: Failed to extract and load " + libVersionName + " from classpath resources: " + e.getMessage());
-            return null;
         }
+
+        return null;
     }
+
 
     private ArgusBindings() {}
 

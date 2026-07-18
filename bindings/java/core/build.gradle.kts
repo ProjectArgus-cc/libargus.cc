@@ -31,38 +31,12 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-val copyNativeLibrary = tasks.register<Copy>("copyNativeLibrary") {
-    dependsOn(":compileCMake")
-    
-    val osName = System.getProperty("os.name").lowercase()
-    val osArch = System.getProperty("os.arch").lowercase()
-    
-    val osDir = when {
-        osName.contains("linux") -> "linux-$osArch"
-        osName.contains("windows") -> "windows-$osArch"
-        osName.contains("mac") -> "macos-$osArch"
-        else -> "unknown"
-    }
-    
-    val libExtension = when {
-        osName.contains("windows") -> "argus.dll"
-        osName.contains("mac") -> "libargus.dylib"
-        else -> "libargus.so"
-    }
-    
-    from("${project.rootDir}/build") {
-        include(libExtension)
-    }
-    into(layout.buildDirectory.dir("generated/resources/natives/$osDir"))
-}
-
 val copyVersionFile = tasks.register<Copy>("copyVersionFile") {
     from("${project.rootDir}/version.txt")
     into(layout.buildDirectory.dir("generated/resources"))
 }
 
 tasks.processResources {
-    dependsOn(copyNativeLibrary)
     dependsOn(copyVersionFile)
 }
 
