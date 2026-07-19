@@ -400,6 +400,41 @@ public class MultimodalMatrixTest {
         }
     }
 
+    @Test
+    public void testContextCapacityBatchClamping() {
+        System.out.println("[MultimodalMatrixTest] Verifying batch size clamping for context slot capacity limit...");
+        Assumptions.assumeTrue(Files.exists(VLM_BASE), "Skipping: VLM Base model missing");
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, VLM_BASE, 99, true)) {
+            
+            // Set contextLength to 1024. With seq_max = 4, the slot capacity is 256 cells.
+            // Under the old logic, n_batch would be set to 1024.
+            // Under the new logic, n_batch is clamped to 256.
+            ArgusContextConfig config = new ArgusContextConfig.Builder(1024)
+                .cpuThreads(4)
+                .build();
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                // We evaluate a prompt of 512 tokens.
+                // Under old logic, this would attempt a single 512-token decode, failing with:
+                // "failed to find a memory slot for batch of size 512" (since 512 > slot capacity 256).
+                // Under new logic, the 512 tokens are chunked into two 256-token passes, succeeding.
+                int nTokens = 512;
+                MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, nTokens);
+                for (int i = 0; i < nTokens; i++) {
+                    tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, 1);
+                }
+
+                int res = context.decodeBatch(tokensSeg, nTokens, 0, 0, false);
+                assertEquals(0, res, "Decode batch failed with code: " + res);
+                System.out.println("  - Slot capacity batch clamping test passed successfully!");
+            }
+        } catch (Exception e) {
+            fail("Slot capacity batch clamping test failed with exception", e);
+        }
+    }
+
     private static boolean isCommandAvailable(String cmd) {
         try {
             Process process = new ProcessBuilder(cmd, "-version").start();

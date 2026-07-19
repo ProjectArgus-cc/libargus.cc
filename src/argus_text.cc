@@ -179,10 +179,40 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     }
 
     struct llama_context_params cparams = llama_context_default_params();
+    int32_t limit_batch = (params->context_length < 2048) ? params->context_length : 2048;
+    int32_t seq_max = 4;
+
+    // Bound the batch size by the sequence slot size to prevent KV cache slot allocation crashes.
+    // Account for GGML padding of slot sizes to multiples of 256 cells.
+    int32_t n_ctx_seq = params->context_length / seq_max;
+    n_ctx_seq = GGML_PAD(n_ctx_seq, 256);
+    if (n_ctx_seq < limit_batch) {
+        limit_batch = n_ctx_seq;
+    }
+
+    // Bound the batch size by the base model's sliding window size (SWA) if present
+    int32_t base_swa = llama_model_n_swa(model->model);
+    if (base_swa > 0 && base_swa < limit_batch) {
+        limit_batch = base_swa;
+    }
+
+    // Bounding by the draft model's sliding window size (SWA) if present to prevent draft context crash
+    if (params->draft_model) {
+        int32_t draft_swa = llama_model_n_swa(params->draft_model->model);
+        if (draft_swa > 0 && draft_swa < limit_batch) {
+            limit_batch = draft_swa;
+        }
+    }
+
+    // Ensure we have a valid batch size of at least 1
+    if (limit_batch < 1) {
+        limit_batch = 1;
+    }
+
     cparams.n_ctx           = params->context_length;
-    cparams.n_batch         = (params->context_length < 2048) ? params->context_length : 2048;
-    cparams.n_ubatch        = 512;
-    cparams.n_seq_max       = 4;
+    cparams.n_batch         = limit_batch;
+    cparams.n_ubatch        = (limit_batch < 512) ? limit_batch : 512;
+    cparams.n_seq_max       = seq_max;
     cparams.n_threads       = params->cpu_threads;
     cparams.n_threads_batch = params->cpu_threads;
 
