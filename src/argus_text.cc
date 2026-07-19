@@ -191,13 +191,15 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     }
 
     // Bound the batch size by the base model's sliding window size (SWA) if present
-    int32_t base_swa = llama_model_n_swa(model->model);
-    if (base_swa > 0 && base_swa < limit_batch) {
-        limit_batch = base_swa;
+    if (model->model) {
+        int32_t base_swa = llama_model_n_swa(model->model);
+        if (base_swa > 0 && base_swa < limit_batch) {
+            limit_batch = base_swa;
+        }
     }
 
     // Bounding by the draft model's sliding window size (SWA) if present to prevent draft context crash
-    if (params->draft_model) {
+    if (params->draft_model && params->draft_model->model) {
         int32_t draft_swa = llama_model_n_swa(params->draft_model->model);
         if (draft_swa > 0 && draft_swa < limit_batch) {
             limit_batch = draft_swa;

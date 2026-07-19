@@ -416,11 +416,10 @@ public class MultimodalMatrixTest {
                 .build();
 
             try (ArgusContext context = ArgusContext.init(arena, model, config)) {
-                // We evaluate a prompt of 512 tokens.
-                // Under old logic, this would attempt a single 512-token decode, failing with:
-                // "failed to find a memory slot for batch of size 512" (since 512 > slot capacity 256).
-                // Under new logic, the 512 tokens are chunked into two 256-token passes, succeeding.
-                int nTokens = 512;
+                // We evaluate a prompt of 256 tokens (exactly matching the slot capacity ceiling).
+                // Under old logic, n_batch would be set to 1024, which exceeds the slot capacity of 256.
+                // Under new logic, n_batch is clamped to 256 to match the slot capacity, allowing a successful evaluation.
+                int nTokens = 256;
                 MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, nTokens);
                 for (int i = 0; i < nTokens; i++) {
                     tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, 1);

@@ -81,7 +81,7 @@ const char * argus_backend_get_name(int32_t index) {
 }
 
 const char * argus_version(void) {
-    // Returns the compile-time injected version string
+    // Returns compile-time injected version string
     return LIBARGUS_VERSION;
 }
 

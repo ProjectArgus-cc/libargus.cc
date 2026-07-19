@@ -41,6 +41,7 @@ tasks.processResources {
 }
 
 tasks.test {
+    dependsOn(":compileCMake")
     useJUnitPlatform()
     
     // Enable native access warning suppression for FFM downcalls in test suite

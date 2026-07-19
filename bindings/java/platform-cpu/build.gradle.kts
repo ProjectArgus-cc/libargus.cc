@@ -17,6 +17,7 @@ dependencies {
 }
 
 val copyNativeLibrary = tasks.register<Copy>("copyNativeLibrary") {
+    dependsOn(":compileCMake")
     val osName = System.getProperty("os.name").lowercase()
     val osArch = System.getProperty("os.arch").lowercase()
     
