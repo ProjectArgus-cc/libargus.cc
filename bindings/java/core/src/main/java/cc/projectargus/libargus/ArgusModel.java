@@ -325,6 +325,17 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Checks if the model architecture contains an encoder stack or non-causal topology.
+     */
+    public boolean hasEncoder() {
+        try {
+            return (boolean) ArgusBindings.argus_model_has_encoder.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query model encoder topology", t);
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged model structure.
      */
     public MemorySegment getHandle() {

@@ -315,6 +315,10 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_model_has_encoder = bind("argus_model_has_encoder",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
     // Evaluation & Pruning
     public static final MethodHandle argus_decode_batch = bind("argus_decode_batch",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

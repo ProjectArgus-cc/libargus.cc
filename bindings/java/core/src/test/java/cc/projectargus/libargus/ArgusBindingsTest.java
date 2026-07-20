@@ -157,6 +157,9 @@ public class ArgusBindingsTest {
     public void testContextConfigBuilder() {
         System.out.println("[Java Test] Validating ArgusContextConfig.Builder...");
         
+        // Verify Panama struct layout byteSize matches C sizeof(argus_context_params_t) exactly (40 bytes)
+        assertEquals(40L, cc.projectargus.libargus.internal.ArgusLayouts.CONTEXT_PARAMS.byteSize());
+
         // Test default constructor
         ArgusContextConfig.Builder builder1 = new ArgusContextConfig.Builder();
         ArgusContextConfig config1 = builder1.build();
@@ -164,6 +167,7 @@ public class ArgusBindingsTest {
         assertEquals(2048, config1.contextLength());
         assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeK());
         assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeV());
+        assertEquals(0, config1.uBatch());
         assertFalse(config1.enableDraftMtp());
         assertFalse(config1.embeddings());
         
@@ -173,6 +177,7 @@ public class ArgusBindingsTest {
             .typeK(ArgusContextConfig.KV_TYPE_Q4_0)
             .typeV(ArgusContextConfig.KV_TYPE_Q8_0)
             .specDraftNMax(5)
+            .uBatch(1024)
             .enableDraftMtp(true)
             .embeddings(true);
             
@@ -182,6 +187,7 @@ public class ArgusBindingsTest {
         assertEquals(ArgusContextConfig.KV_TYPE_Q4_0, config2.typeK());
         assertEquals(ArgusContextConfig.KV_TYPE_Q8_0, config2.typeV());
         assertEquals(5, config2.specDraftNMax());
+        assertEquals(1024, config2.uBatch());
         assertTrue(config2.enableDraftMtp());
         assertTrue(config2.embeddings());
     }
@@ -205,6 +211,7 @@ public class ArgusBindingsTest {
             assertEquals(-1, dummyModel.nHead());
             assertEquals(-1, dummyModel.nHeadKv());
             assertEquals(0L, dummyModel.nParams());
+            assertFalse(dummyModel.hasEncoder());
             
             assertNull(dummyModel.getMetadataValue("some_key"));
             assertTrue(dummyModel.getMetadataMap().isEmpty());
@@ -247,13 +254,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.2.2", ArgusBindings.VERSION);
+        assertEquals("1.2.3", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.2.2", nativeVer);
+            assertEquals("1.2.3", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());

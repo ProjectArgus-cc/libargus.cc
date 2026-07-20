@@ -213,7 +213,14 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
 
     cparams.n_ctx           = params->context_length;
     cparams.n_batch         = limit_batch;
-    cparams.n_ubatch        = (limit_batch < 512) ? limit_batch : 512;
+
+    // Calculate physical micro-batch size (n_ubatch)
+    int32_t req_ubatch = params->u_batch;
+    if (req_ubatch <= 0) {
+        bool is_encoder_or_embed = params->embeddings || (model->model && llama_model_has_encoder(model->model));
+        req_ubatch = is_encoder_or_embed ? limit_batch : ((limit_batch < 512) ? limit_batch : 512);
+    }
+    cparams.n_ubatch        = std::clamp(req_ubatch, 1, limit_batch);
     cparams.n_seq_max       = seq_max;
     cparams.n_threads       = params->cpu_threads;
     cparams.n_threads_batch = params->cpu_threads;
@@ -370,6 +377,10 @@ int32_t argus_model_n_head_kv(const argus_model_t * model) {
 
 uint64_t argus_model_n_params(const argus_model_t * model) {
     return model && model->model ? llama_model_n_params(model->model) : 0;
+}
+
+bool argus_model_has_encoder(const argus_model_t * model) {
+    return model && model->model ? llama_model_has_encoder(model->model) : false;
 }
 
 // =========================================================================

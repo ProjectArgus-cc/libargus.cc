@@ -87,6 +87,10 @@ public final class ArgusContext implements AutoCloseable {
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("spec_draft_n_max")), 
                 config.specDraftNMax()
             );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("u_batch")), 
+                config.uBatch()
+            );
             paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("enable_draft_mtp")), 
                 config.enableDraftMtp()
