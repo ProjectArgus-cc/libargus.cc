@@ -10,8 +10,10 @@ package cc.projectargus.libargus;
  * @param typeV            value cache quantization format (0 = F16, 8 = Q8_0, 2 = Q4_0, 3 = Q4_1)
  * @param specDraftNMax    maximum tokens to evaluate speculatively per step
  * @param uBatch           physical micro-batch size (0 = default/auto)
+ * @param seqMax           maximum sequence slots (0 = auto-detect)
  * @param enableDraftMtp   enable Multi-Token Prediction (MTP) draft head
  * @param embeddings       enable embeddings output
+ * @param kvUnified        dynamic KV cache sharing across sequences
  */
 public record ArgusContextConfig(
     ArgusModel draftModel,
@@ -21,8 +23,10 @@ public record ArgusContextConfig(
     int typeV,
     int specDraftNMax,
     int uBatch,
+    int seqMax,
     boolean enableDraftMtp,
-    boolean embeddings
+    boolean embeddings,
+    boolean kvUnified
 ) {
     public static final int KV_TYPE_F16 = 0;
     public static final int KV_TYPE_Q8_0 = 8;
@@ -30,7 +34,7 @@ public record ArgusContextConfig(
     public static final int KV_TYPE_Q4_1 = 3;
 
     /**
-     * Backwards-compatible constructor without uBatch or embeddings parameters.
+     * Backwards-compatible constructor without uBatch, seqMax, embeddings, or kvUnified parameters.
      */
     public ArgusContextConfig(
         ArgusModel draftModel,
@@ -41,11 +45,11 @@ public record ArgusContextConfig(
         int specDraftNMax,
         boolean enableDraftMtp
     ) {
-        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, 0, enableDraftMtp, false);
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, 0, 0, enableDraftMtp, false, true);
     }
 
     /**
-     * Backwards-compatible constructor without uBatch parameter.
+     * Backwards-compatible constructor without uBatch, seqMax, or kvUnified parameters.
      */
     public ArgusContextConfig(
         ArgusModel draftModel,
@@ -57,7 +61,24 @@ public record ArgusContextConfig(
         boolean enableDraftMtp,
         boolean embeddings
     ) {
-        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, 0, enableDraftMtp, embeddings);
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, 0, 0, enableDraftMtp, embeddings, true);
+    }
+
+    /**
+     * Backwards-compatible constructor without seqMax or kvUnified parameters.
+     */
+    public ArgusContextConfig(
+        ArgusModel draftModel,
+        int contextLength,
+        int cpuThreads,
+        int typeK,
+        int typeV,
+        int specDraftNMax,
+        int uBatch,
+        boolean enableDraftMtp,
+        boolean embeddings
+    ) {
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, uBatch, 0, enableDraftMtp, embeddings, true);
     }
 
     /**
@@ -72,8 +93,10 @@ public record ArgusContextConfig(
             KV_TYPE_F16,
             0,
             0,
+            0,
             false,
-            false
+            false,
+            true
         );
     }
 
@@ -88,8 +111,10 @@ public record ArgusContextConfig(
         private int typeV = KV_TYPE_F16;
         private int specDraftNMax = 0;
         private int uBatch = 0;
+        private int seqMax = 0;
         private boolean enableDraftMtp = false;
         private boolean embeddings = false;
+        private boolean kvUnified = true;
 
         public Builder() {}
 
@@ -132,6 +157,11 @@ public record ArgusContextConfig(
             return this;
         }
 
+        public Builder seqMax(int seqMax) {
+            this.seqMax = seqMax;
+            return this;
+        }
+
         public Builder enableDraftMtp(boolean enableDraftMtp) {
             this.enableDraftMtp = enableDraftMtp;
             return this;
@@ -139,6 +169,11 @@ public record ArgusContextConfig(
 
         public Builder embeddings(boolean embeddings) {
             this.embeddings = embeddings;
+            return this;
+        }
+
+        public Builder kvUnified(boolean kvUnified) {
+            this.kvUnified = kvUnified;
             return this;
         }
 
@@ -151,8 +186,10 @@ public record ArgusContextConfig(
                 typeV,
                 specDraftNMax,
                 uBatch,
+                seqMax,
                 enableDraftMtp,
-                embeddings
+                embeddings,
+                kvUnified
             );
         }
     }

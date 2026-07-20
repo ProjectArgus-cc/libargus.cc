@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!NOTE]
-> **v1.2.3 Stable — Micro-Batch Auto-Scaling & Model Encoder Topology Introspection**
+> **v1.2.4 Stable — Dynamic Sequence Slot Allocation & Unified KV Sharing**
 >
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -20,6 +20,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Absolute Zero-Copy Memory Boundaries:** Eliminates JVM heap primitive arrays (`int[]`, `float[]`) across hot paths. Integrates Project Panama `MemorySegment` parameters directly, allowing token tapes, audio waves, and video frames to generate speech and text with zero GC footprint.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
 *   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer.
+*   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
 

@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 1.2.3
+ * @version 1.2.4
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -76,9 +76,11 @@ typedef struct argus_context_params {
     int32_t               type_v;          /**< Value cache quantization format (argus_kv_type_t) (4 bytes) */
     int32_t               spec_draft_n_max;/**< Max speculative draft tokens to check (4 bytes) */
     int32_t               u_batch;         /**< Physical micro-batch size (0 = default/auto) (4 bytes) */
+    int32_t               n_seq_max;       /**< Maximum sequence slots (0 = auto-detect) (4 bytes) */
     bool                  enable_draft_mtp;/**< Enable Multi-Token Prediction draft head (1 byte) */
     bool                  embeddings;      /**< Enable embeddings output (1 byte) */
-    uint8_t               reserved_padding[6];/**< Struct alignment padding (6 bytes) */
+    bool                  kv_unified;      /**< Dynamic KV cache sharing across sequences (1 byte) */
+    uint8_t               reserved_padding[1];/**< Struct alignment padding (1 byte) */
 } argus_context_params_t;
 
 /**

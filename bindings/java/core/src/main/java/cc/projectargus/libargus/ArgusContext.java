@@ -91,6 +91,10 @@ public final class ArgusContext implements AutoCloseable {
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("u_batch")), 
                 config.uBatch()
             );
+            paramsSeg.set(ValueLayout.JAVA_INT, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("n_seq_max")), 
+                config.seqMax()
+            );
             paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("enable_draft_mtp")), 
                 config.enableDraftMtp()
@@ -98,6 +102,10 @@ public final class ArgusContext implements AutoCloseable {
             paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
                 ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("embeddings")), 
                 config.embeddings()
+            );
+            paramsSeg.set(ValueLayout.JAVA_BOOLEAN, 
+                ArgusLayouts.CONTEXT_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("kv_unified")), 
+                config.kvUnified()
             );
 
             MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(model.getHandle(), paramsSeg);

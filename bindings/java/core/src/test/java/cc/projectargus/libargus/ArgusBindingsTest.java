@@ -159,6 +159,8 @@ public class ArgusBindingsTest {
         
         // Verify Panama struct layout byteSize matches C sizeof(argus_context_params_t) exactly (40 bytes)
         assertEquals(40L, cc.projectargus.libargus.internal.ArgusLayouts.CONTEXT_PARAMS.byteSize());
+        assertEquals(32L, cc.projectargus.libargus.internal.ArgusLayouts.CONTEXT_PARAMS.byteOffset(java.lang.foreign.MemoryLayout.PathElement.groupElement("n_seq_max")));
+        assertEquals(38L, cc.projectargus.libargus.internal.ArgusLayouts.CONTEXT_PARAMS.byteOffset(java.lang.foreign.MemoryLayout.PathElement.groupElement("kv_unified")));
 
         // Test default constructor
         ArgusContextConfig.Builder builder1 = new ArgusContextConfig.Builder();
@@ -168,8 +170,10 @@ public class ArgusBindingsTest {
         assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeK());
         assertEquals(ArgusContextConfig.KV_TYPE_F16, config1.typeV());
         assertEquals(0, config1.uBatch());
+        assertEquals(0, config1.seqMax());
         assertFalse(config1.enableDraftMtp());
         assertFalse(config1.embeddings());
+        assertTrue(config1.kvUnified());
         
         // Test custom constructor and fluent setters
         ArgusContextConfig.Builder builder2 = new ArgusContextConfig.Builder(1024)
@@ -178,8 +182,10 @@ public class ArgusBindingsTest {
             .typeV(ArgusContextConfig.KV_TYPE_Q8_0)
             .specDraftNMax(5)
             .uBatch(1024)
+            .seqMax(2)
             .enableDraftMtp(true)
-            .embeddings(true);
+            .embeddings(true)
+            .kvUnified(false);
             
         ArgusContextConfig config2 = builder2.build();
         assertEquals(1024, config2.contextLength());
@@ -188,8 +194,10 @@ public class ArgusBindingsTest {
         assertEquals(ArgusContextConfig.KV_TYPE_Q8_0, config2.typeV());
         assertEquals(5, config2.specDraftNMax());
         assertEquals(1024, config2.uBatch());
+        assertEquals(2, config2.seqMax());
         assertTrue(config2.enableDraftMtp());
         assertTrue(config2.embeddings());
+        assertFalse(config2.kvUnified());
     }
 
     @Test
@@ -254,13 +262,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.2.3", ArgusBindings.VERSION);
+        assertEquals("1.2.4", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.2.3", nativeVer);
+            assertEquals("1.2.4", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());

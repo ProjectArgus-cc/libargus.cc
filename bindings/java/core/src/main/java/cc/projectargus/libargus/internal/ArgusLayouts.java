@@ -40,9 +40,11 @@ public final class ArgusLayouts {
      *     int32_t               type_v;          // 4 bytes
      *     int32_t               spec_draft_n_max;// 4 bytes
      *     int32_t               u_batch;         // 4 bytes
+     *     int32_t               n_seq_max;       // 4 bytes
      *     bool                  enable_draft_mtp;// 1 byte
      *     bool                  embeddings;      // 1 byte
-     *     uint8_t               reserved_padding[6];// 6 bytes padding
+     *     bool                  kv_unified;      // 1 byte
+     *     uint8_t               reserved_padding[1];// 1 byte padding
      * } argus_context_params_t;
      * </pre>
      */
@@ -54,9 +56,11 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("type_v"),
         ValueLayout.JAVA_INT.withName("spec_draft_n_max"),
         ValueLayout.JAVA_INT.withName("u_batch"),
+        ValueLayout.JAVA_INT.withName("n_seq_max"),
         ValueLayout.JAVA_BOOLEAN.withName("enable_draft_mtp"),
         ValueLayout.JAVA_BOOLEAN.withName("embeddings"),
-        MemoryLayout.paddingLayout(6)
+        ValueLayout.JAVA_BOOLEAN.withName("kv_unified"),
+        MemoryLayout.paddingLayout(1)
     ).withName("argus_context_params");
 
     /**

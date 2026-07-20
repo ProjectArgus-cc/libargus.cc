@@ -180,11 +180,20 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
 
     struct llama_context_params cparams = llama_context_default_params();
     int32_t limit_batch = (params->context_length < 2048) ? params->context_length : 2048;
-    int32_t seq_max = 4;
+
+    int32_t seq_max = params->n_seq_max;
+    if (seq_max <= 0) {
+        bool requires_multi_seq = (params->draft_model != nullptr) || 
+                                  (params->spec_draft_n_max > 0) || 
+                                  params->enable_draft_mtp;
+        seq_max = requires_multi_seq ? 4 : 1;
+    }
+
+    bool kv_unified_active = params->kv_unified || (params->n_seq_max == 0);
 
     // Bound the batch size by the sequence slot size to prevent KV cache slot allocation crashes.
     // Account for GGML padding of slot sizes to multiples of 256 cells.
-    int32_t n_ctx_seq = params->context_length / seq_max;
+    int32_t n_ctx_seq = kv_unified_active ? params->context_length : (params->context_length / seq_max);
     n_ctx_seq = GGML_PAD(n_ctx_seq, 256);
     if (n_ctx_seq < limit_batch) {
         limit_batch = n_ctx_seq;
@@ -222,6 +231,7 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     }
     cparams.n_ubatch        = std::clamp(req_ubatch, 1, limit_batch);
     cparams.n_seq_max       = seq_max;
+    cparams.kv_unified      = kv_unified_active;
     cparams.n_threads       = params->cpu_threads;
     cparams.n_threads_batch = params->cpu_threads;
 
@@ -247,6 +257,7 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
         dparams.n_batch         = cparams.n_batch;
         dparams.n_ubatch        = cparams.n_ubatch;
         dparams.n_seq_max       = cparams.n_seq_max;
+        dparams.kv_unified      = cparams.kv_unified;
         dparams.n_threads       = params->cpu_threads;
         dparams.n_threads_batch = params->cpu_threads;
         dparams.type_k          = cparams.type_k;

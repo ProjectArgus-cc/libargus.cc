@@ -22,7 +22,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    assert(std::strcmp(argus_version(), "1.2.3") == 0);
+    assert(std::strcmp(argus_version(), "1.2.4") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -116,15 +116,19 @@ int main() {
     assert(argus_sample_token_with_bias(nullptr, 0, 0.0f, 0.0f, nullptr, 0) == -1);
 
     // Verify context params struct alignment size and u_batch configuration
-    std::cout << "[Test] Verifying struct alignment layout size and u_batch parameters..." << std::endl;
+    std::cout << "[Test] Verifying struct alignment layout size and sequence parameters..." << std::endl;
     assert(sizeof(argus_context_params_t) == 40);
 
     argus_context_params_t test_params = {};
     test_params.context_length = 2048;
     test_params.u_batch = 1024;
+    test_params.n_seq_max = 2;
     test_params.embeddings = true;
+    test_params.kv_unified = true;
     assert(test_params.u_batch == 1024);
+    assert(test_params.n_seq_max == 2);
     assert(test_params.embeddings == true);
+    assert(test_params.kv_unified == true);
 
     std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
 
