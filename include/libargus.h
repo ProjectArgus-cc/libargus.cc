@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 1.2.4
+ * @version 1.3.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -17,6 +17,20 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+  #if defined(ARGUS_BUILDING_DLL)
+    #define ARGUS_API __declspec(dllexport)
+  #else
+    #define ARGUS_API __declspec(dllimport)
+  #endif
+#else
+  #if defined(__GNUC__) || defined(__clang__)
+    #define ARGUS_API __attribute__((visibility("default")))
+  #else
+    #define ARGUS_API
+  #endif
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -132,31 +146,31 @@ typedef struct argus_logit_bias {
  * Must be executed exactly once per runtime lifespan prior to model instantiations.
  * @return true if compute nodes are successfully prepared, false otherwise.
  */
-bool argus_backend_init(const char * custom_plugin_path);
+ARGUS_API bool argus_backend_init(const char * custom_plugin_path);
 
 /**
  * @brief Retrieves the compiled library version.
  * @return Null-terminated project version string (e.g. "0.2.3").
  */
-const char * argus_version(void);
+ARGUS_API const char * argus_version(void);
 
 /**
  * @brief Deallocates global hardware device links and cleans process space.
  */
-void argus_backend_free(void);
+ARGUS_API void argus_backend_free(void);
 
 /**
  * @brief Gets the total count of registered hardware acceleration backends.
  * @return Total backend count.
  */
-int32_t argus_backend_get_count(void);
+ARGUS_API int32_t argus_backend_get_count(void);
 
 /**
  * @brief Gets the name of a registered hardware acceleration backend.
  * @param index Registry index.
  * @return Null-terminated driver registry name string.
  */
-const char * argus_backend_get_name(int32_t index);
+ARGUS_API const char * argus_backend_get_name(int32_t index);
 
 // =========================================================================
 // 2. Model & Context Lifecycle Managers
@@ -167,13 +181,13 @@ const char * argus_backend_get_name(int32_t index);
  * @param params Configurations detailing file path, mlock, and GPU offloading.
  * @return Opaque model pointer, or NULL on failure.
  */
-argus_model_t * argus_model_load(const argus_model_params_t * params);
+ARGUS_API argus_model_t * argus_model_load(const argus_model_params_t * params);
 
 /**
  * @brief Frees loaded GGUF model resources.
  * @param model Reference model pointer.
  */
-void argus_model_free(argus_model_t * model);
+ARGUS_API void argus_model_free(argus_model_t * model);
 
 /**
  * @brief Initializes an active execution session context on the model.
@@ -181,13 +195,13 @@ void argus_model_free(argus_model_t * model);
  * @param params Context parameters (KV cache size, quantization, threads).
  * @return Opaque context session pointer, or NULL on failure.
  */
-argus_context_t * argus_context_init(argus_model_t * model, const argus_context_params_t * params);
+ARGUS_API argus_context_t * argus_context_init(argus_model_t * model, const argus_context_params_t * params);
 
 /**
  * @brief Releases execution context structures.
  * @param ctx Target execution context.
  */
-void argus_context_free(argus_context_t * ctx);
+ARGUS_API void argus_context_free(argus_context_t * ctx);
 
 // =========================================================================
 // 3. Core Text Inference & Native Codec Speech Synthesis (TTS)
@@ -203,7 +217,7 @@ void argus_context_free(argus_context_t * ctx);
  * @param add_bos Prepend the model's explicit Beginning-Of-Sentence token metadata.
  * @return The absolute number of parsed tokens stored inside the buffer, or negative on failure.
  */
-int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t * out_tokens, int32_t max_tokens, bool add_bos);
+ARGUS_API int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t * out_tokens, int32_t max_tokens, bool add_bos);
 
 /**
  * @brief Converts a standalone single token primitive back into raw text bytes.
@@ -214,42 +228,42 @@ int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t *
  * @param buf_size Sizing constraint capacity limits of the provided target output buffer.
  * @return Written character byte length count inside the buffer segment.
  */
-int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size);
+ARGUS_API int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size);
 
 /**
  * @brief Retrieves the Beginning-Of-Sentence (BOS) token ID.
  * @param model Reference model containing the vocabulary mapping.
  * @return The BOS token ID, or -1 if not defined/failed.
  */
-int32_t argus_vocab_bos(const argus_model_t * model);
+ARGUS_API int32_t argus_vocab_bos(const argus_model_t * model);
 
 /**
  * @brief Retrieves the End-Of-Sentence (EOS) token ID.
  * @param model Reference model containing the vocabulary mapping.
  * @return The EOS token ID, or -1 if not defined/failed.
  */
-int32_t argus_vocab_eos(const argus_model_t * model);
+ARGUS_API int32_t argus_vocab_eos(const argus_model_t * model);
 
 /**
  * @brief Retrieves the End-Of-Turn (EOT) token ID.
  * @param model Reference model containing the vocabulary mapping.
  * @return The EOT token ID, or -1 if not defined/failed.
  */
-int32_t argus_vocab_eot(const argus_model_t * model);
+ARGUS_API int32_t argus_vocab_eot(const argus_model_t * model);
 
 /**
  * @brief Retrieves the Padding (PAD) token ID.
  * @param model Reference model containing the vocabulary mapping.
  * @return The PAD token ID, or -1 if not defined/failed.
  */
-int32_t argus_vocab_pad(const argus_model_t * model);
+ARGUS_API int32_t argus_vocab_pad(const argus_model_t * model);
 
 /**
  * @brief Retrieves the total size of the vocabulary.
  * @param model Reference model containing the vocabulary mapping.
  * @return The total token count, or -1 on failure.
  */
-int32_t argus_vocab_n_tokens(const argus_model_t * model);
+ARGUS_API int32_t argus_vocab_n_tokens(const argus_model_t * model);
 
 /**
  * @brief Checks if a token is an End-Of-Generation (EOG) token.
@@ -257,7 +271,7 @@ int32_t argus_vocab_n_tokens(const argus_model_t * model);
  * @param token The token ID to inspect.
  * @return True if the token is an EOG token, false otherwise.
  */
-bool argus_vocab_is_eog(const argus_model_t * model, int32_t token);
+ARGUS_API bool argus_vocab_is_eog(const argus_model_t * model, int32_t token);
 
 /**
  * @brief Extracts model GGUF metadata string values by key name.
@@ -267,14 +281,14 @@ bool argus_vocab_is_eog(const argus_model_t * model, int32_t token);
  * @param buf_size Character size capacity limits of the provided target output buffer.
  * @return String character length written, or negative on failure.
  */
-int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size);
+ARGUS_API int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size);
 
 /**
  * @brief Retrieves the total count of metadata entries in the GGUF model.
  * @param model Reference model containing the metadata.
  * @return The total number of key-value pairs, or negative on failure.
  */
-int32_t argus_model_meta_count(const argus_model_t * model);
+ARGUS_API int32_t argus_model_meta_count(const argus_model_t * model);
 
 /**
  * @brief Retrieves the metadata key name at a specified index.
@@ -284,7 +298,7 @@ int32_t argus_model_meta_count(const argus_model_t * model);
  * @param buf_size Character size capacity limits of the provided target output buffer.
  * @return String character length written, or negative on failure.
  */
-int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
+ARGUS_API int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
 
 /**
  * @brief Retrieves the metadata value string at a specified index.
@@ -294,56 +308,56 @@ int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index
  * @param buf_size Character size capacity limits of the provided target output buffer.
  * @return String character length written, or negative on failure.
  */
-int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
+ARGUS_API int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
 
 /**
  * @brief Retrieves the model's embedding dimension.
  * @param model Reference model weights handler.
  * @return The embedding dimension length, or -1 on failure/not defined.
  */
-int32_t argus_model_n_embd(const argus_model_t * model);
+ARGUS_API int32_t argus_model_n_embd(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's training context length limit.
  * @param model Reference model weights handler.
  * @return The training context size ceiling, or -1 on failure/not defined.
  */
-int32_t argus_model_n_ctx_train(const argus_model_t * model);
+ARGUS_API int32_t argus_model_n_ctx_train(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's transformer layer count.
  * @param model Reference model weights handler.
  * @return The transformer layer count, or -1 on failure/not defined.
  */
-int32_t argus_model_n_layer(const argus_model_t * model);
+ARGUS_API int32_t argus_model_n_layer(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's attention query head count.
  * @param model Reference model weights handler.
  * @return The attention query head count, or -1 on failure/not defined.
  */
-int32_t argus_model_n_head(const argus_model_t * model);
+ARGUS_API int32_t argus_model_n_head(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's attention key-value head count.
  * @param model Reference model weights handler.
  * @return The attention key-value head count, or -1 on failure/not defined.
  */
-int32_t argus_model_n_head_kv(const argus_model_t * model);
+ARGUS_API int32_t argus_model_n_head_kv(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's total parameter count.
  * @param model Reference model weights handler.
  * @return The total parameter count, or 0 on failure.
  */
-uint64_t argus_model_n_params(const argus_model_t * model);
+ARGUS_API uint64_t argus_model_n_params(const argus_model_t * model);
 
 /**
  * @brief Checks if the loaded GGUF model contains an encoder stack or non-causal topology.
  * @param model Reference model weights handler.
  * @return True if the model has an encoder architecture, false otherwise.
  */
-bool argus_model_has_encoder(const argus_model_t * model);
+ARGUS_API bool argus_model_has_encoder(const argus_model_t * model);
 
 /**
  * @brief Evaluates an unmanaged batch payload through the model's compute graph.
@@ -352,7 +366,7 @@ bool argus_model_has_encoder(const argus_model_t * model);
  * @param batch The specific structural collection of tokens, offsets, and sequence bindings.
  * @return Status code mapping (0 denotes clean execution, non-zero alerts structural errors).
  */
-int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch);
+ARGUS_API int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch);
 
 /**
  * @brief Retrieves the embeddings vector for a specific sequence ID.
@@ -363,7 +377,7 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
  * @param max_floats Size of the output buffer in float elements.
  * @return Number of floats written to out_embeddings, or negative on failure.
  */
-int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats);
+ARGUS_API int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats);
 
 /**
  * @brief Samples a single token from the last computed layer logits matrix.
@@ -374,7 +388,7 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
  * @param repeat_penalty Token frequency suppression multiplier factor.
  * @return The resolved token ID primitive.
  */
-int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty);
+ARGUS_API int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty);
 
 /**
  * @brief Samples a single token applying specified logit bias weightings.
@@ -387,7 +401,7 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
  * @param bias_count Total count of biased tokens in the array.
  * @return The resolved token ID primitive.
  */
-int32_t argus_sample_token_with_bias(
+ARGUS_API int32_t argus_sample_token_with_bias(
     argus_context_t          * ctx, 
     int32_t                    seq_id, 
     float                      temperature, 
@@ -404,7 +418,7 @@ int32_t argus_sample_token_with_bias(
  * @param p0 Starting position offset cell parameter (-1 represents infinite tracking boundary bounds).
  * @param p1 Terminating position offset cell parameter.
  */
-void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
+ARGUS_API void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
 
 /**
  * @brief Evaluates and normalizes raw text input straight into an audio wave segment.
@@ -418,7 +432,7 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
  * @param max_samples Sizing ceiling constraints of the destination floating-point data buffer segment.
  * @return Absolute element sample count written directly to the memory address.
  */
-int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, int32_t voice_seed, float * out_pcm, int32_t max_samples, float * workspace, int64_t workspace_size_floats);
+ARGUS_API int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, int32_t voice_seed, float * out_pcm, int32_t max_samples, float * workspace, int64_t workspace_size_floats);
 
 // =========================================================================
 // 4. Audio Stream Transcription Subsystem (ASR / STT)
@@ -429,13 +443,13 @@ int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wav
  * @param params Parameters configuring model locations and processing boundaries.
  * @return Reference pointer to an active opaque instance handler, or NULL on failure.
  */
-argus_audio_context_t * argus_audio_init(const argus_audio_params_t * params);
+ARGUS_API argus_audio_context_t * argus_audio_init(const argus_audio_params_t * params);
 
 /**
  * @brief Safely dismantles whisper memory graphs and releases system handlers.
  * @param ctx Reference pointer to the targeted audio engine context handler.
  */
-void argus_audio_free(argus_audio_context_t * ctx);
+ARGUS_API void argus_audio_free(argus_audio_context_t * ctx);
 
 /**
  * @brief Processes floating-point audio data arrays directly through Whisper networks.
@@ -447,7 +461,7 @@ void argus_audio_free(argus_audio_context_t * ctx);
  * @param max_chars Safety character constraint limit of the text array buffer.
  * @return Realized string length count written inside the buffer.
  */
-int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_data, int32_t sample_count, char * out_text, int32_t max_chars);
+ARGUS_API int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_data, int32_t sample_count, char * out_text, int32_t max_chars);
 
 // =========================================================================
 // 5. Bleeding-Edge Multimodal LLM Operations (Phase 3)
@@ -479,33 +493,33 @@ typedef struct argus_input_chunks argus_input_chunks_t;
  * @param params Projector configuration parameters.
  * @return Multimodal context pointer, or NULL on failure.
  */
-argus_multimodal_t * argus_multimodal_init(const argus_model_t * model, const argus_multimodal_params_t * params);
+ARGUS_API argus_multimodal_t * argus_multimodal_init(const argus_model_t * model, const argus_multimodal_params_t * params);
 
 /**
  * @brief Releases multimodal projector resources.
  * @param mctx Target multimodal context pointer.
  */
-void argus_multimodal_free(argus_multimodal_t * mctx);
+ARGUS_API void argus_multimodal_free(argus_multimodal_t * mctx);
 
 /**
  * @brief Checks if the loaded multimodal context supports vision/image inputs.
  */
-bool argus_multimodal_support_vision(const argus_multimodal_t * mctx);
+ARGUS_API bool argus_multimodal_support_vision(const argus_multimodal_t * mctx);
 
 /**
  * @brief Checks if the loaded multimodal context supports audio inputs.
  */
-bool argus_multimodal_support_audio(const argus_multimodal_t * mctx);
+ARGUS_API bool argus_multimodal_support_audio(const argus_multimodal_t * mctx);
 
 /**
  * @brief Checks if the loaded multimodal context supports video inputs.
  */
-bool argus_multimodal_support_video(const argus_multimodal_t * mctx);
+ARGUS_API bool argus_multimodal_support_video(const argus_multimodal_t * mctx);
 
 /**
  * @brief Returns the expected audio sample rate of the projector (e.g. 16000).
  */
-int32_t argus_multimodal_get_audio_sample_rate(const argus_multimodal_t * mctx);
+ARGUS_API int32_t argus_multimodal_get_audio_sample_rate(const argus_multimodal_t * mctx);
 
 /**
  * @brief Creates a raw RGB image bitmap (RGBRGB... format).
@@ -514,7 +528,7 @@ int32_t argus_multimodal_get_audio_sample_rate(const argus_multimodal_t * mctx);
  * @param rgb_data Contiguous array of raw 24-bit RGB values.
  * @return Bitmap pointer, or NULL on failure.
  */
-argus_bitmap_t * argus_bitmap_from_rgb(uint32_t width, uint32_t height, const uint8_t * rgb_data);
+ARGUS_API argus_bitmap_t * argus_bitmap_from_rgb(uint32_t width, uint32_t height, const uint8_t * rgb_data);
 
 /**
  * @brief Creates a raw float PCM audio sample bitmap.
@@ -522,7 +536,7 @@ argus_bitmap_t * argus_bitmap_from_rgb(uint32_t width, uint32_t height, const ui
  * @param n_samples Total count of audio samples.
  * @return Bitmap pointer, or NULL on failure.
  */
-argus_bitmap_t * argus_bitmap_from_pcm(const float * pcm_data, int32_t n_samples);
+ARGUS_API argus_bitmap_t * argus_bitmap_from_pcm(const float * pcm_data, int32_t n_samples);
 
 /**
  * @brief Automatically loads and processes media (image/audio) from a local file.
@@ -531,7 +545,7 @@ argus_bitmap_t * argus_bitmap_from_pcm(const float * pcm_data, int32_t n_samples
  * @param placeholder If true, creates a placeholder bitmap for counting tokens without decoding.
  * @return Bitmap pointer, or NULL on failure.
  */
-argus_bitmap_t * argus_bitmap_load_file(argus_multimodal_t * mctx, const char * path, bool placeholder);
+ARGUS_API argus_bitmap_t * argus_bitmap_load_file(argus_multimodal_t * mctx, const char * path, bool placeholder);
 
 /**
  * @brief Automatically loads and processes media (image/audio) from an in-memory buffer.
@@ -541,13 +555,13 @@ argus_bitmap_t * argus_bitmap_load_file(argus_multimodal_t * mctx, const char * 
  * @param placeholder If true, creates a placeholder bitmap for counting tokens without decoding.
  * @return Bitmap pointer, or NULL on failure.
  */
-argus_bitmap_t * argus_bitmap_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, bool placeholder);
+ARGUS_API argus_bitmap_t * argus_bitmap_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, bool placeholder);
 
 /**
  * @brief Releases unmanaged bitmap memory resources.
  * @param bitmap Target bitmap pointer.
  */
-void argus_bitmap_free(argus_bitmap_t * bitmap);
+ARGUS_API void argus_bitmap_free(argus_bitmap_t * bitmap);
 
 /**
  * @brief Prepares a video processing session from a file.
@@ -557,7 +571,7 @@ void argus_bitmap_free(argus_bitmap_t * bitmap);
  * @param timestamp_interval_ms Interval for inserting timestamp text chunks (<= 0 to disable).
  * @return Video context pointer, or NULL on failure.
  */
-argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * path, float fps_target, int64_t timestamp_interval_ms);
+ARGUS_API argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * path, float fps_target, int64_t timestamp_interval_ms);
 
 /**
  * @brief Prepares a video processing session from an in-memory buffer.
@@ -568,13 +582,13 @@ argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * pa
  * @param timestamp_interval_ms Interval for inserting timestamp text chunks (<= 0 to disable).
  * @return Video context pointer, or NULL on failure.
  */
-argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, float fps_target, int64_t timestamp_interval_ms);
+ARGUS_API argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, float fps_target, int64_t timestamp_interval_ms);
 
 /**
  * @brief Releases video decoder context.
  * @param video Target video pointer.
  */
-void argus_video_free(argus_video_t * video);
+ARGUS_API void argus_video_free(argus_video_t * video);
 
 /**
  * @brief Iterates the video stream to extract the next bitmap frame or text timestamp chunk.
@@ -585,19 +599,19 @@ void argus_video_free(argus_video_t * video);
  * @param max_chars Safety character constraint limit of the out_text buffer.
  * @return 0 on success, -1 on EOF, -2 on decoding error.
  */
-int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitmap, char * out_text, int32_t max_chars);
+ARGUS_API int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitmap, char * out_text, int32_t max_chars);
 
 /**
  * @brief Allocates an empty input chunks container list.
  * @return Input chunks container pointer.
  */
-argus_input_chunks_t * argus_input_chunks_init(void);
+ARGUS_API argus_input_chunks_t * argus_input_chunks_init(void);
 
 /**
  * @brief Frees the input chunks container and all populated chunks inside it.
  * @param chunks Target chunks container pointer.
  */
-void argus_input_chunks_free(argus_input_chunks_t * chunks);
+ARGUS_API void argus_input_chunks_free(argus_input_chunks_t * chunks);
 
 /**
  * @brief Tokenizes the text prompt and media bitmaps into unified sequential chunks.
@@ -610,7 +624,7 @@ void argus_input_chunks_free(argus_input_chunks_t * chunks);
  * @param n_bitmaps Count of bitmaps in the array.
  * @return 0 on success, non-zero on tokenization/preprocessing failure.
  */
-int32_t argus_multimodal_tokenize(
+ARGUS_API int32_t argus_multimodal_tokenize(
     argus_multimodal_t * mctx,
     argus_input_chunks_t * output,
     const char * text,
@@ -631,7 +645,7 @@ int32_t argus_multimodal_tokenize(
  * @param out_new_n_past Destination address to write the updated KV cache offset.
  * @return 0 on success, non-zero on evaluation failure.
  */
-int32_t argus_eval_multimodal_chunks(
+ARGUS_API int32_t argus_eval_multimodal_chunks(
     argus_multimodal_t * mctx,
     argus_context_t * ctx,
     const argus_input_chunks_t * chunks,

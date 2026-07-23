@@ -84,8 +84,23 @@ set(ARGUS_SOURCES
         src/argus_multimodal.cc
 )
 
+# Standardize build output artifact locations across multi-config generators
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
 # Create the final single process-global shared library target
 add_library(argus SHARED ${ARGUS_SOURCES})
+
+# Mark target as building the shared library to activate dllexport on MSVC
+target_compile_definitions(argus PRIVATE ARGUS_BUILDING_DLL)
+
+# Hide private implementation symbols from static dependencies (ggml, llama, whisper, mtmd)
+set_target_properties(argus PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
 
 # Explicitly map unmanaged include paths for compiler visibility
 target_include_directories(argus PUBLIC

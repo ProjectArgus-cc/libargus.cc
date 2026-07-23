@@ -243,11 +243,16 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     cparams.type_v = (enum ggml_type)params->type_v;
 
     // Embeddings support
-    cparams.embeddings = params->embeddings;
+    bool is_encoder_model = model->model && llama_model_has_encoder(model->model);
+    cparams.embeddings = params->embeddings || is_encoder_model;
 
     struct llama_context * ctx = llama_init_from_model(model->model, cparams);
     if (!ctx) {
         return nullptr;
+    }
+
+    if (llama_pooling_type(ctx) != LLAMA_POOLING_TYPE_NONE) {
+        llama_set_embeddings(ctx, true);
     }
 
     struct llama_context * draft_ctx = nullptr;
@@ -414,7 +419,11 @@ static int32_t decode_tokens_chunked(
 
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
-        bool request_logits_chunk = request_logits && (decoded + chunk_size == n_tokens);
+        bool is_last_chunk = (decoded + chunk_size == n_tokens);
+        // Force logits/embeddings output calculation on terminal token of final chunk
+        bool request_logits_chunk = request_logits || is_last_chunk;
+
+        bool is_encoder_or_embeddings = llama_model_has_encoder(llama_get_model(lctx)) || (llama_pooling_type(lctx) != LLAMA_POOLING_TYPE_NONE);
 
         struct llama_batch batch = llama_batch_init(chunk_size, 0, 1);
         batch.n_tokens = chunk_size;
@@ -424,7 +433,7 @@ static int32_t decode_tokens_chunked(
             batch.pos[i]       = start_pos + decoded + i;
             batch.n_seq_id[i]  = 1;
             batch.seq_id[i][0] = seq_id;
-            batch.logits[i]    = (request_logits_chunk && (i == chunk_size - 1)) ? 1 : 0;
+            batch.logits[i]    = (is_encoder_or_embeddings || (request_logits_chunk && (i == chunk_size - 1))) ? 1 : 0;
         }
 
         if (abort_flag && *abort_flag) {
@@ -432,7 +441,12 @@ static int32_t decode_tokens_chunked(
             return -2; // Aborted
         }
 
-        int32_t result = llama_decode(lctx, batch);
+        int32_t result = 0;
+        if (llama_model_has_encoder(llama_get_model(lctx))) {
+            result = llama_encode(lctx, batch);
+        } else {
+            result = llama_decode(lctx, batch);
+        }
         llama_batch_free(batch);
 
         if (result != 0) {
@@ -471,6 +485,12 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
     float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
+    if (!embd) {
+        embd = llama_get_embeddings_ith(ctx->ctx, -1);
+    }
+    if (!embd) {
+        embd = llama_get_embeddings(ctx->ctx);
+    }
     if (!embd) {
         return -1;
     }

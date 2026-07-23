@@ -37,7 +37,7 @@ tasks.register<Exec>("compileCMake") {
     inputs.dir("include")
     inputs.file("CMakeLists.txt")
     inputs.file("version.txt")
-    outputs.file("build/$libName")
+    outputs.file("build/lib/$libName")
     
     val nproc = try {
         Runtime.getRuntime().availableProcessors()

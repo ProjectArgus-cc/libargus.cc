@@ -59,10 +59,23 @@ public final class ArgusBindings {
                     File currentDir = new File(userDir).getAbsoluteFile();
                     boolean found = false;
                     while (currentDir != null) {
-                        File localLib = new File(new File(currentDir, "build"), libName);
-                        if (localLib.exists()) {
-                            System.load(localLib.getAbsolutePath());
-                            resolvedExtractedDir = localLib.getParent();
+                        File buildDir = new File(currentDir, "build");
+                        File localLibInLib = new File(new File(buildDir, "lib"), libName);
+                        File localLibInBin = new File(new File(buildDir, "bin"), libName);
+                        File localLib = new File(buildDir, libName);
+
+                        File targetLib = null;
+                        if (localLibInLib.exists()) {
+                            targetLib = localLibInLib;
+                        } else if (localLibInBin.exists()) {
+                            targetLib = localLibInBin;
+                        } else if (localLib.exists()) {
+                            targetLib = localLib;
+                        }
+
+                        if (targetLib != null) {
+                            System.load(targetLib.getAbsolutePath());
+                            resolvedExtractedDir = targetLib.getParent();
                             found = true;
                             break;
                         }
