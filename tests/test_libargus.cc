@@ -22,7 +22,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    assert(std::strcmp(argus_version(), "1.3.0") == 0);
+    assert(std::strcmp(argus_version(), "1.4.0") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -111,6 +111,28 @@ int main() {
     assert(argus_model_n_head_kv(nullptr) == -1);
     assert(argus_model_n_params(nullptr) == 0);
     assert(argus_model_has_encoder(nullptr) == false);
+
+    // Test new Model KV memory calculation, size, desc, and GGML quantization introspection null safety
+    std::cout << "[Test] Verifying KV cache calculation and quantization introspection null safety..." << std::endl;
+    assert(argus_model_size(nullptr) == 0);
+    assert(argus_model_desc(nullptr, dummy_meta_buf, 10) == -1);
+    assert(argus_model_desc(nullptr, nullptr, 0) == -1);
+    assert(argus_model_kv_bytes_per_token(nullptr, ARGUS_KV_TYPE_F16, ARGUS_KV_TYPE_F16) == -1);
+    assert(argus_model_estimate_vram_bytes(nullptr, 4096, ARGUS_KV_TYPE_Q4_0, ARGUS_KV_TYPE_Q4_0) == -1);
+    assert(argus_model_estimate_vram_bytes(nullptr, -10, ARGUS_KV_TYPE_Q4_0, ARGUS_KV_TYPE_Q4_0) == -1);
+
+    // Test GGML quantization type size and block size calculation logic
+    std::cout << "[Test] Verifying GGML quantization type and block size calculations..." << std::endl;
+    assert(argus_quant_type_size(ARGUS_KV_TYPE_F16) == 2);
+    assert(argus_quant_block_size(ARGUS_KV_TYPE_F16) == 1);
+    assert(argus_quant_type_size(ARGUS_KV_TYPE_Q8_0) > 0);
+    assert(argus_quant_block_size(ARGUS_KV_TYPE_Q8_0) > 0);
+    assert(argus_quant_type_size(ARGUS_KV_TYPE_Q4_0) > 0);
+    assert(argus_quant_block_size(ARGUS_KV_TYPE_Q4_0) > 0);
+    assert(argus_quant_type_size(-1) == 0);
+    assert(argus_quant_block_size(-1) == 0);
+    assert(argus_quant_type_size(99999) == 0);
+    assert(argus_quant_block_size(99999) == 0);
 
     // Test new logit bias sampling null checks
     assert(argus_sample_token_with_bias(nullptr, 0, 0.0f, 0.0f, nullptr, 0) == -1);

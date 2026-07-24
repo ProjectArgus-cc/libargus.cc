@@ -332,6 +332,30 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_model_size = bind("argus_model_size",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_desc = bind("argus_model_desc",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_kv_bytes_per_token = bind("argus_model_kv_bytes_per_token",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_estimate_vram_bytes = bind("argus_model_estimate_vram_bytes",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_quant_type_size = bind("argus_quant_type_size",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_quant_block_size = bind("argus_quant_block_size",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
     // Evaluation & Pruning
     public static final MethodHandle argus_decode_batch = bind("argus_decode_batch",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

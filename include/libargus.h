@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 1.3.0
+ * @version 1.4.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -358,6 +358,68 @@ ARGUS_API uint64_t argus_model_n_params(const argus_model_t * model);
  * @return True if the model has an encoder architecture, false otherwise.
  */
 ARGUS_API bool argus_model_has_encoder(const argus_model_t * model);
+
+/**
+ * @brief Retrieves total loaded memory size of model weights in bytes.
+ * @param model Reference model weights handler.
+ * @return Total weight footprint in bytes, or 0 on failure.
+ */
+ARGUS_API uint64_t argus_model_size(const argus_model_t * model);
+
+/**
+ * @brief Retrieves human-readable model architecture description string.
+ * @param model Reference model weights handler.
+ * @param buf Output buffer array to populate.
+ * @param buf_size Sizing constraint capacity limits of out buffer.
+ * @return Character length written, or negative on failure.
+ */
+ARGUS_API int32_t argus_model_desc(const argus_model_t * model, char * buf, int32_t buf_size);
+
+/**
+ * @brief Calculates the KV cache memory cost in bytes per token for a loaded model.
+ * Takes into account transformer layer count, KV head count, head dimension, and
+ * KV cache quantization precision (type_k, type_v).
+ * 
+ * @param model Reference model handler.
+ * @param type_k Key cache quantization type (argus_kv_type_t / ggml_type).
+ * @param type_v Value cache quantization type (argus_kv_type_t / ggml_type).
+ * @return Bytes required per token for the entire model KV cache stack, or -1 on error.
+ */
+ARGUS_API int64_t argus_model_kv_bytes_per_token(
+    const argus_model_t * model, 
+    int32_t type_k, 
+    int32_t type_v
+);
+
+/**
+ * @brief Calculates total estimated memory requirement (Model Weights + KV Cache) for a target context length.
+ * 
+ * @param model Reference model handler.
+ * @param context_length Proposed context size in tokens (e.g. 65536).
+ * @param type_k Key cache quantization type.
+ * @param type_v Value cache quantization type.
+ * @return Total estimated VRAM bytes required, or -1 on error.
+ */
+ARGUS_API int64_t argus_model_estimate_vram_bytes(
+    const argus_model_t * model,
+    int32_t context_length,
+    int32_t type_k,
+    int32_t type_v
+);
+
+/**
+ * @brief Gets byte size for a block of elements of the specified GGML quantization type.
+ * @param type GGML quantization type identifier (argus_kv_type_t / ggml_type).
+ * @return Block size in bytes, or 0 for invalid type.
+ */
+ARGUS_API size_t argus_quant_type_size(int32_t type);
+
+/**
+ * @brief Gets element count per block for the specified GGML quantization type.
+ * @param type GGML quantization type identifier (argus_kv_type_t / ggml_type).
+ * @return Element count per block, or 0 for invalid type.
+ */
+ARGUS_API int32_t argus_quant_block_size(int32_t type);
 
 /**
  * @brief Evaluates an unmanaged batch payload through the model's compute graph.

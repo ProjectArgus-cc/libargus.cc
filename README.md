@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!NOTE]
-> **v1.3.0 Stable — Strict C ABI Visibility, MSVC Import Library Alignment & Pooled Embedding Pipeline**
+> **v1.4.0 Stable — Native Model KV-Cache Memory Calculation & Structural Inspection API**
 >
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -23,6 +23,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
+*   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints and total VRAM requirements without FFI allocation overhead.
 
 ---
 
@@ -231,6 +232,16 @@ int nCtxTrain = model.nCtxTrain(); // Context length training ceiling
 int nLayer = model.nLayer(); // Transformer layers count
 int nHead = model.nHead(); // Attention head count
 long nParams = model.nParams(); // Total model parameters count
+long modelSize = model.modelSize(); // Total model weight footprint in VRAM (bytes)
+String desc = model.desc(); // Human-readable architecture string (e.g. "llama 8B Q4_K_M")
+
+// Pre-allocation VRAM budgeting calculations
+long kvPerToken = model.kvBytesPerToken(ArgusContextConfig.KV_TYPE_Q4_0, ArgusContextConfig.KV_TYPE_Q4_0); // KV bytes / token
+long estVram = model.estimateVramBytes(65536, ArgusContextConfig.KV_TYPE_Q4_0, ArgusContextConfig.KV_TYPE_Q4_0); // Total VRAM for 64k tokens
+
+// Inspect GGML quantization block & element sizing primitives
+long elemSize = ArgusModel.quantTypeSize(ArgusContextConfig.KV_TYPE_Q4_0); // Block byte size
+int blockSize = ArgusModel.quantBlockSize(ArgusContextConfig.KV_TYPE_Q4_0); // Element count per block
 
 // Retrieve metadata strings by key name
 String modelArch = model.getMetadataValue("general.architecture"); // e.g. "qwen2vl"

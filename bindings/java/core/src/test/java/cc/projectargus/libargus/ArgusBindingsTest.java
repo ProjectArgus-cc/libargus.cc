@@ -262,16 +262,61 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.3.0", ArgusBindings.VERSION);
+        assertEquals("1.4.0", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.3.0", nativeVer);
+            assertEquals("1.4.0", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
+        }
+    }
+
+    @Test
+    public void testQuantizationTypeIntrospection() {
+        System.out.println("[Java Test] Validating GGML quantization type introspection via Java Panama...");
+        ArgusBackend.init();
+        try {
+            assertEquals(2L, ArgusModel.quantTypeSize(ArgusContextConfig.KV_TYPE_F16));
+            assertEquals(1, ArgusModel.quantBlockSize(ArgusContextConfig.KV_TYPE_F16));
+
+            assertTrue(ArgusModel.quantTypeSize(ArgusContextConfig.KV_TYPE_Q8_0) > 0);
+            assertTrue(ArgusModel.quantBlockSize(ArgusContextConfig.KV_TYPE_Q8_0) > 0);
+
+            assertTrue(ArgusModel.quantTypeSize(ArgusContextConfig.KV_TYPE_Q4_0) > 0);
+            assertTrue(ArgusModel.quantBlockSize(ArgusContextConfig.KV_TYPE_Q4_0) > 0);
+
+            assertEquals(0L, ArgusModel.quantTypeSize(-1));
+            assertEquals(0, ArgusModel.quantBlockSize(-1));
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testModelMemoryCalculationNullSafety() {
+        System.out.println("[Java Test] Validating Model memory calculation null handling downcalls...");
+        ArgusBackend.init();
+        try {
+            long size = (long) ArgusBindings.argus_model_size.invokeExact(MemorySegment.NULL);
+            assertEquals(0L, size);
+
+            long kvBytes = (long) ArgusBindings.argus_model_kv_bytes_per_token.invokeExact(
+                MemorySegment.NULL, ArgusContextConfig.KV_TYPE_F16, ArgusContextConfig.KV_TYPE_F16
+            );
+            assertEquals(-1L, kvBytes);
+
+            long estVram = (long) ArgusBindings.argus_model_estimate_vram_bytes.invokeExact(
+                MemorySegment.NULL, 4096, ArgusContextConfig.KV_TYPE_Q4_0, ArgusContextConfig.KV_TYPE_Q4_0
+            );
+            assertEquals(-1L, estVram);
+        } catch (Throwable t) {
+            fail("Exception thrown in model memory calculation downcalls: " + t.getMessage());
+        } finally {
+            ArgusBackend.free();
         }
     }
 }

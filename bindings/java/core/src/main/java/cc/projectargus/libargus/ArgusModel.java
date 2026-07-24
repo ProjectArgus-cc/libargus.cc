@@ -336,6 +336,75 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Returns the total memory size of model weights in bytes.
+     */
+    public long modelSize() {
+        try {
+            return (long) ArgusBindings.argus_model_size.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query model size", t);
+        }
+    }
+
+    /**
+     * Returns a human-readable string describing the model architecture.
+     */
+    public String desc() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment buf = arena.allocate(128);
+            int len = (int) ArgusBindings.argus_model_desc.invokeExact(modelPtr, buf, 128);
+            if (len < 0) return "";
+            return buf.getString(0);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query model description", t);
+        }
+    }
+
+    /**
+     * Calculates the KV cache memory footprint in bytes per token for the entire layer stack.
+     */
+    public long kvBytesPerToken(int typeK, int typeV) {
+        try {
+            return (long) ArgusBindings.argus_model_kv_bytes_per_token.invokeExact(modelPtr, typeK, typeV);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to calculate KV bytes per token", t);
+        }
+    }
+
+    /**
+     * Estimates total memory requirement (Weights + KV Cache) for a target context length.
+     */
+    public long estimateVramBytes(int contextLength, int typeK, int typeV) {
+        try {
+            return (long) ArgusBindings.argus_model_estimate_vram_bytes.invokeExact(modelPtr, contextLength, typeK, typeV);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to estimate VRAM bytes", t);
+        }
+    }
+
+    /**
+     * Returns block size in bytes for the specified GGML quantization type.
+     */
+    public static long quantTypeSize(int type) {
+        try {
+            return (long) ArgusBindings.argus_quant_type_size.invokeExact(type);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query GGML quantization type size", t);
+        }
+    }
+
+    /**
+     * Returns element count per block for the specified GGML quantization type.
+     */
+    public static int quantBlockSize(int type) {
+        try {
+            return (int) ArgusBindings.argus_quant_block_size.invokeExact(type);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query GGML quantization block size", t);
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged model structure.
      */
     public MemorySegment getHandle() {

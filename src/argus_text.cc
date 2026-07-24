@@ -9,6 +9,7 @@
 
 #include "libargus.h"
 #include "llama.h"
+#include "ggml.h"
 
 #include <vector>
 #include <string>
@@ -397,6 +398,83 @@ uint64_t argus_model_n_params(const argus_model_t * model) {
 
 bool argus_model_has_encoder(const argus_model_t * model) {
     return model && model->model ? llama_model_has_encoder(model->model) : false;
+}
+
+uint64_t argus_model_size(const argus_model_t * model) {
+    return model && model->model ? llama_model_size(model->model) : 0;
+}
+
+int32_t argus_model_desc(const argus_model_t * model, char * buf, int32_t buf_size) {
+    if (!model || !model->model || !buf || buf_size <= 0) {
+        return -1;
+    }
+    return llama_model_desc(model->model, buf, (size_t)buf_size);
+}
+
+static enum ggml_type to_ggml_type(int32_t type) {
+    if (type == ARGUS_KV_TYPE_F16) {
+        return GGML_TYPE_F16;
+    }
+    if (type < 0 || type >= GGML_TYPE_COUNT) {
+        return GGML_TYPE_F16;
+    }
+    return static_cast<enum ggml_type>(type);
+}
+
+size_t argus_quant_type_size(int32_t type) {
+    if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
+        return 0;
+    }
+    enum ggml_type gtype = to_ggml_type(type);
+    return ggml_type_size(gtype);
+}
+
+int32_t argus_quant_block_size(int32_t type) {
+    if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
+        return 0;
+    }
+    enum ggml_type gtype = to_ggml_type(type);
+    return (int32_t)ggml_blck_size(gtype);
+}
+
+int64_t argus_model_kv_bytes_per_token(const argus_model_t * model, int32_t type_k, int32_t type_v) {
+    if (!model || !model->model) {
+        return -1;
+    }
+
+    int32_t n_layer = argus_model_n_layer(model);
+    int32_t n_head = argus_model_n_head(model);
+    int32_t n_head_kv = argus_model_n_head_kv(model);
+    int32_t n_embd = argus_model_n_embd(model);
+
+    if (n_layer <= 0 || n_head <= 0 || n_head_kv <= 0 || n_embd <= 0) {
+        return -1;
+    }
+
+    enum ggml_type gk = to_ggml_type(type_k);
+    enum ggml_type gv = to_ggml_type(type_v);
+
+    int32_t head_dim = n_embd / n_head;
+
+    double bytes_per_elem_k = ggml_type_sizef(gk);
+    double bytes_per_elem_v = ggml_type_sizef(gv);
+
+    double kv_bytes_per_token_per_layer = n_head_kv * head_dim * (bytes_per_elem_k + bytes_per_elem_v);
+    return static_cast<int64_t>(n_layer * kv_bytes_per_token_per_layer);
+}
+
+int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t context_length, int32_t type_k, int32_t type_v) {
+    if (!model || !model->model || context_length < 0) {
+        return -1;
+    }
+
+    int64_t kv_per_token = argus_model_kv_bytes_per_token(model, type_k, type_v);
+    if (kv_per_token < 0) {
+        return -1;
+    }
+
+    uint64_t model_bytes = argus_model_size(model);
+    return static_cast<int64_t>(model_bytes) + (kv_per_token * static_cast<int64_t>(context_length));
 }
 
 // =========================================================================
