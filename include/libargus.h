@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 1.4.0
+ * @version 1.4.1
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -202,6 +202,29 @@ ARGUS_API argus_context_t * argus_context_init(argus_model_t * model, const argu
  * @param ctx Target execution context.
  */
 ARGUS_API void argus_context_free(argus_context_t * ctx);
+
+/**
+ * @brief Sets CPU thread counts for an existing context session.
+ * Automatically updates main evaluation, speculative draft, and vocoder contexts if present.
+ * @param ctx Target execution context.
+ * @param n_threads Number of threads for single-token generation decoding.
+ * @param n_threads_batch Number of threads for prompt and batch token processing.
+ */
+ARGUS_API void argus_set_n_threads(argus_context_t * ctx, int32_t n_threads, int32_t n_threads_batch);
+
+/**
+ * @brief Queries active thread count for single-token generation decoding.
+ * @param ctx Target execution context.
+ * @return Number of allocated generation threads, or -1 if context is invalid.
+ */
+ARGUS_API int32_t argus_get_n_threads(argus_context_t * ctx);
+
+/**
+ * @brief Queries active thread count for prompt and batch token processing.
+ * @param ctx Target execution context.
+ * @return Number of allocated batch threads, or -1 if context is invalid.
+ */
+ARGUS_API int32_t argus_get_n_threads_batch(argus_context_t * ctx);
 
 // =========================================================================
 // 3. Core Text Inference & Native Codec Speech Synthesis (TTS)
@@ -512,6 +535,20 @@ ARGUS_API argus_audio_context_t * argus_audio_init(const argus_audio_params_t * 
  * @param ctx Reference pointer to the targeted audio engine context handler.
  */
 ARGUS_API void argus_audio_free(argus_audio_context_t * ctx);
+
+/**
+ * @brief Sets CPU thread count for an existing Whisper audio context session.
+ * @param ctx Reference pointer to the targeted audio engine context handler.
+ * @param n_threads Number of threads for acoustic matrix calculations.
+ */
+ARGUS_API void argus_audio_set_n_threads(argus_audio_context_t * ctx, int32_t n_threads);
+
+/**
+ * @brief Queries active CPU thread count for Whisper audio context session.
+ * @param ctx Reference pointer to the targeted audio engine context handler.
+ * @return Number of allocated acoustic threads, or -1 if context is invalid.
+ */
+ARGUS_API int32_t argus_audio_get_n_threads(argus_audio_context_t * ctx);
 
 /**
  * @brief Processes floating-point audio data arrays directly through Whisper networks.

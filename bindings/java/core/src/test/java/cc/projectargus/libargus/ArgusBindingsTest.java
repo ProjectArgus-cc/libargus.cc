@@ -262,13 +262,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.4.0", ArgusBindings.VERSION);
+        assertEquals("1.4.1", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.4.0", nativeVer);
+            assertEquals("1.4.1", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -319,4 +319,27 @@ public class ArgusBindingsTest {
             ArgusBackend.free();
         }
     }
+
+    @Test
+    public void testThreadControlNullChecks() {
+        System.out.println("[Java Test] Validating thread control null/error downcalls...");
+        ArgusBackend.init();
+        try {
+            ArgusBindings.argus_set_n_threads.invokeExact(MemorySegment.NULL, 4, 4);
+            int nThreads = (int) ArgusBindings.argus_get_n_threads.invokeExact(MemorySegment.NULL);
+            assertEquals(-1, nThreads);
+
+            int nThreadsBatch = (int) ArgusBindings.argus_get_n_threads_batch.invokeExact(MemorySegment.NULL);
+            assertEquals(-1, nThreadsBatch);
+
+            ArgusBindings.argus_audio_set_n_threads.invokeExact(MemorySegment.NULL, 4);
+            int audioThreads = (int) ArgusBindings.argus_audio_get_n_threads.invokeExact(MemorySegment.NULL);
+            assertEquals(-1, audioThreads);
+        } catch (Throwable t) {
+            fail("Exception thrown in thread control downcalls: " + t.getMessage());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
 }
+

@@ -250,6 +250,18 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_set_n_threads = bind("argus_set_n_threads",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_get_n_threads = bind("argus_get_n_threads",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_get_n_threads_batch = bind("argus_get_n_threads_batch",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
     // Tokenization
     public static final MethodHandle argus_tokenize = bind("argus_tokenize",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, 
@@ -395,6 +407,14 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_audio_free = bind("argus_audio_free",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_audio_set_n_threads = bind("argus_audio_set_n_threads",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_audio_get_n_threads = bind("argus_audio_get_n_threads",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
     public static final MethodHandle argus_transcribe_audio = bind("argus_transcribe_audio",

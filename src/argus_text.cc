@@ -300,6 +300,45 @@ void argus_context_free(argus_context_t * ctx) {
     }
 }
 
+void argus_set_n_threads(argus_context_t * ctx, int32_t n_threads, int32_t n_threads_batch) {
+    if (!ctx) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    if (ctx->ctx) {
+        llama_set_n_threads(ctx->ctx, n_threads, n_threads_batch);
+    }
+    if (ctx->draft_ctx) {
+        llama_set_n_threads(ctx->draft_ctx, n_threads, n_threads_batch);
+    }
+    if (ctx->vocoder_ctx) {
+        llama_set_n_threads(ctx->vocoder_ctx, n_threads, n_threads_batch);
+    }
+}
+
+int32_t argus_get_n_threads(argus_context_t * ctx) {
+    if (!ctx) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    if (!ctx->ctx) {
+        return -1;
+    }
+    return llama_n_threads(ctx->ctx);
+}
+
+int32_t argus_get_n_threads_batch(argus_context_t * ctx) {
+    if (!ctx) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    if (!ctx->ctx) {
+        return -1;
+    }
+    return llama_n_threads_batch(ctx->ctx);
+}
+
+
 // =========================================================================
 // Tokenizer (Lock-Free, Read-Only Model Vocabulary Operations)
 // =========================================================================

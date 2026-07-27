@@ -1,7 +1,7 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 > [!NOTE]
-> **v1.4.0 Stable — Native Model KV-Cache Memory Calculation & Structural Inspection API**
+> **v1.4.1 Stable — Dynamic Context CPU Thread Scaling & Governor API**
 >
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -24,6 +24,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
 *   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints and total VRAM requirements without FFI allocation overhead.
+*   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
 
 ---
 
@@ -299,6 +300,22 @@ try (Arena sessionArena = Arena.ofConfined()) {
         if (token == model.vocabEos()) break;
     }
 }
+```
+
+### Dynamic CPU Thread Allocation & Governor Control
+
+Dynamically adjust single-token decoding (`n_threads`) and batch prefilling (`n_threads_batch`) allocations on an existing context session without purging KV state or recreating contexts:
+
+```java
+// Query active thread counts from the native context
+int curGenThreads = context.getNThreads();
+int curBatchThreads = context.getNThreadsBatch();
+
+// Dynamically tune CPU thread allocation (e.g. scaling down during thermal throttling or background tasks)
+context.setNThreads(4, 8); // 4 threads for generation, 8 threads for prompt batch prefilling
+
+// Audio contexts (Whisper ASR) also support dynamic acoustic thread scaling
+audioContext.setNThreads(4);
 ```
 
 ---

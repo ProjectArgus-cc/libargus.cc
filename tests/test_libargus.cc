@@ -22,7 +22,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    assert(std::strcmp(argus_version(), "1.4.0") == 0);
+    assert(std::strcmp(argus_version(), "1.4.1") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -153,6 +153,16 @@ int main() {
     assert(test_params.kv_unified == true);
 
     std::cout << "[Test] Vocab and metadata null safety tests completed successfully." << std::endl;
+
+    // Test dynamic thread count control null checks
+    std::cout << "[Test] Verifying thread count control null safety checks..." << std::endl;
+    argus_set_n_threads(nullptr, 4, 4);
+    assert(argus_get_n_threads(nullptr) == -1);
+    assert(argus_get_n_threads_batch(nullptr) == -1);
+    argus_audio_set_n_threads(nullptr, 4);
+    assert(argus_audio_get_n_threads(nullptr) == -1);
+    std::cout << "[Test] Thread count control null safety assertions completed successfully." << std::endl;
+
 
     // 7. Free the global backends
     argus_backend_free();

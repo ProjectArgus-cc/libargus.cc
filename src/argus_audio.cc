@@ -51,6 +51,23 @@ void argus_audio_free(argus_audio_context_t * ctx) {
     }
 }
 
+void argus_audio_set_n_threads(argus_audio_context_t * ctx, int32_t n_threads) {
+    if (!ctx) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    ctx->cpu_threads = (n_threads > 0) ? n_threads : 1;
+}
+
+int32_t argus_audio_get_n_threads(argus_audio_context_t * ctx) {
+    if (!ctx) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    return ctx->cpu_threads;
+}
+
+
 int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_data, int32_t sample_count, char * out_text, int32_t max_chars) {
     if (!ctx || !pcm_data || sample_count <= 0 || !out_text || max_chars <= 0) {
         return -1;

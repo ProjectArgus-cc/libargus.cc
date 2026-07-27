@@ -427,11 +427,62 @@ public final class ArgusContext implements AutoCloseable {
     }
 
     /**
+     * Dynamically configures the CPU thread counts for this execution context session.
+     * Automatically updates main evaluation, speculative draft, and vocoder contexts if present.
+     *
+     * @param nThreads      number of threads for single-token generation decoding
+     * @param nThreadsBatch number of threads for prompt and batch token processing
+     */
+    public void setNThreads(int nThreads, int nThreadsBatch) {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("Context session has been closed");
+        }
+        try {
+            ArgusBindings.argus_set_n_threads.invokeExact(ctxPtr, nThreads, nThreadsBatch);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to set thread counts for context", t);
+        }
+    }
+
+    /**
+     * Queries active CPU thread count for single-token generation decoding.
+     *
+     * @return number of allocated generation threads
+     */
+    public int getNThreads() {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("Context session has been closed");
+        }
+        try {
+            return (int) ArgusBindings.argus_get_n_threads.invokeExact(ctxPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query thread count for context", t);
+        }
+    }
+
+    /**
+     * Queries active CPU thread count for prompt and batch token processing.
+     *
+     * @return number of allocated batch threads
+     */
+    public int getNThreadsBatch() {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("Context session has been closed");
+        }
+        try {
+            return (int) ArgusBindings.argus_get_n_threads_batch.invokeExact(ctxPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query batch thread count for context", t);
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged context structure.
      */
     public MemorySegment getHandle() {
         return ctxPtr;
     }
+
 
     @Override
     public synchronized void close() {

@@ -95,11 +95,44 @@ public final class ArgusAudioContext implements AutoCloseable {
     }
 
     /**
+     * Sets the CPU thread count for this Whisper audio context session.
+     *
+     * @param nThreads number of threads for acoustic matrix calculations
+     */
+    public void setNThreads(int nThreads) {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("Audio context session has been closed");
+        }
+        try {
+            ArgusBindings.argus_audio_set_n_threads.invokeExact(ctxPtr, nThreads);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to set thread count for audio context", t);
+        }
+    }
+
+    /**
+     * Queries active CPU thread count for this Whisper audio context session.
+     *
+     * @return number of allocated acoustic calculation threads
+     */
+    public int getNThreads() {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("Audio context session has been closed");
+        }
+        try {
+            return (int) ArgusBindings.argus_audio_get_n_threads.invokeExact(ctxPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query thread count for audio context", t);
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged context structure.
      */
     public MemorySegment getHandle() {
         return ctxPtr;
     }
+
 
     @Override
     public synchronized void close() {
