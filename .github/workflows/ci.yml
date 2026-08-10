@@ -84,17 +84,21 @@ jobs:
   # =========================================================================
   build-test-windows:
     name: Windows (${{ matrix.target }})
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: cpu
+            os: windows-latest
             cmake_flags: "-DGGML_CUDA=OFF"
           - target: cuda
-            cmake_flags: "-DGGML_CUDA=ON"
+            os: windows-2022
+            cmake_flags: "-DGGML_CUDA=ON -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
           - target: vulkan
+            os: windows-latest
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
+
 
     steps:
       - name: Checkout Repository

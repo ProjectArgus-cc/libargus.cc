@@ -51,8 +51,9 @@ jobs:
             cmake_flags: "-DGGML_CUDA=OFF"
           - platform: windows-x86_64
             target: cuda
-            os: windows-latest
-            cmake_flags: "-DGGML_CUDA=ON"
+            os: windows-2022
+            cmake_flags: "-DGGML_CUDA=ON -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+
           - platform: windows-x86_64
             target: vulkan
             os: windows-latest
