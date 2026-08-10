@@ -59,18 +59,20 @@ tasks.clean {
 }
 
 subprojects {
-    apply(plugin = "maven-publish")
-    apply(plugin = "signing")
+    plugins.withType<JavaPlugin> {
+        apply(plugin = "maven-publish")
+        apply(plugin = "signing")
 
-    configure<PublishingExtension> {
-        publications {
-            create<MavenPublication>("mavenJava") {
-                from(components["java"])
+        configure<PublishingExtension> {
+            publications {
+                create<MavenPublication>("mavenJava") {
+                    from(components["java"])
 
-                pom {
-                    name.set(project.name)
-                    description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
-                    url.set("https://github.com/ProjectArgus-cc/libargus.cc")
+                    pom {
+                        name.set(project.name)
+                        description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
+                        url.set("https://github.com/ProjectArgus-cc/libargus.cc")
+
                     licenses {
                         license {
                             name.set("MIT License")
@@ -122,5 +124,7 @@ subprojects {
             sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
         }
     }
+    }
 }
+
 
