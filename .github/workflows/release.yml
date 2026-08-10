@@ -71,7 +71,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc shaderc nvidia-cuda-toolkit
+            build-essential cmake ninja-build libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc libshaderc-dev nvidia-cuda-toolkit
+
 
       - name: Set up MSVC Developer Environment
         if: runner.os == 'Windows'

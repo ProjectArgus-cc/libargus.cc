@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan-dev \
     vulkan-tools \
     mesa-vulkan-drivers \
+    glslc \
+    libshaderc-dev \
     nvidia-cuda-toolkit \
     && rm -rf /var/lib/apt/lists/*
 
