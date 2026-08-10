@@ -29,6 +29,8 @@ jobs:
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
           - target: cuda
             cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
+          - target: rocm
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
           - target: vulkan
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
 
@@ -90,6 +92,9 @@ jobs:
             cmake_flags: "-DGGML_CUDA=OFF"
           - target: cuda
             cmake_flags: "-DGGML_CUDA=ON"
+          - target: vulkan
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
+
 
     steps:
       - name: Checkout Repository

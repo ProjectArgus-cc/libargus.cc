@@ -22,6 +22,9 @@ jobs:
   build-native-artifacts:
     name: Build Native Artifacts (${{ matrix.platform }}-${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -30,32 +33,34 @@ jobs:
             target: cpu
             os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
-            artifact_name: libargus-linux-cpu.so
           - platform: linux-x86_64
             target: cuda
             os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
-            artifact_name: libargus-linux-cuda.so
+          - platform: linux-x86_64
+            target: rocm
+            os: ubuntu-latest
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
           - platform: linux-x86_64
             target: vulkan
             os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
-            artifact_name: libargus-linux-vulkan.so
           - platform: windows-x86_64
             target: cpu
             os: windows-latest
             cmake_flags: "-DGGML_CUDA=OFF"
-            artifact_name: argus-windows-cpu.dll
           - platform: windows-x86_64
             target: cuda
             os: windows-latest
             cmake_flags: "-DGGML_CUDA=ON"
-            artifact_name: argus-windows-cuda.dll
+          - platform: windows-x86_64
+            target: vulkan
+            os: windows-latest
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
           - platform: macos-aarch64
             target: metal
             os: macos-14
             cmake_flags: "-DGGML_METAL=ON -DGGML_CUDA=OFF"
-            artifact_name: libargus-macos-metal.dylib
 
     steps:
       - name: Checkout Repository
@@ -77,10 +82,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DARGUS_PORTABLE=ON \
-            ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON ${{ matrix.cmake_flags }}
 
       - name: Compile Native Binary
         run: |
@@ -120,7 +122,31 @@ jobs:
         with:
           path: native-binaries
 
-      - name: Build Java Core & Platform Jars
+      - name: Copy Downloaded Native Libraries to Fine-Grained Subproject Resource Directories
+        run: |
+          mkdir -p bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu/
+          mkdir -p bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu/
+          mkdir -p bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda/
+          mkdir -p bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda/
+          mkdir -p bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm/
+          mkdir -p bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan/
+          mkdir -p bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan/
+          mkdir -p bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal/
+
+          [ -f native-binaries/native-linux-x86_64-cpu/libargus.so ] && cp native-binaries/native-linux-x86_64-cpu/libargus.so bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu/ || true
+          [ -f native-binaries/native-windows-x86_64-cpu/argus.dll ] && cp native-binaries/native-windows-x86_64-cpu/argus.dll bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu/ || true
+
+          [ -f native-binaries/native-linux-x86_64-cuda/libargus.so ] && cp native-binaries/native-linux-x86_64-cuda/libargus.so bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda/ || true
+          [ -f native-binaries/native-windows-x86_64-cuda/argus.dll ] && cp native-binaries/native-windows-x86_64-cuda/argus.dll bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda/ || true
+
+          [ -f native-binaries/native-linux-x86_64-rocm/libargus.so ] && cp native-binaries/native-linux-x86_64-rocm/libargus.so bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm/ || true
+
+          [ -f native-binaries/native-linux-x86_64-vulkan/libargus.so ] && cp native-binaries/native-linux-x86_64-vulkan/libargus.so bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan/ || true
+          [ -f native-binaries/native-windows-x86_64-vulkan/argus.dll ] && cp native-binaries/native-windows-x86_64-vulkan/argus.dll bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan/ || true
+
+          [ -f native-binaries/native-macos-aarch64-metal/libargus.dylib ] && cp native-binaries/native-macos-aarch64-metal/libargus.dylib bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal/ || true
+
+      - name: Build Java Core & Native Classifier Jars
         run: |
           ./gradlew build --info
 
@@ -145,10 +171,7 @@ jobs:
         with:
           files: |
             bindings/java/core/build/libs/*.jar
-            bindings/java/platform-cpu/build/libs/*.jar
-            bindings/java/platform-cuda/build/libs/*.jar
-            bindings/java/platform-rocm/build/libs/*.jar
-            bindings/java/platform-vulkan/build/libs/*.jar
+            bindings/java/native-*/build/libs/*.jar
             native-binaries/**/*
           draft: false
           prerelease: false
