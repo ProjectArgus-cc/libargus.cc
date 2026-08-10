@@ -31,9 +31,10 @@ if(GGML_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # Target Turing (7.5), Ampere (8.0, 8.6), Ada Lovelace (8.9), Hopper (9.0) + Blackwell/RTX 5090 PTX virtual fallbacks
-        set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;90-real;90-virtual;100-virtual;120-virtual")
+        # Target Turing (7.5), Ampere (8.0, 8.6), Ada Lovelace (8.9), Hopper (9.0) + 90-virtual PTX fallback
+        set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;90-real;90-virtual")
     endif()
+
 
 endif()
 
