@@ -71,7 +71,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libvulkan-dev nvidia-cuda-toolkit
+            build-essential cmake ninja-build libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc shaderc nvidia-cuda-toolkit
+
+      - name: Set up MSVC Developer Environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Set up CUDA Toolkit (Windows)
         if: runner.os == 'Windows' && matrix.target == 'cuda'
@@ -80,9 +84,17 @@ jobs:
           cuda: '12.4.1'
           method: 'network'
 
+      - name: Set up Vulkan SDK (Windows)
+        if: runner.os == 'Windows' && matrix.target == 'vulkan'
+        uses: humbletim/install-vulkan-sdk-action@v1.1
+        with:
+          version: 1.3.283.0
+          cache: true
+
       - name: Configure CMake
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON ${{ matrix.cmake_flags }}
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON ${{ matrix.cmake_flags }}
+
 
       - name: Compile Native Binary
         run: |
