@@ -1,0 +1,156 @@
+name: Release & Deployment Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g. 1.4.2)'
+        required: true
+        default: '1.4.2'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # =========================================================================
+  # 1. Build Cross-Platform Native Shared Libraries
+  # =========================================================================
+  build-native-artifacts:
+    name: Build Native Artifacts (${{ matrix.platform }}-${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: cpu
+            os: ubuntu-latest
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
+            artifact_name: libargus-linux-cpu.so
+          - platform: linux-x86_64
+            target: cuda
+            os: ubuntu-latest
+            cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
+            artifact_name: libargus-linux-cuda.so
+          - platform: linux-x86_64
+            target: vulkan
+            os: ubuntu-latest
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
+            artifact_name: libargus-linux-vulkan.so
+          - platform: windows-x86_64
+            target: cpu
+            os: windows-latest
+            cmake_flags: "-DGGML_CUDA=OFF"
+            artifact_name: argus-windows-cpu.dll
+          - platform: windows-x86_64
+            target: cuda
+            os: windows-latest
+            cmake_flags: "-DGGML_CUDA=ON"
+            artifact_name: argus-windows-cuda.dll
+          - platform: macos-aarch64
+            target: metal
+            os: macos-14
+            cmake_flags: "-DGGML_METAL=ON -DGGML_CUDA=OFF"
+            artifact_name: libargus-macos-metal.dylib
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libvulkan-dev nvidia-cuda-toolkit
+
+      - name: Set up CUDA Toolkit (Windows)
+        if: runner.os == 'Windows' && matrix.target == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: 'network'
+
+      - name: Configure CMake
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARGUS_PORTABLE=ON \
+            ${{ matrix.cmake_flags }}
+
+      - name: Compile Native Binary
+        run: |
+          cmake --build build --config Release -j 4
+
+      - name: Upload Native Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.target }}
+          path: |
+            build/lib/libargus.so
+            build/lib/argus.dll
+            build/bin/Release/argus.dll
+            build/lib/libargus.dylib
+          if-no-files-found: ignore
+
+  # =========================================================================
+  # 2. Package Java Modular Classifier Jars & Create GitHub Release
+  # =========================================================================
+  publish-release:
+    name: Package Jars & Publish Release
+    needs: build-native-artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Download All Compiled Native Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native-binaries
+
+      - name: Build Java Core & Platform Jars
+        run: |
+          ./gradlew build --info
+
+      - name: Publish to GitHub Packages Maven Registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./gradlew publishRepositoryGitHubPackages --info
+
+      - name: Publish to Maven Central (Sonatype OSSRH)
+        if: env.MAVEN_CENTRAL_USERNAME != ''
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          ./gradlew publishRepositoryMavenCentral --info
+
+      - name: Create GitHub Tagged Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bindings/java/core/build/libs/*.jar
+            bindings/java/platform-cpu/build/libs/*.jar
+            bindings/java/platform-cuda/build/libs/*.jar
+            bindings/java/platform-rocm/build/libs/*.jar
+            bindings/java/platform-vulkan/build/libs/*.jar
+            native-binaries/**/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
