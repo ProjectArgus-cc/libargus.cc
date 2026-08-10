@@ -86,10 +86,12 @@ jobs:
 
       - name: Set up Vulkan SDK (Windows)
         if: runner.os == 'Windows' && matrix.target == 'vulkan'
-        uses: humbletim/install-vulkan-sdk-action@v1.1
-        with:
-          version: 1.3.283.0
-          cache: true
+        run: |
+          choco install vulkan-sdk -y
+          VULKAN_DIR=$(ls -d /c/VulkanSDK/* | tail -n 1)
+          echo "VULKAN_SDK=$VULKAN_DIR" >> $GITHUB_ENV
+          echo "$VULKAN_DIR/Bin" >> $GITHUB_PATH
+
 
       - name: Configure CMake
         run: |
