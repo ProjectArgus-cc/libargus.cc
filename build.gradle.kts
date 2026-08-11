@@ -107,12 +107,15 @@ subprojects {
             // 2. Maven Central (Sonatype OSSRH / Central Portal)
             maven {
                 name = "MavenCentral"
-                url = uri("https://oss.sonatype.org/service/local/staging/deploy/maven2/")
+                val repoUrl = System.getenv("MAVEN_CENTRAL_REPO_URL") 
+                    ?: "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+                url = uri(repoUrl)
                 credentials {
                     username = System.getenv("MAVEN_CENTRAL_USERNAME") ?: project.findProperty("ossrhUsername")?.toString()
                     password = System.getenv("MAVEN_CENTRAL_PASSWORD") ?: project.findProperty("ossrhPassword")?.toString()
                 }
             }
+
         }
     }
 
