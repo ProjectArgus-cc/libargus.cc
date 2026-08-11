@@ -170,7 +170,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./gradlew publishRepositoryGitHubPackages --info
+          ./gradlew publishAllPublicationsToGitHubPackagesRepository --info
 
       - name: Publish to Maven Central (Sonatype OSSRH)
         if: env.MAVEN_CENTRAL_USERNAME != ''
@@ -180,7 +180,8 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          ./gradlew publishRepositoryMavenCentral --info
+          ./gradlew publishAllPublicationsToMavenCentralRepository --info
+
 
       - name: Create GitHub Tagged Release
         uses: softprops/action-gh-release@v2
