@@ -67,9 +67,11 @@ subprojects {
             publications {
                 create<MavenPublication>("mavenJava") {
                     from(components["java"])
+                    artifactId = if (project.name == "bindings-java-core") "libargus-core" else project.name
 
                     pom {
-                        name.set(project.name)
+                        name.set(artifactId)
+
                         description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
                         url.set("https://github.com/ProjectArgus-cc/libargus.cc")
 

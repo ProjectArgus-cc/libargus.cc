@@ -2,7 +2,12 @@ plugins {
     `java-library`
 }
 
+base {
+    archivesName.set("libargus-core")
+}
+
 group = "cc.projectargus"
+
 val versionFile = file("${project.rootDir}/version.txt")
 version = versionFile.readText().trim()
 
