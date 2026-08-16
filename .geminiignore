@@ -4,3 +4,4 @@ build/
 cmake-build-debug/
 *.log
 models/
+native-binaries/

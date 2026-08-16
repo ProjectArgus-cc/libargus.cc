@@ -1,0 +1,195 @@
+name: Continuous Integration Matrix
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =========================================================================
+  # 1. Linux Compilation & Testing Matrix
+  # =========================================================================
+  build-test-linux:
+    name: Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: cpu
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
+          - target: cuda
+            cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
+          - target: rocm
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
+          - target: vulkan
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22 (Panama FFM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Install System Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache \
+            libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc libshaderc-dev nvidia-cuda-toolkit
+
+
+      - name: Set up ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-linux-${{ matrix.target }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-linux-${{ matrix.target }}-ccache-
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARGUS_PORTABLE=ON \
+            ${{ matrix.cmake_flags }}
+
+      - name: Compile Native Binary
+        run: |
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Execute C++ Unit Tests
+        run: |
+          ./build/bin/test_libargus
+
+      - name: Execute JUnit Panama FFM Integration Tests
+        run: |
+          ./gradlew test --info
+
+  # =========================================================================
+  # 2. Windows MSVC Compilation & Testing Matrix
+  # =========================================================================
+  build-test-windows:
+    name: Windows (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: cpu
+            os: windows-latest
+            cmake_flags: "-DGGML_CUDA=OFF"
+          - target: cuda
+            os: windows-2022
+            cmake_flags: "-DGGML_CUDA=ON -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+          - target: vulkan
+            os: windows-latest
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
+
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22 (Panama FFM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Set up MSVC Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up CUDA Toolkit (Windows)
+        if: matrix.target == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: 'network'
+
+      - name: Set up Vulkan SDK (Windows)
+        if: matrix.target == 'vulkan'
+        run: |
+          choco install vulkan-sdk -y
+          VULKAN_DIR=$(ls -d /c/VulkanSDK/* | tail -n 1)
+          echo "VULKAN_SDK=$VULKAN_DIR" >> $GITHUB_ENV
+          echo "$VULKAN_DIR/Bin" >> $GITHUB_PATH
+
+
+      - name: Configure CMake (Ninja)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }}
+
+
+      - name: Compile Native Binary (Release)
+        run: |
+          cmake --build build --config Release -j 4
+
+      - name: Execute C++ Unit Tests
+        run: |
+          .\build\bin\Release\test_libargus.exe
+
+      - name: Execute JUnit Panama FFM Integration Tests
+        run: |
+          .\gradlew.bat test --info
+
+  # =========================================================================
+  # 3. macOS Apple Silicon Compilation & Testing Matrix
+  # =========================================================================
+  build-test-macos:
+    name: macOS Arm64 Metal
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22 (Panama FFM)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Install ccache
+        run: |
+          brew install ccache ninja
+
+      - name: Set up ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-macos-metal-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-macos-metal-ccache-
+
+      - name: Configure CMake (Metal)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_METAL=ON \
+            -DGGML_CUDA=OFF
+
+      - name: Compile Native Binary
+        run: |
+          cmake --build build --config Release -j $(sysctl -n hw.ncpu)
+
+      - name: Execute C++ Unit Tests
+        run: |
+          ./build/bin/test_libargus
+
+      - name: Execute JUnit Panama FFM Integration Tests
+        run: |
+          ./gradlew test --info

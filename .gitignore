@@ -1,14 +1,12 @@
 # Build Folders
 /build
 /cmake-build-debug
-/gradle
 /bindings/java/*/.gradle
 /bindings/java/*/build
 
-gradlew
-gradlew.bat
 .idea
 .gradle
+
 
 models
 media

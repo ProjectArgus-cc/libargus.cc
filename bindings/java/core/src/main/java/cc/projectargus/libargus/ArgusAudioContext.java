@@ -63,8 +63,9 @@ public final class ArgusAudioContext implements AutoCloseable {
      * Synchronously transcribes a float PCM buffer containing 16kHz audio samples.
      * Mutex-locked inside the native layer to prevent concurrency issues.
      *
-     * @param pcmData  audio float data normalized to [-1.0, 1.0] (16kHz sampling rate)
-     * @param maxChars maximum output character capacity to allocate off-heap
+     * @param pcmSeg      audio float data normalized to [-1.0, 1.0] (16kHz sampling rate)
+     * @param sampleCount number of float samples in the PCM buffer
+     * @param maxChars    maximum output character capacity to allocate off-heap
      * @return transcribed text string
      */
     public String transcribe(MemorySegment pcmSeg, int sampleCount, int maxChars) {

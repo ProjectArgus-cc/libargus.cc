@@ -1,5 +1,6 @@
 plugins {
     base
+    id("com.gradleup.nmcp.aggregation") version "1.6.1"
 }
 
 // Build-time controls for hardware acceleration (e.g. CUDA, Metal)
@@ -57,3 +58,108 @@ tasks.register<Delete>("cleanCMake") {
 tasks.clean {
     dependsOn("cleanCMake")
 }
+
+repositories {
+    mavenCentral()
+}
+
+subprojects {
+    repositories {
+        mavenCentral()
+    }
+
+    plugins.withType<JavaPlugin> {
+        apply(plugin = "maven-publish")
+        apply(plugin = "signing")
+        apply(plugin = "com.gradleup.nmcp")
+
+        configure<JavaPluginExtension> {
+            withSourcesJar()
+            withJavadocJar()
+        }
+
+        tasks.withType<Javadoc> {
+            (options as? StandardJavadocDocletOptions)?.apply {
+                addStringOption("Xdoclint:none", "-quiet")
+                encoding = "UTF-8"
+                charSet = "UTF-8"
+            }
+        }
+
+        configure<PublishingExtension> {
+            publications {
+                create<MavenPublication>("mavenJava") {
+                    from(components["java"])
+                    artifactId = if (project.name == "bindings-java-core") "libargus-core" else project.name
+
+                    pom {
+                        name.set(artifactId)
+                        description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
+                        url.set("https://github.com/ProjectArgus-cc/libargus.cc")
+
+                        licenses {
+                            license {
+                                name.set("MIT License")
+                                url.set("https://opensource.org/licenses/MIT")
+                            }
+                        }
+                        developers {
+                            developer {
+                                id.set("projectargus")
+                                name.set("ProjectArgus Team")
+                            }
+                        }
+                        scm {
+                            connection.set("scm:git:git://github.com/ProjectArgus-cc/libargus.cc.git")
+                            developerConnection.set("scm:git:ssh://github.com:ProjectArgus-cc/libargus.cc.git")
+                            url.set("https://github.com/ProjectArgus-cc/libargus.cc")
+                        }
+                    }
+                }
+            }
+            repositories {
+                // 1. GitHub Packages Maven Registry
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/ProjectArgus-cc/libargus.cc")
+                    credentials {
+                        username = System.getenv("GITHUB_ACTOR") ?: project.findProperty("gpr.user")?.toString()
+                        password = System.getenv("GITHUB_TOKEN") ?: project.findProperty("gpr.key")?.toString()
+                    }
+                }
+            }
+        }
+
+        configure<SigningExtension> {
+            val signingKey = System.getenv("GPG_PRIVATE_KEY") ?: project.findProperty("signing.key")?.toString()
+            val signingPassphrase = System.getenv("GPG_PASSPHRASE") ?: project.findProperty("signing.password")?.toString()
+            if (!signingKey.isNullOrEmpty()) {
+                useInMemoryPgpKeys(signingKey, signingPassphrase)
+                sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
+            }
+        }
+    }
+}
+
+nmcpAggregation {
+    centralPortal {
+        username.set(
+            providers.gradleProperty("mavenCentralUsername")
+                .orElse(providers.environmentVariable("MAVEN_CENTRAL_USERNAME"))
+        )
+        password.set(
+            providers.gradleProperty("mavenCentralPassword")
+                .orElse(providers.environmentVariable("MAVEN_CENTRAL_PASSWORD"))
+        )
+        publishingType.set("AUTOMATIC")
+    }
+}
+
+dependencies {
+    subprojects.forEach { subproject ->
+        "nmcpAggregation"(subproject)
+    }
+}
+
+
+

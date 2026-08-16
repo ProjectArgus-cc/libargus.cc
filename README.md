@@ -1,8 +1,16 @@
 # libargus
 ## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
+
+[![CI Matrix](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/ci.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
+[![JDK Target](https://img.shields.io/badge/JDK-22%2B%20Panama%20FFM-orange.svg)](https://openjdk.org/jeps/454)
+[![C++ Standard](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
 > [!NOTE]
-> **v1.4.1 Stable — Dynamic Context CPU Thread Scaling & Governor API**
->
+> **v1.4.2 Stable — Dynamic Context CPU Thread Scaling & Governor API**
+> 
+
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -349,7 +357,7 @@ This hybrid methodology treats AI not as an unguided code generator, but as an a
 
 `libargus` is engineered strictly as **Layer 0 (The Core Execution Bedrock)** for low-latency, performance-critical JVM platforms. It provides the raw compute foundation required for zero-allocation native tensor orchestration via Project Panama.
 
-This engine serves as the high-throughput infrastructure for a broader cognitive platform. To view the high-level roadmap detailing how this runtime block interfaces with the upcoming Layer 1 stateful cognitive core (L-TABB) and the unified system dashboard, visit the master project organization landing page at [ProjectArgus.cc](https://github.com/projectargus-cc).
+This engine serves as the high-throughput infrastructure for a broader cognitive platform. To view the high-level roadmap detailing how this runtime block interfaces with the upcoming Layer 1 stateful cognitive core (L-TABB) and the unified system dashboard, visit the master project organization landing page at [ProjectArgus.cc](https://github.com/ProjectArgus-cc).
 
 ---
 
