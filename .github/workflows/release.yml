@@ -185,7 +185,10 @@ jobs:
           if [ -z "$MAVEN_CENTRAL_USERNAME" ] || [ -z "$MAVEN_CENTRAL_PASSWORD" ]; then
             echo "::warning::MAVEN_CENTRAL_USERNAME or MAVEN_CENTRAL_PASSWORD is not set. Skipping Maven Central publication."
           else
-            ./gradlew publishAllPublicationsToCentralPortal --info
+            ./gradlew publishAggregationToCentralPortal \
+              -PmavenCentralUsername="$MAVEN_CENTRAL_USERNAME" \
+              -PmavenCentralPassword="$MAVEN_CENTRAL_PASSWORD" \
+              --info
           fi
 
 

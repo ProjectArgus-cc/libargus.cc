@@ -1,5 +1,6 @@
 plugins {
     base
+    id("com.gradleup.nmcp.aggregation") version "1.6.1"
 }
 
 // Build-time controls for hardware acceleration (e.g. CUDA, Metal)
@@ -62,6 +63,7 @@ subprojects {
     plugins.withType<JavaPlugin> {
         apply(plugin = "maven-publish")
         apply(plugin = "signing")
+        apply(plugin = "com.gradleup.nmcp")
 
         configure<JavaPluginExtension> {
             withSourcesJar()
@@ -128,6 +130,26 @@ subprojects {
                 sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
             }
         }
+    }
+}
+
+nmcpAggregation {
+    centralPortal {
+        username.set(
+            providers.gradleProperty("mavenCentralUsername")
+                .orElse(providers.environmentVariable("MAVEN_CENTRAL_USERNAME"))
+        )
+        password.set(
+            providers.gradleProperty("mavenCentralPassword")
+                .orElse(providers.environmentVariable("MAVEN_CENTRAL_PASSWORD"))
+        )
+        publishingType.set("AUTOMATIC")
+    }
+}
+
+dependencies {
+    subprojects.forEach { subproject ->
+        "nmcpAggregation"(subproject)
     }
 }
 
