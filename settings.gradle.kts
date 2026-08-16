@@ -2,10 +2,22 @@ plugins {
     id("com.gradleup.nmcp.settings") version "1.6.1"
 }
 
+val centralUsername = providers.environmentVariable("MAVEN_CENTRAL_USERNAME").orNull
+    ?: System.getenv("MAVEN_CENTRAL_USERNAME")
+    ?: providers.gradleProperty("mavenCentralUsername").orNull
+
+val centralPassword = providers.environmentVariable("MAVEN_CENTRAL_PASSWORD").orNull
+    ?: System.getenv("MAVEN_CENTRAL_PASSWORD")
+    ?: providers.gradleProperty("mavenCentralPassword").orNull
+
 nmcpSettings {
     centralPortal {
-        username.set(System.getenv("MAVEN_CENTRAL_USERNAME") ?: providers.gradleProperty("ossrhUsername").orNull ?: "")
-        password.set(System.getenv("MAVEN_CENTRAL_PASSWORD") ?: providers.gradleProperty("ossrhPassword").orNull ?: "")
+        if (!centralUsername.isNullOrBlank()) {
+            username.set(centralUsername)
+        }
+        if (!centralPassword.isNullOrBlank()) {
+            password.set(centralPassword)
+        }
         publishingType.set("AUTOMATIC")
     }
 }
