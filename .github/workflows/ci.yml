@@ -2,11 +2,8 @@ name: Continuous Integration Matrix
 
 on:
   push:
-    branches:
-      - '*'
-  pull_request:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 
