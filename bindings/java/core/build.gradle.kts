@@ -45,6 +45,10 @@ tasks.processResources {
     dependsOn(copyVersionFile)
 }
 
+tasks.named("sourcesJar") {
+    dependsOn(copyVersionFile)
+}
+
 tasks.test {
     dependsOn(":compileCMake")
     useJUnitPlatform()

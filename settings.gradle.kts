@@ -1,3 +1,15 @@
+plugins {
+    id("com.gradleup.nmcp.settings") version "1.6.1"
+}
+
+nmcpSettings {
+    centralPortal {
+        username.set(System.getenv("MAVEN_CENTRAL_USERNAME") ?: providers.gradleProperty("ossrhUsername").orNull ?: "")
+        password.set(System.getenv("MAVEN_CENTRAL_PASSWORD") ?: providers.gradleProperty("ossrhPassword").orNull ?: "")
+        publishingType.set("AUTOMATIC")
+    }
+}
+
 rootProject.name = "libargus"
 
 include("bindings-java-core")

@@ -63,6 +63,19 @@ subprojects {
         apply(plugin = "maven-publish")
         apply(plugin = "signing")
 
+        configure<JavaPluginExtension> {
+            withSourcesJar()
+            withJavadocJar()
+        }
+
+        tasks.withType<Javadoc> {
+            (options as? StandardJavadocDocletOptions)?.apply {
+                addStringOption("Xdoclint:none", "-quiet")
+                encoding = "UTF-8"
+                charSet = "UTF-8"
+            }
+        }
+
         configure<PublishingExtension> {
             publications {
                 create<MavenPublication>("mavenJava") {
@@ -71,65 +84,52 @@ subprojects {
 
                     pom {
                         name.set(artifactId)
-
                         description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
                         url.set("https://github.com/ProjectArgus-cc/libargus.cc")
 
-                    licenses {
-                        license {
-                            name.set("MIT License")
-                            url.set("https://opensource.org/licenses/MIT")
+                        licenses {
+                            license {
+                                name.set("MIT License")
+                                url.set("https://opensource.org/licenses/MIT")
+                            }
+                        }
+                        developers {
+                            developer {
+                                id.set("projectargus")
+                                name.set("ProjectArgus Team")
+                            }
+                        }
+                        scm {
+                            connection.set("scm:git:git://github.com/ProjectArgus-cc/libargus.cc.git")
+                            developerConnection.set("scm:git:ssh://github.com:ProjectArgus-cc/libargus.cc.git")
+                            url.set("https://github.com/ProjectArgus-cc/libargus.cc")
                         }
                     }
-                    developers {
-                        developer {
-                            id.set("projectargus")
-                            name.set("ProjectArgus Team")
-                        }
+                }
+            }
+            repositories {
+                // 1. GitHub Packages Maven Registry
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/ProjectArgus-cc/libargus.cc")
+                    credentials {
+                        username = System.getenv("GITHUB_ACTOR") ?: project.findProperty("gpr.user")?.toString()
+                        password = System.getenv("GITHUB_TOKEN") ?: project.findProperty("gpr.key")?.toString()
                     }
-                    scm {
-                        connection.set("scm:git:git://github.com/ProjectArgus-cc/libargus.cc.git")
-                        developerConnection.set("scm:git:ssh://github.com:ProjectArgus-cc/libargus.cc.git")
-                        url.set("https://github.com/ProjectArgus-cc/libargus.cc")
-                    }
                 }
             }
         }
-        repositories {
-            // 1. GitHub Packages Maven Registry
-            maven {
-                name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/ProjectArgus-cc/libargus.cc")
-                credentials {
-                    username = System.getenv("GITHUB_ACTOR") ?: project.findProperty("gpr.user")?.toString()
-                    password = System.getenv("GITHUB_TOKEN") ?: project.findProperty("gpr.key")?.toString()
-                }
+
+        configure<SigningExtension> {
+            val signingKey = System.getenv("GPG_PRIVATE_KEY") ?: project.findProperty("signing.key")?.toString()
+            val signingPassphrase = System.getenv("GPG_PASSPHRASE") ?: project.findProperty("signing.password")?.toString()
+            if (!signingKey.isNullOrEmpty()) {
+                useInMemoryPgpKeys(signingKey, signingPassphrase)
+                sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
             }
-
-            // 2. Maven Central (Sonatype OSSRH / Central Portal)
-            maven {
-                name = "MavenCentral"
-                val repoUrl = System.getenv("MAVEN_CENTRAL_REPO_URL") 
-                    ?: "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-                url = uri(repoUrl)
-                credentials {
-                    username = System.getenv("MAVEN_CENTRAL_USERNAME") ?: project.findProperty("ossrhUsername")?.toString()
-                    password = System.getenv("MAVEN_CENTRAL_PASSWORD") ?: project.findProperty("ossrhPassword")?.toString()
-                }
-            }
-
         }
-    }
-
-    configure<SigningExtension> {
-        val signingKey = System.getenv("GPG_PRIVATE_KEY") ?: project.findProperty("signing.key")?.toString()
-        val signingPassphrase = System.getenv("GPG_PASSPHRASE") ?: project.findProperty("signing.password")?.toString()
-        if (!signingKey.isNullOrEmpty()) {
-            useInMemoryPgpKeys(signingKey, signingPassphrase)
-            sign(extensions.getByType<PublishingExtension>().publications["mavenJava"])
-        }
-    }
     }
 }
+
 
 
