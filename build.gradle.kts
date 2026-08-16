@@ -59,7 +59,15 @@ tasks.clean {
     dependsOn("cleanCMake")
 }
 
+repositories {
+    mavenCentral()
+}
+
 subprojects {
+    repositories {
+        mavenCentral()
+    }
+
     plugins.withType<JavaPlugin> {
         apply(plugin = "maven-publish")
         apply(plugin = "signing")
