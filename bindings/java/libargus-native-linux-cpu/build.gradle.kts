@@ -13,7 +13,7 @@ java {
 }
 
 dependencies {
-    implementation(project(":bindings-java-core"))
+    implementation(project(":libargus-core"))
 }
 
 sourceSets {

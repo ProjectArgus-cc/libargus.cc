@@ -165,14 +165,14 @@ jobs:
             echo "Successfully staged $file -> $dest_dir/$pattern ($size bytes)"
           }
 
-          copy_native "native-binaries/native-linux-x86_64-cpu" "bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu" "libargus.so"
-          copy_native "native-binaries/native-linux-x86_64-cuda" "bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda" "libargus.so"
-          copy_native "native-binaries/native-linux-x86_64-rocm" "bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm" "libargus.so"
-          copy_native "native-binaries/native-linux-x86_64-vulkan" "bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan" "libargus.so"
-          copy_native "native-binaries/native-windows-x86_64-cpu" "bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu" "argus.dll"
-          copy_native "native-binaries/native-windows-x86_64-cuda" "bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda" "argus.dll"
-          copy_native "native-binaries/native-windows-x86_64-vulkan" "bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan" "argus.dll"
-          copy_native "native-binaries/native-macos-aarch64-metal" "bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal" "libargus.dylib"
+          copy_native "native-binaries/native-linux-x86_64-cpu" "bindings/java/libargus-native-linux-cpu/src/main/resources/natives/linux-amd64/cpu" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-cuda" "bindings/java/libargus-native-linux-cuda/src/main/resources/natives/linux-amd64/cuda" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-rocm" "bindings/java/libargus-native-linux-rocm/src/main/resources/natives/linux-amd64/rocm" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-vulkan" "bindings/java/libargus-native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan" "libargus.so"
+          copy_native "native-binaries/native-windows-x86_64-cpu" "bindings/java/libargus-native-windows-cpu/src/main/resources/natives/windows-amd64/cpu" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-cuda" "bindings/java/libargus-native-windows-cuda/src/main/resources/natives/windows-amd64/cuda" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-vulkan" "bindings/java/libargus-native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan" "argus.dll"
+          copy_native "native-binaries/native-macos-aarch64-metal" "bindings/java/libargus-native-macos-metal/src/main/resources/natives/macos-aarch64/metal" "libargus.dylib"
 
       - name: Build Java Core & Native Classifier Jars
         run: |
@@ -183,15 +183,15 @@ jobs:
           set -euo pipefail
           echo "Verifying compiled and packaged JAR artifacts..."
 
-          core_jar=$(find bindings/java/core/build/libs -name "libargus-core-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+          core_jar=$(find bindings/java/libargus-core/build/libs -name "libargus-core-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
           if [ -z "$core_jar" ] || [ ! -f "$core_jar" ]; then
-            echo "::error::Core JAR not found in bindings/java/core/build/libs" >&2
+            echo "::error::Core JAR not found in bindings/java/libargus-core/build/libs" >&2
             exit 1
           fi
           core_size=$(stat -c%s "$core_jar" 2>/dev/null || stat -f%z "$core_jar")
           echo "Core JAR: $core_jar ($core_size bytes)"
 
-          for d in bindings/java/native-*; do
+          for d in bindings/java/libargus-native-*; do
             [ -d "$d" ] || continue
             subproject=$(basename "$d")
             jar_file=$(find "$d/build/libs" -name "${subproject}-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -n 1)
@@ -247,8 +247,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            bindings/java/core/build/libs/*.jar
-            bindings/java/native-*/build/libs/*.jar
+            bindings/java/libargus-core/build/libs/*.jar
+            bindings/java/libargus-native-*/build/libs/*.jar
             native-binaries/**/*
           draft: false
           prerelease: false

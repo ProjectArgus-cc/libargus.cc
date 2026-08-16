@@ -90,7 +90,7 @@ subprojects {
             publications {
                 create<MavenPublication>("mavenJava") {
                     from(components["java"])
-                    artifactId = if (project.name == "bindings-java-core") "libargus-core" else project.name
+                    artifactId = project.name
 
                     pom {
                         name.set(artifactId)
