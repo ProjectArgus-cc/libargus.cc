@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.4.2 Stable — Dynamic Context CPU Thread Scaling & Governor API**
+> **v1.5.0 Release — Release for Maven Central**
 > 
 
 
