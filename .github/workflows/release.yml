@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. 1.5.0)'
+        description: 'Release Version (e.g. 1.5.1)'
         required: true
-        default: '1.5.0'
+        default: '1.5.1'
 
 permissions:
   contents: write
@@ -104,16 +104,19 @@ jobs:
         run: |
           cmake --build build --config Release -j 4
 
+      - name: Stage Native Binary
+        run: |
+          mkdir -p staging
+          find build -type f \( -name "libargus.so" -o -name "argus.dll" -o -name "libargus.dylib" \) -exec cp {} staging/ \;
+          echo "Staged native binary artifacts:"
+          ls -la staging/
+
       - name: Upload Native Binary Artifact
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.platform }}-${{ matrix.target }}
-          path: |
-            build/lib/libargus.so
-            build/lib/argus.dll
-            build/bin/Release/argus.dll
-            build/lib/libargus.dylib
-          if-no-files-found: ignore
+          path: staging/*
+          if-no-files-found: error
 
   # =========================================================================
   # 2. Package Java Modular Classifier Jars & Create GitHub Release
@@ -140,31 +143,78 @@ jobs:
 
       - name: Copy Downloaded Native Libraries to Fine-Grained Subproject Resource Directories
         run: |
-          mkdir -p bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu/
-          mkdir -p bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu/
-          mkdir -p bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda/
-          mkdir -p bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda/
-          mkdir -p bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm/
-          mkdir -p bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan/
-          mkdir -p bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan/
-          mkdir -p bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal/
+          set -euo pipefail
 
-          [ -f native-binaries/native-linux-x86_64-cpu/libargus.so ] && cp native-binaries/native-linux-x86_64-cpu/libargus.so bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu/ || true
-          [ -f native-binaries/native-windows-x86_64-cpu/argus.dll ] && cp native-binaries/native-windows-x86_64-cpu/argus.dll bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu/ || true
+          copy_native() {
+            local src_dir="$1"
+            local dest_dir="$2"
+            local pattern="$3"
 
-          [ -f native-binaries/native-linux-x86_64-cuda/libargus.so ] && cp native-binaries/native-linux-x86_64-cuda/libargus.so bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda/ || true
-          [ -f native-binaries/native-windows-x86_64-cuda/argus.dll ] && cp native-binaries/native-windows-x86_64-cuda/argus.dll bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda/ || true
+            mkdir -p "$dest_dir"
+            local file
+            file=$(find "$src_dir" -type f -name "$pattern" 2>/dev/null | head -n 1)
 
-          [ -f native-binaries/native-linux-x86_64-rocm/libargus.so ] && cp native-binaries/native-linux-x86_64-rocm/libargus.so bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm/ || true
+            if [ -z "$file" ] || [ ! -f "$file" ]; then
+              echo "::error::Required native binary '$pattern' not found under '$src_dir'!" >&2
+              exit 1
+            fi
 
-          [ -f native-binaries/native-linux-x86_64-vulkan/libargus.so ] && cp native-binaries/native-linux-x86_64-vulkan/libargus.so bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan/ || true
-          [ -f native-binaries/native-windows-x86_64-vulkan/argus.dll ] && cp native-binaries/native-windows-x86_64-vulkan/argus.dll bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan/ || true
+            cp "$file" "$dest_dir/"
+            local size
+            size=$(stat -c%s "$dest_dir/$pattern" 2>/dev/null || stat -f%z "$dest_dir/$pattern")
+            echo "Successfully staged $file -> $dest_dir/$pattern ($size bytes)"
+          }
 
-          [ -f native-binaries/native-macos-aarch64-metal/libargus.dylib ] && cp native-binaries/native-macos-aarch64-metal/libargus.dylib bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal/ || true
+          copy_native "native-binaries/native-linux-x86_64-cpu" "bindings/java/native-linux-cpu/src/main/resources/natives/linux-amd64/cpu" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-cuda" "bindings/java/native-linux-cuda/src/main/resources/natives/linux-amd64/cuda" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-rocm" "bindings/java/native-linux-rocm/src/main/resources/natives/linux-amd64/rocm" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-vulkan" "bindings/java/native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan" "libargus.so"
+          copy_native "native-binaries/native-windows-x86_64-cpu" "bindings/java/native-windows-cpu/src/main/resources/natives/windows-amd64/cpu" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-cuda" "bindings/java/native-windows-cuda/src/main/resources/natives/windows-amd64/cuda" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-vulkan" "bindings/java/native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan" "argus.dll"
+          copy_native "native-binaries/native-macos-aarch64-metal" "bindings/java/native-macos-metal/src/main/resources/natives/macos-aarch64/metal" "libargus.dylib"
 
       - name: Build Java Core & Native Classifier Jars
         run: |
           ./gradlew build --info
+
+      - name: Verify Packaged Native Classifier Jars
+        run: |
+          set -euo pipefail
+          echo "Verifying compiled and packaged JAR artifacts..."
+
+          core_jar=$(find bindings/java/core/build/libs -name "libargus-core-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+          if [ -z "$core_jar" ] || [ ! -f "$core_jar" ]; then
+            echo "::error::Core JAR not found in bindings/java/core/build/libs" >&2
+            exit 1
+          fi
+          core_size=$(stat -c%s "$core_jar" 2>/dev/null || stat -f%z "$core_jar")
+          echo "Core JAR: $core_jar ($core_size bytes)"
+
+          for d in bindings/java/native-*; do
+            [ -d "$d" ] || continue
+            subproject=$(basename "$d")
+            jar_file=$(find "$d/build/libs" -name "${subproject}-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" 2>/dev/null | head -n 1)
+
+            if [ -z "$jar_file" ] || [ ! -f "$jar_file" ]; then
+              echo "::error::Native JAR missing for $subproject" >&2
+              exit 1
+            fi
+
+            jar_size=$(stat -c%s "$jar_file" 2>/dev/null || stat -f%z "$jar_file")
+            echo "Checking $jar_file ($jar_size bytes)..."
+
+            if [ "$jar_size" -lt 500000 ]; then
+              echo "::error::$jar_file size ($jar_size bytes) is below minimum expected binary size (>500KB)!" >&2
+              exit 1
+            fi
+
+            if ! jar tf "$jar_file" | grep -q "^natives/"; then
+              echo "::error::$jar_file does NOT contain embedded native library under natives/!" >&2
+              exit 1
+            fi
+          done
+          echo "All native classifier jars verified successfully with embedded binary payloads."
 
       - name: Publish to GitHub Packages Maven Registry
         continue-on-error: true

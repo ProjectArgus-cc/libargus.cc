@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.5.0 Release — Release for Maven Central**
+> **v1.5.1 Release — Native Packaging & Deployment Hardening**
 > 
 
 
