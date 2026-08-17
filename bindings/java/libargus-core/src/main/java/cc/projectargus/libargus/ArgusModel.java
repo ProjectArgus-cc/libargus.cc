@@ -336,6 +336,28 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Returns the rotary position embedding dimensions per token (4 for M-RoPE, 1 for standard 1D-RoPE).
+     */
+    public int nPosPerEmbd() {
+        try {
+            return (int) ArgusBindings.argus_model_n_pos_per_embd.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query model n_pos_per_embd", t);
+        }
+    }
+
+    /**
+     * Checks whether the loaded model uses Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE).
+     */
+    public boolean isMRoPE() {
+        try {
+            return (boolean) ArgusBindings.argus_model_is_mrope.invokeExact(modelPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query model is_mrope", t);
+        }
+    }
+
+    /**
      * Returns the total memory size of model weights in bytes.
      */
     public long modelSize() {

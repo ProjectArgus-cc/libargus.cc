@@ -344,6 +344,14 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_model_n_pos_per_embd = bind("argus_model_n_pos_per_embd",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_is_mrope = bind("argus_model_is_mrope",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
     public static final MethodHandle argus_model_size = bind("argus_model_size",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
@@ -386,6 +394,14 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_kv_cache_seq_pos_max = bind("argus_kv_cache_seq_pos_max",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_kv_cache_seq_pos_min = bind("argus_kv_cache_seq_pos_min",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_get_embeddings = bind("argus_get_embeddings",

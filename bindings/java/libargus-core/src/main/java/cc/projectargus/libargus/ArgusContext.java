@@ -347,6 +347,34 @@ public final class ArgusContext implements AutoCloseable {
     }
 
     /**
+     * Queries the highest position index currently allocated in the KV cache for a sequence slot.
+     *
+     * @param seqId sequence tracking ID
+     * @return largest position index in memory, or -1 if sequence slot is empty or invalid
+     */
+    public int getSeqPosMax(int seqId) {
+        try {
+            return (int) ArgusBindings.argus_kv_cache_seq_pos_max.invokeExact(ctxPtr, seqId);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query KV cache seq_pos_max", t);
+        }
+    }
+
+    /**
+     * Queries the lowest position index currently allocated in the KV cache for a sequence slot.
+     *
+     * @param seqId sequence tracking ID
+     * @return smallest position index in memory, or -1 if sequence slot is empty or invalid
+     */
+    public int getSeqPosMin(int seqId) {
+        try {
+            return (int) ArgusBindings.argus_kv_cache_seq_pos_min.invokeExact(ctxPtr, seqId);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query KV cache seq_pos_min", t);
+        }
+    }
+
+    /**
      * Synthesizes audio samples using WavTokenizer and OuteTTS pipelines.
      * Mutex-locked inside the native layer.
      *

@@ -262,13 +262,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.5.2", ArgusBindings.VERSION);
+        assertEquals("1.6.0", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.5.2", nativeVer);
+            assertEquals("1.6.0", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -337,6 +337,29 @@ public class ArgusBindingsTest {
             assertEquals(-1, audioThreads);
         } catch (Throwable t) {
             fail("Exception thrown in thread control downcalls: " + t.getMessage());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testMRoPEAndKVCachePositionNullSafety() {
+        System.out.println("[Java Test] Validating M-RoPE shape queries and KV cache position downcalls on null segments...");
+        ArgusBackend.init();
+        try {
+            int nPos = (int) ArgusBindings.argus_model_n_pos_per_embd.invokeExact(MemorySegment.NULL);
+            assertEquals(-1, nPos);
+
+            boolean isMRoPE = (boolean) ArgusBindings.argus_model_is_mrope.invokeExact(MemorySegment.NULL);
+            assertFalse(isMRoPE);
+
+            int posMax = (int) ArgusBindings.argus_kv_cache_seq_pos_max.invokeExact(MemorySegment.NULL, 0);
+            assertEquals(-1, posMax);
+
+            int posMin = (int) ArgusBindings.argus_kv_cache_seq_pos_min.invokeExact(MemorySegment.NULL, 0);
+            assertEquals(-1, posMin);
+        } catch (Throwable t) {
+            fail("Exception thrown in M-RoPE/KV cache position downcalls: " + t.getMessage());
         } finally {
             ArgusBackend.free();
         }

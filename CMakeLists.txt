@@ -63,14 +63,14 @@ set(WHISPER_BUILD_TESTS     OFF CACHE INTERNAL "Disable whisper.cpp validation t
 FetchContent_Declare(
         llamacpp
         GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-        GIT_TAG        657e01125aa49577a62a5531fde24cbcc007006d
+        GIT_TAG        b10472
 )
 
 # Fetch core whisper.cpp framework layer
 FetchContent_Declare(
         whispercpp
         GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
-        GIT_TAG        080bbbe85230f624f0b52127f1ae1218247989f9
+        GIT_TAG        v1.9.2
 )
 
 

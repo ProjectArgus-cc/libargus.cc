@@ -8,8 +8,12 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.5.2 Release — Module Hierarchy Alignment & Release Pipeline Verification**
+> **v1.6.0 Release — M-RoPE Multidimensional Rollback, Automagic KV Truncation & Upstream Pinning**
 > 
+> * **Automagic Prefix Rollback:** Intelligently prunes invalidated KV cache cells on prefix reuse (`start_pos <= seq_pos_max`), guaranteeing sequence monotonicity across 1D-RoPE and M-RoPE models with zero caller boilerplate.
+> * **M-RoPE Introspection:** Native zero-allocation queries for rotary embedding dimensionality (`model.nPosPerEmbd()`, `model.isMRoPE()`) and active sequence boundaries (`context.getSeqPosMax()`, `context.getSeqPosMin()`).
+> * **Speculative Cache Sync:** Synchronizes KV slot clearing across primary and speculative draft contexts in lockstep.
+> * **Upstream Pinning:** Updated to `llama.cpp` (`b10472`) and `whisper.cpp` (`v1.9.2`) on GGML `v0.20.1`.
 
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -33,6 +37,8 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
 *   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints and total VRAM requirements without FFI allocation overhead.
 *   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
+*   **M-RoPE & Multidimensional Rollback Synchronization:** Native detection and position tracking for Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE). Automatically handles multidimensional temporal/spatial position vectors with zero-allocation introspection (`nPosPerEmbd()`, `isMRoPE()`).
+*   **Automagic KV Cache Truncation & Prefix Rollback:** Automatically prunes invalidated KV cache cells on prefix reuse when `start_pos <= seq_pos_max`, establishing strict sequence monotonicity across 1D-RoPE and M-RoPE architectures with synchronized speculative draft context clearing.
 
 ---
 
@@ -326,6 +332,27 @@ context.setNThreads(4, 8); // 4 threads for generation, 8 threads for prompt bat
 audioContext.setNThreads(4);
 ```
 
+### M-RoPE Introspection & Automagic KV Cache Rollback
+
+Query multidimensional rotary position topologies and manage KV cache sequence rollbacks for agentic ReAct loops and Longest Common Prefix (LCP) prompt reuse:
+
+```java
+// 1. Inspect M-RoPE architecture properties on loaded models
+boolean isMRoPE = model.isMRoPE();         // true for Qwen2-VL, Qwen2.5-VL, etc.
+int nPosPerEmbd = model.nPosPerEmbd();     // 4 for M-RoPE, 1 for standard 1D-RoPE
+
+// 2. Query active sequence position boundaries directly from unmanaged memory
+int posMax = context.getSeqPosMax(0);      // High-water mark position (or -1 if empty)
+int posMin = context.getSeqPosMin(0);      // Low-water mark position (or -1 if empty)
+
+// 3. Explicit KV Cache Tail Truncation: Roll back sequence slot to position 128
+context.clearCacheSlot(0, 128, -1);        // Synchronously clears primary & speculative draft caches
+
+// 4. Automagic Prefix Rollback: Submitting a batch at start_pos <= seq_pos_max
+// automatically prunes [start_pos, -1) to guarantee monotonicity without manual clearing:
+int res = context.decodeBatch(newBranchTokens, branchLength, 128, 0, true);
+```
+
 ---
 
 ## Verification & Testing Suite
@@ -334,10 +361,10 @@ Validate unmanaged tensor boundary compliance and multi-model processing thread 
 
 ```bash
 # Run native C unit assertions
-./build/test_libargus
+./build/bin/test_libargus
 
 # Run JUnit / Panama FFM integration tests
-cd bindings/java && gradle test
+./gradlew test
 ```
 
 ---

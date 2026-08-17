@@ -147,7 +147,9 @@ argus_model_t * argus_model_load(const argus_model_params_t * params) {
 
     struct llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = params->gpu_layers;
-    mparams.use_mlock    = params->use_mlock;
+    if (params->use_mlock) {
+        mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+    }
 
     struct llama_model * model = llama_model_load_from_file(params->model_path, mparams);
     if (!model) {
@@ -439,6 +441,22 @@ bool argus_model_has_encoder(const argus_model_t * model) {
     return model && model->model ? llama_model_has_encoder(model->model) : false;
 }
 
+int32_t argus_model_n_pos_per_embd(const argus_model_t * model) {
+    if (!model || !model->model) {
+        return -1;
+    }
+    enum llama_rope_type rtype = llama_model_rope_type(model->model);
+    return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE) ? 4 : 1;
+}
+
+bool argus_model_is_mrope(const argus_model_t * model) {
+    if (!model || !model->model) {
+        return false;
+    }
+    enum llama_rope_type rtype = llama_model_rope_type(model->model);
+    return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE);
+}
+
 uint64_t argus_model_size(const argus_model_t * model) {
     return model && model->model ? llama_model_size(model->model) : 0;
 }
@@ -495,8 +513,8 @@ int64_t argus_model_kv_bytes_per_token(const argus_model_t * model, int32_t type
 
     int32_t head_dim = n_embd / n_head;
 
-    double bytes_per_elem_k = ggml_type_sizef(gk);
-    double bytes_per_elem_v = ggml_type_sizef(gv);
+    double bytes_per_elem_k = (double)ggml_type_size(gk) / (double)ggml_blck_size(gk);
+    double bytes_per_elem_v = (double)ggml_type_size(gv) / (double)ggml_blck_size(gv);
 
     double kv_bytes_per_token_per_layer = n_head_kv * head_dim * (bytes_per_elem_k + bytes_per_elem_v);
     return static_cast<int64_t>(n_layer * kv_bytes_per_token_per_layer);
@@ -533,6 +551,15 @@ static int32_t decode_tokens_chunked(
 ) {
     int32_t n_batch = (int32_t)llama_n_batch(lctx);
     int32_t decoded = 0;
+
+    // Automagically prune invalidated KV cache tail if start_pos rolls back prior high-water mark
+    llama_memory_t mem = llama_get_memory(lctx);
+    if (mem) {
+        llama_pos cur_max = llama_memory_seq_pos_max(mem, seq_id);
+        if (cur_max >= 0 && start_pos <= cur_max) {
+            llama_memory_seq_rm(mem, seq_id, start_pos, -1);
+        }
+    }
 
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
@@ -633,7 +660,9 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
 
     // Apply repetition penalty mitigation parameters
     if (repeat_penalty > 1.0f) {
-        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, repeat_penalty, 0.0f, 0.0f));
+        const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) ? ctx->model_ref->vocab : llama_model_get_vocab(llama_get_model(ctx->ctx));
+        int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 32000;
+        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(n_vocab, 64, repeat_penalty, 0.0f, 0.0f));
     }
 
     // Intercept and inject temperature parameters if above absolute floor boundaries
@@ -671,7 +700,9 @@ int32_t argus_sample_token_with_bias(
 
     // Apply repetition penalty mitigation parameters
     if (repeat_penalty > 1.0f) {
-        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(64, repeat_penalty, 0.0f, 0.0f));
+        const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) ? ctx->model_ref->vocab : llama_model_get_vocab(llama_get_model(ctx->ctx));
+        int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 32000;
+        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(n_vocab, 64, repeat_penalty, 0.0f, 0.0f));
     }
 
     // Apply logit bias sampler if biases are provided (zero-copy direct pass)
@@ -704,7 +735,32 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
     // Direct binding route targeting unmanaged sequence tracking cells
-    llama_memory_seq_rm(llama_get_memory(ctx->ctx), seq_id, p0, p1);
+    if (ctx->ctx) {
+        llama_memory_seq_rm(llama_get_memory(ctx->ctx), seq_id, p0, p1);
+    }
+    if (ctx->draft_ctx) {
+        llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), seq_id, p0, p1);
+    }
+}
+
+int32_t argus_kv_cache_seq_pos_max(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || !ctx->ctx) {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    llama_memory_t mem = llama_get_memory(ctx->ctx);
+    return mem ? (int32_t)llama_memory_seq_pos_max(mem, seq_id) : -1;
+}
+
+int32_t argus_kv_cache_seq_pos_min(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || !ctx->ctx) {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    llama_memory_t mem = llama_get_memory(ctx->ctx);
+    return mem ? (int32_t)llama_memory_seq_pos_min(mem, seq_id) : -1;
 }
 
 // =========================================================================

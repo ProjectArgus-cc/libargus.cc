@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
- * @brief Unified Local Inference Core for Text, Audio Transcription, and Speech Synthesis.
- * @version 1.5.2
+ * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
+ * @version 1.6.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -383,6 +383,20 @@ ARGUS_API uint64_t argus_model_n_params(const argus_model_t * model);
 ARGUS_API bool argus_model_has_encoder(const argus_model_t * model);
 
 /**
+ * @brief Retrieves the number of rotary position embedding dimensions per token (e.g. 4 for M-RoPE, 1 for standard 1D-RoPE).
+ * @param model Reference model weights handler.
+ * @return Number of position dimensions per token (e.g. 4 or 1), or -1 on failure.
+ */
+ARGUS_API int32_t argus_model_n_pos_per_embd(const argus_model_t * model);
+
+/**
+ * @brief Checks whether the loaded GGUF model uses Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE).
+ * @param model Reference model weights handler.
+ * @return True if model uses M-RoPE architecture, false otherwise.
+ */
+ARGUS_API bool argus_model_is_mrope(const argus_model_t * model);
+
+/**
  * @brief Retrieves total loaded memory size of model weights in bytes.
  * @param model Reference model weights handler.
  * @return Total weight footprint in bytes, or 0 on failure.
@@ -497,6 +511,7 @@ ARGUS_API int32_t argus_sample_token_with_bias(
 
 /**
  * @brief Prunes targeted token chains out of the active unmanaged L1 VRAM sequence cache.
+ * Automatically synchronizes pruning across speculative draft contexts if present.
  * This is a synchronized mutating context operation.
  * @param ctx Reference execution context.
  * @param seq_id Target sequence track context slot to alter.
@@ -504,6 +519,24 @@ ARGUS_API int32_t argus_sample_token_with_bias(
  * @param p1 Terminating position offset cell parameter.
  */
 ARGUS_API void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
+
+/**
+ * @brief Queries the highest position offset currently allocated in the KV cache for a sequence slot.
+ * This is a synchronized context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence slot tracking ID.
+ * @return Largest position present in memory for sequence, or -1 if sequence slot is empty or invalid.
+ */
+ARGUS_API int32_t argus_kv_cache_seq_pos_max(const argus_context_t * ctx, int32_t seq_id);
+
+/**
+ * @brief Queries the lowest position offset currently allocated in the KV cache for a sequence slot.
+ * This is a synchronized context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence slot tracking ID.
+ * @return Smallest position present in memory for sequence, or -1 if sequence slot is empty or invalid.
+ */
+ARGUS_API int32_t argus_kv_cache_seq_pos_min(const argus_context_t * ctx, int32_t seq_id);
 
 /**
  * @brief Evaluates and normalizes raw text input straight into an audio wave segment.

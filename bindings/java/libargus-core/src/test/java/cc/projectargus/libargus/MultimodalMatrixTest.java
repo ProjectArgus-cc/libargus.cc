@@ -434,6 +434,84 @@ public class MultimodalMatrixTest {
         }
     }
 
+    @Test
+    public void testMRoPEAndKVCacheRollback() {
+        System.out.println("[MultimodalMatrixTest] Verifying M-RoPE shape queries and KV Cache Rollback / Truncation...");
+        Assumptions.assumeTrue(Files.exists(VLM_BASE), "Skipping: VLM Base model missing");
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, VLM_BASE, 99, true)) {
+
+            // 1. Verify M-RoPE model introspection
+            assertTrue(model.isMRoPE(), "Expected Qwen2-VL model to be recognized as M-RoPE architecture");
+            assertEquals(4, model.nPosPerEmbd(), "Expected 4 positional dimensions per embedding token for M-RoPE");
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(1024)
+                .cpuThreads(4)
+                .build();
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                // 2. Initial state on empty context
+                assertEquals(-1, context.getSeqPosMax(0), "Expected empty KV cache to have seq_pos_max = -1");
+                assertEquals(-1, context.getSeqPosMin(0), "Expected empty KV cache to have seq_pos_min = -1");
+
+                // 3. Prefill prompt: 30 dummy tokens starting at pos 0
+                int nPrompt = 30;
+                MemorySegment promptTokens = arena.allocate(ValueLayout.JAVA_INT, nPrompt);
+                for (int i = 0; i < nPrompt; i++) {
+                    promptTokens.setAtIndex(ValueLayout.JAVA_INT, i, 100 + i);
+                }
+
+                int res = context.decodeBatch(promptTokens, nPrompt, 0, 0, true);
+                assertEquals(0, res, "Prefill failed with code: " + res);
+                assertEquals(nPrompt - 1, context.getSeqPosMax(0), "Expected seq_pos_max = " + (nPrompt - 1));
+                assertEquals(0, context.getSeqPosMin(0), "Expected seq_pos_min = 0");
+
+                // 4. Generate 5 tokens autoregressively (pos 30..34)
+                MemorySegment singleToken = arena.allocate(ValueLayout.JAVA_INT, 1);
+                for (int i = 0; i < 5; i++) {
+                    int pos = nPrompt + i;
+                    singleToken.setAtIndex(ValueLayout.JAVA_INT, 0, 200 + i);
+                    res = context.decodeBatch(singleToken, 1, pos, 0, true);
+                    assertEquals(0, res, "Autoregressive step failed at pos " + pos);
+                }
+                assertEquals(34, context.getSeqPosMax(0), "Expected seq_pos_max = 34 after 5 generated tokens");
+
+                // 5. Test explicit KV cache truncation: rollback tail from pos 20 onwards
+                context.clearCacheSlot(0, 20, -1);
+                assertEquals(19, context.getSeqPosMax(0), "Expected seq_pos_max to drop back to 19 after clearCacheSlot(0, 20, -1)");
+
+                // 6. Decode new branch starting at pos 20 (satisfying M-RoPE X < Y: 19 < 20)
+                int nBranch = 10;
+                MemorySegment branchTokens = arena.allocate(ValueLayout.JAVA_INT, nBranch);
+                for (int i = 0; i < nBranch; i++) {
+                    branchTokens.setAtIndex(ValueLayout.JAVA_INT, i, 300 + i);
+                }
+                res = context.decodeBatch(branchTokens, nBranch, 20, 0, true);
+                assertEquals(0, res, "Branch decode at rollback offset failed with code: " + res);
+                assertEquals(29, context.getSeqPosMax(0), "Expected seq_pos_max = 29 after branch decode");
+
+                // 7. Test Automagic Rollback: Decode at pos 15 (which is <= seq_pos_max 29) without explicit clearCacheSlot
+                int nAutoRollback = 8;
+                MemorySegment autoTokens = arena.allocate(ValueLayout.JAVA_INT, nAutoRollback);
+                for (int i = 0; i < nAutoRollback; i++) {
+                    autoTokens.setAtIndex(ValueLayout.JAVA_INT, i, 400 + i);
+                }
+                res = context.decodeBatch(autoTokens, nAutoRollback, 15, 0, true);
+                assertEquals(0, res, "Automagic rollback decode failed with code: " + res);
+                assertEquals(22, context.getSeqPosMax(0), "Expected seq_pos_max = 22 after automagic rollback to pos 15");
+
+                // 8. Verify sampling works properly after rollback
+                int sample = context.sampleToken(0, 0.7f, 1.1f);
+                assertTrue(sample >= 0, "Expected valid sampled token ID, got: " + sample);
+
+                System.out.println("  - M-RoPE shape introspection and KV cache rollback tests passed successfully!");
+            }
+        } catch (Exception e) {
+            fail("M-RoPE KV cache rollback test failed with exception", e);
+        }
+    }
+
     private static boolean isCommandAvailable(String cmd) {
         try {
             Process process = new ProcessBuilder(cmd, "-version").start();

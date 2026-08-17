@@ -22,7 +22,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    assert(std::strcmp(argus_version(), "1.5.2") == 0);
+    assert(std::strcmp(argus_version(), "1.6.0") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -111,6 +111,12 @@ int main() {
     assert(argus_model_n_head_kv(nullptr) == -1);
     assert(argus_model_n_params(nullptr) == 0);
     assert(argus_model_has_encoder(nullptr) == false);
+    assert(argus_model_n_pos_per_embd(nullptr) == -1);
+    assert(argus_model_is_mrope(nullptr) == false);
+
+    // Test KV cache position queries null safety checks
+    assert(argus_kv_cache_seq_pos_max(nullptr, 0) == -1);
+    assert(argus_kv_cache_seq_pos_min(nullptr, 0) == -1);
 
     // Test new Model KV memory calculation, size, desc, and GGML quantization introspection null safety
     std::cout << "[Test] Verifying KV cache calculation and quantization introspection null safety..." << std::endl;
