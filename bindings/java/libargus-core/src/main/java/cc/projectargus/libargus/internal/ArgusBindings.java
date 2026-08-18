@@ -53,12 +53,21 @@ public final class ArgusBindings {
             if (tempExtracted != null) {
                 resolvedExtractedDir = tempExtracted;
             } else {
-                    // Fallback: try finding the shared library in common local build spots by traversing up the directory tree
+                // 3. Try standard java.library.path / OS runtime library loader
+                boolean loaded = false;
+                try {
+                    System.loadLibrary("argus");
+                    loaded = true;
+                } catch (UnsatisfiedLinkError e) {
+                    // Fall back to bounded local workspace build directory search
+                }
+
+                if (!loaded) {
                     String userDir = System.getProperty("user.dir");
                     String libName = System.mapLibraryName("argus");
                     File currentDir = new File(userDir).getAbsoluteFile();
-                    boolean found = false;
-                    while (currentDir != null) {
+                    int maxDepth = 3;
+                    while (currentDir != null && maxDepth-- >= 0) {
                         File buildDir = new File(currentDir, "build");
                         File localLibInLib = new File(new File(buildDir, "lib"), libName);
                         File localLibInBin = new File(new File(buildDir, "bin"), libName);
@@ -76,15 +85,18 @@ public final class ArgusBindings {
                         if (targetLib != null) {
                             System.load(targetLib.getAbsolutePath());
                             resolvedExtractedDir = targetLib.getParent();
-                            found = true;
+                            loaded = true;
                             break;
                         }
                         currentDir = currentDir.getParentFile();
                     }
-                    if (!found) {
-                        throw new UnsatisfiedLinkError("Could not locate native " + libName + 
-                            " in java.library.path, SPI classpath providers, or workspace build directory hierarchy. Please specify -Dcc.projectargus.libargus.path");
-                    }
+                }
+
+                if (!loaded) {
+                    String libName = System.mapLibraryName("argus");
+                    throw new UnsatisfiedLinkError("Could not locate native " + libName + 
+                        " via -Dcc.projectargus.libargus.path, SPI classpath providers, java.library.path (System.loadLibrary), or local workspace build/ directory. Please ensure native libraries are on java.library.path or specify -Dcc.projectargus.libargus.path");
+                }
             }
         }
         EXTRACTED_DIR = resolvedExtractedDir;
@@ -262,6 +274,10 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_context_has_draft = bind("argus_context_has_draft",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
     // Tokenization
     public static final MethodHandle argus_tokenize = bind("argus_tokenize",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, 
@@ -390,6 +406,11 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_FLOAT, ValueLayout.JAVA_FLOAT,
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_sample_token_ext = bind("argus_sample_token_ext",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",

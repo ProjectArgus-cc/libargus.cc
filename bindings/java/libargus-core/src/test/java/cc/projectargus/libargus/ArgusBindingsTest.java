@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import cc.projectargus.libargus.internal.ArgusBindings;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.file.Paths;
 import java.util.List;
 
@@ -262,13 +263,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.0", ArgusBindings.VERSION);
+        assertEquals("1.6.1", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.0", nativeVer);
+            assertEquals("1.6.1", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -363,6 +364,143 @@ public class ArgusBindingsTest {
         } finally {
             ArgusBackend.free();
         }
+    }
+
+    @Test
+    public void testSamplerParamsLayoutAndConfig() {
+        System.out.println("[Java Test] Validating SamplerParams struct layout and ArgusSamplerConfig...");
+        assertEquals(48L, cc.projectargus.libargus.internal.ArgusLayouts.SAMPLER_PARAMS.byteSize());
+
+        ArgusSamplerConfig defaultCfg = ArgusSamplerConfig.createDefault();
+        assertEquals(0.7f, defaultCfg.temperature());
+        assertEquals(1.1f, defaultCfg.repeatPenalty());
+        assertEquals(64, defaultCfg.repeatLastN());
+        assertEquals(0.90f, defaultCfg.topP());
+        assertEquals(0.05f, defaultCfg.minP());
+        assertEquals(40, defaultCfg.topK());
+        assertEquals(0.0f, defaultCfg.dryMultiplier());
+
+        ArgusSamplerConfig customCfg = new ArgusSamplerConfig.Builder()
+            .temperature(0.5f)
+            .repeatPenalty(1.2f)
+            .repeatLastN(32)
+            .frequencyPenalty(0.1f)
+            .presencePenalty(0.2f)
+            .topP(0.85f)
+            .minP(0.10f)
+            .topK(20)
+            .dry(0.5f, 1.8f, 3, 100)
+            .build();
+
+        assertEquals(0.5f, customCfg.temperature());
+        assertEquals(1.2f, customCfg.repeatPenalty());
+        assertEquals(32, customCfg.repeatLastN());
+        assertEquals(0.1f, customCfg.frequencyPenalty());
+        assertEquals(0.2f, customCfg.presencePenalty());
+        assertEquals(0.85f, customCfg.topP());
+        assertEquals(0.10f, customCfg.minP());
+        assertEquals(20, customCfg.topK());
+        assertEquals(0.5f, customCfg.dryMultiplier());
+        assertEquals(1.8f, customCfg.dryBase());
+        assertEquals(3, customCfg.dryAllowedLength());
+        assertEquals(100, customCfg.dryPenaltyLastN());
+
+        ArgusSamplerConfig greedyCfg = ArgusSamplerConfig.greedy();
+        assertEquals(0.0f, greedyCfg.temperature());
+    }
+
+    @Test
+    public void testFangedEndToEndExecutionWithTinyModel() {
+        System.out.println("[Java Test] Starting fanged end-to-end model execution verification in Java FFM...");
+        java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "Could not locate project root containing tests/data/tiny.gguf");
+        java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+        assertTrue(java.nio.file.Files.exists(modelPath), "tests/data/tiny.gguf missing at " + modelPath);
+
+        boolean initStatus = ArgusBackend.init();
+        assertTrue(initStatus);
+
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+             ArgusModel draftModel = ArgusModel.load(arena, modelPath, 0, false)) {
+
+            // 1. Assert model metadata and shape introspection
+            assertEquals(1, model.vocabBos());
+            assertEquals(2, model.vocabEos());
+            assertEquals(3, model.vocabPad());
+            assertEquals(64, model.vocabNTokens());
+            assertEquals(32, model.nEmbd());
+            assertEquals(512, model.nCtxTrain());
+            assertEquals(1, model.nLayer());
+            assertEquals(2, model.nHead());
+            assertEquals(2, model.nHeadKv());
+
+            // 2. Initialize context with speculative draft model
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .draftModel(draftModel)
+                .cpuThreads(2)
+                .specDraftNMax(4)
+                .seqMax(2)
+                .kvUnified(true)
+                .build();
+
+            try (ArgusContext context = ArgusContext.init(arena, model, config)) {
+                assertTrue(context.hasDraftContext(), "Speculative draft context should be active");
+
+                // 3. Batch decode initial prompt
+                int[] promptTokens = new int[] { 1, 4, 5, 6, 7 }; // 5 tokens (BOS, a, b, c, d)
+                MemorySegment promptSeg = arena.allocate(ValueLayout.JAVA_INT, promptTokens.length);
+                for (int i = 0; i < promptTokens.length; i++) {
+                    promptSeg.setAtIndex(ValueLayout.JAVA_INT, i, promptTokens[i]);
+                }
+
+                int decRes1 = context.decodeBatch(promptSeg, promptTokens.length, 0, 0, true);
+                assertEquals(0, decRes1);
+                assertEquals(4, context.getSeqPosMax(0));
+                System.out.println("  - Java batch decoded. Initial seq_pos_max: " + context.getSeqPosMax(0));
+
+                // 4. Automagic rollback verification (Finding 1)
+                int[] branchTokens = new int[] { 8, 9 }; // e, f starting at pos 2
+                MemorySegment branchSeg = arena.allocate(ValueLayout.JAVA_INT, branchTokens.length);
+                for (int i = 0; i < branchTokens.length; i++) {
+                    branchSeg.setAtIndex(ValueLayout.JAVA_INT, i, branchTokens[i]);
+                }
+
+                int decRes2 = context.decodeBatch(branchSeg, branchTokens.length, 2, 0, true);
+                assertEquals(0, decRes2);
+                assertEquals(3, context.getSeqPosMax(0));
+                System.out.println("  - Java prefix rollback verified in lockstep. New seq_pos_max: " + context.getSeqPosMax(0));
+
+                // 5. Extended sampling verification (Finding 2 & Extended ABI)
+                ArgusSamplerConfig sampleCfg = ArgusSamplerConfig.createDefault();
+                int sampledToken = context.sampleToken(0, sampleCfg);
+                assertTrue(sampledToken >= 0 && sampledToken < 64);
+                System.out.println("  - Java extended sampler produced token: " + sampledToken);
+
+                // 6. Logit steering bias verification
+                MemorySegment biasSeg1 = arena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS, 1);
+                biasSeg1.setAtIndex(ValueLayout.JAVA_INT, 0, 10);
+                biasSeg1.setAtIndex(ValueLayout.JAVA_FLOAT, 1, 1000.0f);
+
+                int biasedToken1 = context.sampleTokenWithBias(0, sampleCfg, biasSeg1, 1);
+                assertEquals(10, biasedToken1);
+                System.out.println("  - Java logit bias steering produced forced token: " + biasedToken1);
+
+                MemorySegment biasSeg2 = arena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS, 1);
+                biasSeg2.setAtIndex(ValueLayout.JAVA_INT, 0, 15);
+                biasSeg2.setAtIndex(ValueLayout.JAVA_FLOAT, 1, 1000.0f);
+
+                int biasedToken2 = context.sampleTokenWithBias(0, sampleCfg, biasSeg2, 1);
+                assertEquals(15, biasedToken2);
+                System.out.println("  - Java logit bias steering dynamically updated to token: " + biasedToken2);
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+        System.out.println("[Java Test] Fanged end-to-end model execution verification completed successfully!");
     }
 }
 

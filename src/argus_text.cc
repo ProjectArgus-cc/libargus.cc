@@ -260,6 +260,10 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
 
     struct llama_context * draft_ctx = nullptr;
     if (params->draft_model) {
+        if (!params->draft_model->model) {
+            llama_free(ctx);
+            return nullptr;
+        }
         struct llama_context_params dparams = llama_context_default_params();
         dparams.n_ctx           = params->context_length;
         dparams.n_batch         = cparams.n_batch;
@@ -272,23 +276,33 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
         dparams.type_v          = cparams.type_v;
 
         draft_ctx = llama_init_from_model(params->draft_model->model, dparams);
+        if (!draft_ctx) {
+            llama_free(ctx);
+            return nullptr;
+        }
     }
 
     argus_context_t * argus_ctx = new argus_context();
-    argus_ctx->ctx              = ctx;
-    argus_ctx->draft_ctx        = draft_ctx;
-    argus_ctx->model_ref        = model;
-    argus_ctx->draft_model_ref  = const_cast<argus_model_t *>(params->draft_model);
-    argus_ctx->spec_draft_n_max = params->spec_draft_n_max;
-    argus_ctx->enable_draft_mtp = params->enable_draft_mtp;
-    argus_ctx->vocoder_ctx      = nullptr;
-    argus_ctx->vocoder_model_ref = nullptr;
+    argus_ctx->ctx                  = ctx;
+    argus_ctx->draft_ctx            = draft_ctx;
+    argus_ctx->model_ref            = model;
+    argus_ctx->draft_model_ref      = const_cast<argus_model_t *>(params->draft_model);
+    argus_ctx->spec_draft_n_max     = params->spec_draft_n_max;
+    argus_ctx->enable_draft_mtp     = params->enable_draft_mtp;
+    argus_ctx->vocoder_ctx          = nullptr;
+    argus_ctx->vocoder_model_ref    = nullptr;
+    argus_ctx->cached_sampler_chain = nullptr;
+    argus_ctx->has_cached_sampler   = false;
 
     return argus_ctx;
 }
 
 void argus_context_free(argus_context_t * ctx) {
     if (ctx) {
+        if (ctx->cached_sampler_chain) {
+            llama_sampler_free(ctx->cached_sampler_chain);
+            ctx->cached_sampler_chain = nullptr;
+        }
         if (ctx->ctx) {
             llama_free(ctx->ctx);
         }
@@ -338,6 +352,14 @@ int32_t argus_get_n_threads_batch(argus_context_t * ctx) {
         return -1;
     }
     return llama_n_threads_batch(ctx->ctx);
+}
+
+bool argus_context_has_draft(const argus_context_t * ctx) {
+    if (!ctx) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    return ctx->draft_ctx != nullptr;
 }
 
 
@@ -538,6 +560,20 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 // Synchronized Context Operations
 // =========================================================================
 
+// Prunes invalidated KV cache tail if start_pos rolls back prior high-water mark
+static void prune_kv_cache_if_rollback(struct llama_context * lctx, int32_t seq_id, int32_t start_pos) {
+    if (!lctx) {
+        return;
+    }
+    llama_memory_t mem = llama_get_memory(lctx);
+    if (mem) {
+        llama_pos cur_max = llama_memory_seq_pos_max(mem, seq_id);
+        if (cur_max >= 0 && start_pos <= cur_max) {
+            llama_memory_seq_rm(mem, seq_id, start_pos, -1);
+        }
+    }
+}
+
 // Evaluates a sequence of tokens in chunks conforming to the model's native n_batch limit.
 // Precondition: Caller must hold the context level synchronization mutex (ctx->mtx).
 static int32_t decode_tokens_chunked(
@@ -549,17 +585,18 @@ static int32_t decode_tokens_chunked(
     bool                   request_logits,
     const int32_t        * abort_flag
 ) {
+    if (!lctx || !tokens || n_tokens <= 0) {
+        return 0;
+    }
+
     int32_t n_batch = (int32_t)llama_n_batch(lctx);
     int32_t decoded = 0;
 
     // Automagically prune invalidated KV cache tail if start_pos rolls back prior high-water mark
-    llama_memory_t mem = llama_get_memory(lctx);
-    if (mem) {
-        llama_pos cur_max = llama_memory_seq_pos_max(mem, seq_id);
-        if (cur_max >= 0 && start_pos <= cur_max) {
-            llama_memory_seq_rm(mem, seq_id, start_pos, -1);
-        }
-    }
+    prune_kv_cache_if_rollback(lctx, seq_id, start_pos);
+
+    int32_t max_chunk_size = std::min(n_batch, n_tokens);
+    struct llama_batch batch = llama_batch_init(max_chunk_size, 0, 1);
 
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
@@ -569,7 +606,6 @@ static int32_t decode_tokens_chunked(
 
         bool is_encoder_or_embeddings = llama_model_has_encoder(llama_get_model(lctx)) || (llama_pooling_type(lctx) != LLAMA_POOLING_TYPE_NONE);
 
-        struct llama_batch batch = llama_batch_init(chunk_size, 0, 1);
         batch.n_tokens = chunk_size;
 
         for (int32_t i = 0; i < chunk_size; ++i) {
@@ -591,15 +627,16 @@ static int32_t decode_tokens_chunked(
         } else {
             result = llama_decode(lctx, batch);
         }
-        llama_batch_free(batch);
 
         if (result != 0) {
+            llama_batch_free(batch);
             return result;
         }
 
         decoded += chunk_size;
     }
 
+    llama_batch_free(batch);
     return 0;
 }
 
@@ -609,6 +646,15 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
     }
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
+    prune_kv_cache_if_rollback(ctx->ctx, batch_payload->seq_id, batch_payload->start_pos);
+    prune_kv_cache_if_rollback(ctx->draft_ctx, batch_payload->seq_id, batch_payload->start_pos);
+
+    // Reset sampler state on prefix rollback or prompt restart
+    if (ctx->cached_sampler_chain) {
+        llama_sampler_reset(ctx->cached_sampler_chain);
+    }
 
     return decode_tokens_chunked(
         ctx->ctx,
@@ -648,37 +694,164 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
     return n_embd;
 }
 
-int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty) {
-    if (!ctx) {
+// =========================================================================
+// Zero-Allocation Persistent Sampler Pipeline
+// =========================================================================
+
+static bool sampler_params_equal(const argus_sampler_params_t & a, const argus_sampler_params_t & b) {
+    return a.temperature == b.temperature &&
+           a.repeat_penalty == b.repeat_penalty &&
+           a.repeat_last_n == b.repeat_last_n &&
+           a.frequency_penalty == b.frequency_penalty &&
+           a.presence_penalty == b.presence_penalty &&
+           a.top_p == b.top_p &&
+           a.min_p == b.min_p &&
+           a.top_k == b.top_k &&
+           a.dry_multiplier == b.dry_multiplier &&
+           a.dry_base == b.dry_base &&
+           a.dry_allowed_length == b.dry_allowed_length &&
+           a.dry_penalty_last_n == b.dry_penalty_last_n;
+}
+
+static bool logit_biases_equal(const std::vector<argus_logit_bias_t> & cached, const argus_logit_bias_t * biases, int32_t bias_count) {
+    if ((int32_t)cached.size() != bias_count) {
+        return false;
+    }
+    if (bias_count == 0) {
+        return true;
+    }
+    if (!biases) {
+        return false;
+    }
+    for (int32_t i = 0; i < bias_count; ++i) {
+        if (cached[i].token != biases[i].token || cached[i].bias != biases[i].bias) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static struct llama_sampler * build_sampler_chain(
+    const argus_context_t        * ctx,
+    const argus_sampler_params_t * sparams,
+    const argus_logit_bias_t     * biases,
+    int32_t                        bias_count
+) {
+    const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) 
+        ? ctx->model_ref->vocab 
+        : llama_model_get_vocab(llama_get_model(ctx->ctx));
+    int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 32000;
+
+    struct llama_sampler_chain_params scparams = llama_sampler_chain_default_params();
+    struct llama_sampler * chain = llama_sampler_chain_init(scparams);
+
+    // 1. Logit biases (applied first to shift token logits)
+    if (biases && bias_count > 0 && vocab) {
+        llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(n_vocab, bias_count, (const llama_logit_bias *)biases));
+    }
+
+    // 2. Penalties (repetition, frequency, presence)
+    if (sparams->repeat_penalty > 1.0f || sparams->frequency_penalty != 0.0f || sparams->presence_penalty != 0.0f) {
+        int32_t last_n = (sparams->repeat_last_n > 0) ? sparams->repeat_last_n : 64;
+        float repeat_pen = (sparams->repeat_penalty > 0.0f) ? sparams->repeat_penalty : 1.0f;
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(n_vocab, last_n, repeat_pen, sparams->frequency_penalty, sparams->presence_penalty));
+    }
+
+    // 3. DRY Sampler
+    if (sparams->dry_multiplier > 0.0f && vocab) {
+        float dry_base = (sparams->dry_base > 0.0f) ? sparams->dry_base : 1.75f;
+        int32_t dry_allowed_length = (sparams->dry_allowed_length > 0) ? sparams->dry_allowed_length : 2;
+        int32_t dry_penalty_last_n = (sparams->dry_penalty_last_n != 0) ? sparams->dry_penalty_last_n : -1;
+        llama_sampler_chain_add(chain, llama_sampler_init_dry(vocab, sparams->dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n, nullptr, 0));
+    }
+
+    // 4. Top-K
+    if (sparams->top_k > 0) {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(sparams->top_k));
+    }
+
+    // 5. Top-P
+    if (sparams->top_p > 0.0f && sparams->top_p < 1.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(sparams->top_p, 1));
+    }
+
+    // 6. Min-P
+    if (sparams->min_p > 0.0f && sparams->min_p < 1.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(sparams->min_p, 1));
+    }
+
+    // 7. Temperature & Greedy selection
+    if (sparams->temperature > 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(sparams->temperature));
+    }
+    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+
+    return chain;
+}
+
+static struct llama_sampler * get_or_update_sampler(
+    argus_context_t              * ctx,
+    const argus_sampler_params_t * sparams,
+    const argus_logit_bias_t     * biases,
+    int32_t                        bias_count
+) {
+    if (!ctx->has_cached_sampler ||
+        !sampler_params_equal(ctx->cached_sparams, *sparams) ||
+        !logit_biases_equal(ctx->cached_biases, biases, bias_count)) {
+
+        if (ctx->cached_sampler_chain) {
+            llama_sampler_free(ctx->cached_sampler_chain);
+            ctx->cached_sampler_chain = nullptr;
+        }
+
+        ctx->cached_sampler_chain = build_sampler_chain(ctx, sparams, biases, bias_count);
+        ctx->cached_sparams       = *sparams;
+        if (biases && bias_count > 0) {
+            ctx->cached_biases.assign(biases, biases + bias_count);
+        } else {
+            ctx->cached_biases.clear();
+        }
+        ctx->has_cached_sampler   = true;
+    }
+
+    return ctx->cached_sampler_chain;
+}
+
+int32_t argus_sample_token_ext(
+    argus_context_t              * ctx,
+    int32_t                        seq_id,
+    const argus_sampler_params_t * sparams,
+    const argus_logit_bias_t     * biases,
+    int32_t                        bias_count
+) {
+    if (!ctx || !ctx->ctx || !sparams) {
         return -1;
     }
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
+    (void)seq_id;
 
-    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-    struct llama_sampler * sampler = llama_sampler_chain_init(sparams);
-
-    // Apply repetition penalty mitigation parameters
-    if (repeat_penalty > 1.0f) {
-        const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) ? ctx->model_ref->vocab : llama_model_get_vocab(llama_get_model(ctx->ctx));
-        int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 32000;
-        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(n_vocab, 64, repeat_penalty, 0.0f, 0.0f));
+    struct llama_sampler * sampler = get_or_update_sampler(ctx, sparams, biases, bias_count);
+    if (!sampler) {
+        return -1;
     }
 
-    // Intercept and inject temperature parameters if above absolute floor boundaries
-    if (temperature > 0.0f) {
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
-    }
-
-    // Default fallback to greedy calculation pass
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
-
-    // Pull from index -1 targeting the last populated logits matrix
     int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
-    (void)seq_id; // Parameter retained for forward compatibility transitions
+    llama_sampler_accept(sampler, token);
 
-    llama_sampler_free(sampler);
     return token;
+}
+
+int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty) {
+    argus_sampler_params_t sparams = {};
+    sparams.temperature    = temperature;
+    sparams.repeat_penalty = repeat_penalty;
+    sparams.repeat_last_n  = 64;
+    sparams.top_p          = 1.0f;
+    sparams.min_p          = 0.0f;
+    sparams.top_k          = 0;
+
+    return argus_sample_token_ext(ctx, seq_id, &sparams, nullptr, 0);
 }
 
 int32_t argus_sample_token_with_bias(
@@ -689,42 +862,15 @@ int32_t argus_sample_token_with_bias(
     const argus_logit_bias_t * biases, 
     int32_t                    bias_count
 ) {
-    if (!ctx) {
-        return -1;
-    }
+    argus_sampler_params_t sparams = {};
+    sparams.temperature    = temperature;
+    sparams.repeat_penalty = repeat_penalty;
+    sparams.repeat_last_n  = 64;
+    sparams.top_p          = 1.0f;
+    sparams.min_p          = 0.0f;
+    sparams.top_k          = 0;
 
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-
-    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-    struct llama_sampler * sampler = llama_sampler_chain_init(sparams);
-
-    // Apply repetition penalty mitigation parameters
-    if (repeat_penalty > 1.0f) {
-        const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) ? ctx->model_ref->vocab : llama_model_get_vocab(llama_get_model(ctx->ctx));
-        int32_t n_vocab = vocab ? llama_vocab_n_tokens(vocab) : 32000;
-        llama_sampler_chain_add(sampler, llama_sampler_init_penalties(n_vocab, 64, repeat_penalty, 0.0f, 0.0f));
-    }
-
-    // Apply logit bias sampler if biases are provided (zero-copy direct pass)
-    if (biases && bias_count > 0 && ctx->model_ref && ctx->model_ref->vocab) {
-        int32_t n_vocab = llama_vocab_n_tokens(ctx->model_ref->vocab);
-        llama_sampler_chain_add(sampler, llama_sampler_init_logit_bias(n_vocab, bias_count, (const llama_logit_bias *)biases));
-    }
-
-    // Intercept and inject temperature parameters if above absolute floor boundaries
-    if (temperature > 0.0f) {
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
-    }
-
-    // Default fallback to greedy calculation pass
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
-
-    // Pull from index -1 targeting the last populated logits matrix
-    int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
-    (void)seq_id; // Parameter retained for forward compatibility transitions
-
-    llama_sampler_free(sampler);
-    return token;
+    return argus_sample_token_ext(ctx, seq_id, &sparams, biases, bias_count);
 }
 
 void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
@@ -740,6 +886,9 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
     }
     if (ctx->draft_ctx) {
         llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), seq_id, p0, p1);
+    }
+    if (ctx->cached_sampler_chain) {
+        llama_sampler_reset(ctx->cached_sampler_chain);
     }
 }
 

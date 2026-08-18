@@ -3,6 +3,8 @@
 /cmake-build-debug
 /bindings/java/*/.gradle
 /bindings/java/*/build
+/bindings/java/build
+test-outputs
 
 .idea
 .gradle

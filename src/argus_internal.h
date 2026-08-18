@@ -4,6 +4,7 @@
 #include "libargus.h"
 #include "llama.h"
 #include <mutex>
+#include <vector>
 
 struct argus_model {
     struct llama_model           * model;
@@ -20,6 +21,12 @@ struct argus_context {
     struct llama_context * vocoder_ctx;
     const argus_model    * vocoder_model_ref;
     std::mutex             mtx;        // per-context concurrency guard
+
+    // Zero-allocation persistent sampler chain cache
+    struct llama_sampler        * cached_sampler_chain;
+    argus_sampler_params_t        cached_sparams;
+    std::vector<argus_logit_bias_t> cached_biases;
+    bool                          has_cached_sampler;
 };
 
 #endif // ARGUS_INTERNAL_H

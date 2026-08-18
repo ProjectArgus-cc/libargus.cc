@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.0
+ * @version 1.6.1
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -137,6 +137,24 @@ typedef struct argus_logit_bias {
     float   bias;                         /**< Logit adjustment bias weight multiplier (4 bytes) */
 } argus_logit_bias_t;
 
+/**
+ * @brief Extended sampling configuration parameters.
+ */
+typedef struct argus_sampler_params {
+    float   temperature;          /**< Entropy control value (<= 0.0f = greedy) (4 bytes) */
+    float   repeat_penalty;       /**< Repetition penalty factor (<= 1.0f = disabled) (4 bytes) */
+    int32_t repeat_last_n;        /**< Last n tokens to penalize (0 = default 64) (4 bytes) */
+    float   frequency_penalty;    /**< Frequency penalty factor (0.0f = disabled) (4 bytes) */
+    float   presence_penalty;     /**< Presence penalty factor (0.0f = disabled) (4 bytes) */
+    float   top_p;                /**< Nucleus sampling threshold (>= 1.0f = disabled) (4 bytes) */
+    float   min_p;                /**< Minimum probability threshold (<= 0.0f = disabled) (4 bytes) */
+    int32_t top_k;                /**< Top-K sampling cap (<= 0 = disabled) (4 bytes) */
+    float   dry_multiplier;       /**< DRY repetition penalty multiplier (0.0f = disabled) (4 bytes) */
+    float   dry_base;             /**< DRY exponential base (1.75f default) (4 bytes) */
+    int32_t dry_allowed_length;   /**< DRY allowed n-gram length before penalty (2 default) (4 bytes) */
+    int32_t dry_penalty_last_n;   /**< DRY penalty lookback window (-1 = full context) (4 bytes) */
+} argus_sampler_params_t;
+
 // =========================================================================
 // 1. Process-Global Subsystem Lifecycle Control
 // =========================================================================
@@ -225,6 +243,13 @@ ARGUS_API int32_t argus_get_n_threads(argus_context_t * ctx);
  * @return Number of allocated batch threads, or -1 if context is invalid.
  */
 ARGUS_API int32_t argus_get_n_threads_batch(argus_context_t * ctx);
+
+/**
+ * @brief Checks if speculative decoding draft context is initialized and active on this context session.
+ * @param ctx Target execution context.
+ * @return true if speculative draft context is active, false otherwise.
+ */
+ARGUS_API bool argus_context_has_draft(const argus_context_t * ctx);
 
 // =========================================================================
 // 3. Core Text Inference & Native Codec Speech Synthesis (TTS)
@@ -507,6 +532,24 @@ ARGUS_API int32_t argus_sample_token_with_bias(
     float                      repeat_penalty, 
     const argus_logit_bias_t * biases, 
     int32_t                    bias_count
+);
+
+/**
+ * @brief Samples a single token using the extended sampling hyperparameter envelope with zero-allocation caching.
+ * This is a synchronized mutating context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence track being sampled.
+ * @param sparams Extended sampler configuration parameters (top_p, min_p, top_k, temp, penalties, dry).
+ * @param biases Optional array of logit bias weightings.
+ * @param bias_count Count of biased tokens.
+ * @return The resolved token ID primitive, or negative on failure.
+ */
+ARGUS_API int32_t argus_sample_token_ext(
+    argus_context_t              * ctx,
+    int32_t                        seq_id,
+    const argus_sampler_params_t * sparams,
+    const argus_logit_bias_t     * biases,
+    int32_t                        bias_count
 );
 
 /**

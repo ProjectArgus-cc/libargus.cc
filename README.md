@@ -8,12 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.6.0 Release — M-RoPE Multidimensional Rollback, Automagic KV Truncation & Upstream Pinning**
+> **v1.6.1 Release — Persistent Zero-Allocation Sampler, Extended Hyperparameters & Speculative KV Synchronization**
 > 
-> * **Automagic Prefix Rollback:** Intelligently prunes invalidated KV cache cells on prefix reuse (`start_pos <= seq_pos_max`), guaranteeing sequence monotonicity across 1D-RoPE and M-RoPE models with zero caller boilerplate.
-> * **M-RoPE Introspection:** Native zero-allocation queries for rotary embedding dimensionality (`model.nPosPerEmbd()`, `model.isMRoPE()`) and active sequence boundaries (`context.getSeqPosMax()`, `context.getSeqPosMin()`).
-> * **Speculative Cache Sync:** Synchronizes KV slot clearing across primary and speculative draft contexts in lockstep.
-> * **Upstream Pinning:** Updated to `llama.cpp` (`b10472`) and `whisper.cpp` (`v1.9.2`) on GGML `v0.20.1`.
+> * **Persistent Zero-Allocation Sampler:** High-performance persistent sampler caching across autoregressive decoding steps, preserving repetition and DRY n-gram penalty histories across token sequences with zero per-token heap allocations.
+> * **Extended Sampler Hyperparameters:** Introduces full hyperparameter envelopes in C ABI (`argus_sampler_params_t`) and Java Panama FFM (`ArgusSamplerConfig`), adding `top_p`, `min_p`, `top_k`, `frequency_penalty`, `presence_penalty`, and `dry_*` controls.
+> * **Speculative Draft KV Synchronization:** Dual KV cache pruning ensures target context and speculative draft context stay synchronized in lockstep during prefix rollbacks.
+> * **Prefill Chunking Optimization:** Reusable chunk evaluation batch buffers eliminate per-chunk dynamic allocation churn during long-prompt ingestion.
+> * **Hardened Multi-Stage Runtime Loader:** Resilient native library loading across standard `java.library.path`, SPI modules, custom paths, and container deployments without source-tree build file dependencies.
 
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -31,7 +32,8 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Pointers-Only FFM Alignment:** Replaces pass-by-value and volatile C++ polymorphic boundaries with strictly aligned, flat C functions accepting pointers. Structure padding is manually packed to prevent compilers from injecting alignment gaps.
 *   **Absolute Zero-Copy Memory Boundaries:** Eliminates JVM heap primitive arrays (`int[]`, `float[]`) across hot paths. Integrates Project Panama `MemorySegment` parameters directly, allowing token tapes, audio waves, and video frames to generate speech and text with zero GC footprint.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
-*   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer.
+*   **Zero-Allocation Persistent Sampler & Penalty State:** Caches unmanaged sampler chains directly on context sessions, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes without per-token heap allocation overhead.
+*   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer with lockstep KV cache synchronization.
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Zero-Allocation Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
@@ -61,6 +63,7 @@ libargus/
         ├── ArgusModel.java            # Unmanaged GGUF weights manager (AutoCloseable)
         ├── ArgusContext.java          # Core text evaluation context session
         ├── ArgusContextConfig.java    # Text context generation parameters
+        ├── ArgusSamplerConfig.java    # Extended sampling configuration parameters
         ├── ArgusAudioContext.java     # Whisper speech-to-text transcription engine
         ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
         ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer
@@ -287,6 +290,33 @@ try (ArgusContext context = ArgusContext.init(arena, model, config);
 }
 ```
 
+### Extended Autoregressive Sampling & Persistent Sampler Caching
+
+Configure rich sampling profiles (`top_p`, `min_p`, `top_k`, `temperature`, repetition penalties, and DRY n-gram penalties) with zero per-token heap allocation:
+
+```java
+// Create custom sampling configuration profile (or use ArgusSamplerConfig.createDefault() / greedy())
+ArgusSamplerConfig samplerConfig = new ArgusSamplerConfig.Builder()
+    .temperature(0.7f)
+    .topP(0.90f)
+    .minP(0.05f)
+    .topK(40)
+    .repeatPenalty(1.1f)
+    .repeatLastN(64)
+    .frequencyPenalty(0.0f)
+    .presencePenalty(0.0f)
+    .dry(0.8f, 1.75f, 2, -1) // DRY (Don't Repeat Yourself) n-gram suppression
+    .build();
+
+while (generating) {
+    context.decodeBatch(batch);
+
+    // Persistent sampler caches unmanaged chain and updates token history in place
+    int token = context.sampleToken(seqId, samplerConfig);
+    if (model.vocabIsEog(token)) break;
+}
+```
+
 ### Model-Agnostic Logit Bias Sampling
 
 Enforce strict zero-allocation logit steering (e.g. banning reasoning tokens or boosting specific completions) by allocating bias segments once at the start of a generation session and reusing them across hot-path sampling steps:
@@ -307,11 +337,11 @@ try (Arena sessionArena = Arena.ofConfined()) {
     while (generating) {
         context.decodeBatch(batch);
         
-        // Zero-copy, zero-allocation token generation downcall passing raw pointer
+        // Zero-copy, zero-allocation token generation downcall passing raw pointer with extended sampler config
         int token = context.sampleTokenWithBias(
-            seqId, temperature, repeatPenalty, biasSeg, steerTokens.length
+            seqId, samplerConfig, biasSeg, steerTokens.length
         );
-        if (token == model.vocabEos()) break;
+        if (model.vocabIsEog(token)) break;
     }
 }
 ```

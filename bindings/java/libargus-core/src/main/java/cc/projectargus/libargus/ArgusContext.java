@@ -17,6 +17,7 @@ public final class ArgusContext implements AutoCloseable {
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
     private final MemorySegment batchSeg;
+    private final MemorySegment samplerParamsSeg;
     private final Arena arena;
 
     private MemorySegment ttsWorkspace = MemorySegment.NULL;
@@ -36,6 +37,7 @@ public final class ArgusContext implements AutoCloseable {
         this.draftModelRef = draftModelRef;
         this.arena = Objects.requireNonNull(arena);
         this.batchSeg = arena.allocate(ArgusLayouts.TOKEN_BATCH);
+        this.samplerParamsSeg = arena.allocate(ArgusLayouts.SAMPLER_PARAMS);
     }
 
     /**
@@ -296,8 +298,24 @@ public final class ArgusContext implements AutoCloseable {
 
 
     /**
-     * Samples the next token ID from the last computed logits matrix.
-     * Mutex-locked inside the native layer.
+     * Checks if speculative decoding draft context is initialized and active on this context session.
+     *
+     * @return true if speculative draft context is active, false otherwise
+     */
+    public boolean hasDraftContext() {
+        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            return false;
+        }
+        try {
+            return (boolean) ArgusBindings.argus_context_has_draft.invokeExact(ctxPtr);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query draft context status", t);
+        }
+    }
+
+    /**
+     * Samples the next token ID from the last computed logits matrix using default parameters.
+     * Mutex-locked inside the native layer with zero-allocation caching.
      */
     public int sampleToken(int seqId, float temperature, float repeatPenalty) {
         try {
@@ -305,6 +323,18 @@ public final class ArgusContext implements AutoCloseable {
         } catch (Throwable t) {
             throw new RuntimeException("Failed to sample token", t);
         }
+    }
+
+    /**
+     * Samples the next token ID using the extended sampling configuration.
+     * Mutex-locked inside the native layer with zero-allocation caching.
+     *
+     * @param seqId  sequence ID
+     * @param config extended sampling configuration parameters (temperature, penalties, top_p, min_p, top_k, dry)
+     * @return the sampled token ID
+     */
+    public int sampleToken(int seqId, ArgusSamplerConfig config) {
+        return sampleTokenWithBias(seqId, config, MemorySegment.NULL, 0);
     }
 
     /**
@@ -327,6 +357,78 @@ public final class ArgusContext implements AutoCloseable {
             );
         } catch (Throwable t) {
             throw new RuntimeException("Failed to sample token with bias", t);
+        }
+    }
+
+    /**
+     * Samples the next token ID using the extended sampling configuration and logit biases.
+     * Mutex-locked inside the native layer with zero-allocation caching.
+     *
+     * @param seqId       sequence ID
+     * @param config      extended sampling configuration parameters
+     * @param biasSegment off-heap contiguous segment of argus_logit_bias_t structs (or MemorySegment.NULL)
+     * @param biasCount   total count of biased tokens in the segment
+     * @return the sampled token ID
+     */
+    public int sampleTokenWithBias(int seqId, ArgusSamplerConfig config, MemorySegment biasSegment, int biasCount) {
+        Objects.requireNonNull(config);
+        MemorySegment biasSeg = (biasSegment != null) ? biasSegment : MemorySegment.NULL;
+
+        try {
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("temperature")),
+                config.temperature()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("repeat_penalty")),
+                config.repeatPenalty()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_INT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("repeat_last_n")),
+                config.repeatLastN()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("frequency_penalty")),
+                config.frequencyPenalty()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("presence_penalty")),
+                config.presencePenalty()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("top_p")),
+                config.topP()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("min_p")),
+                config.minP()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_INT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("top_k")),
+                config.topK()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_multiplier")),
+                config.dryMultiplier()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_base")),
+                config.dryBase()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_INT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_allowed_length")),
+                config.dryAllowedLength()
+            );
+            samplerParamsSeg.set(ValueLayout.JAVA_INT,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_penalty_last_n")),
+                config.dryPenaltyLastN()
+            );
+
+            return (int) ArgusBindings.argus_sample_token_ext.invokeExact(
+                ctxPtr, seqId, samplerParamsSeg, biasSeg, biasCount
+            );
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to sample token with extended config", t);
         }
     }
 
@@ -406,11 +508,11 @@ public final class ArgusContext implements AutoCloseable {
             );
 
             if (res < -1) {
-                // Resize off-heap workspace buffer
+                // Resize off-heap workspace buffer with 64-byte SIMD cache line alignment
                 long requiredFloats = -res;
                 this.ttsWorkspace = arena.allocate(
                     requiredFloats * ValueLayout.JAVA_FLOAT.byteSize(),
-                    ValueLayout.JAVA_FLOAT.byteAlignment()
+                    64
                 );
                 this.ttsWorkspaceSizeFloats = requiredFloats;
 
