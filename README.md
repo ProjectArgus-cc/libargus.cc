@@ -8,14 +8,15 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.6.1 Release — Persistent Zero-Allocation Sampler, Extended Hyperparameters & Speculative KV Synchronization**
+> **v1.6.2 Release — State-Machine Sampler Overhaul, Stochastic Seeding & Multi-Sequence Isolation**
 > 
-> * **Persistent Zero-Allocation Sampler:** High-performance persistent sampler caching across autoregressive decoding steps, preserving repetition and DRY n-gram penalty histories across token sequences with zero per-token heap allocations.
-> * **Extended Sampler Hyperparameters:** Introduces full hyperparameter envelopes in C ABI (`argus_sampler_params_t`) and Java Panama FFM (`ArgusSamplerConfig`), adding `top_p`, `min_p`, `top_k`, `frequency_penalty`, `presence_penalty`, and `dry_*` controls.
-> * **Speculative Draft KV Synchronization:** Dual KV cache pruning ensures target context and speculative draft context stay synchronized in lockstep during prefix rollbacks.
+> * **Stochastic Distribution & Deterministic RNG Seeding:** True entropy distribution sampling with configurable 64-bit seed (`uint64_t seed` in C ABI, `long seed` in Panama FFM `ArgusSamplerConfig`) with bit-identical reproducible generation, and true greedy argmax selection when `temperature <= 0.0f`.
+> * **Double-Accept Elimination:** Eliminates penalty inflation defects across text and speech synthesis loops by strictly adhering to `llama.cpp` internal sampler acceptance mechanics.
+> * **Multi-Sequence Slot Isolation:** Sequence-isolated sampler chains and pre-allocated history buffers per sequence slot (`n_seq_max`), preventing cross-sequence penalty pollution.
+> * **Zero-Allocation History Replay:** Seamlessly preserves and replays retained sequence token histories into rebuilt sampler chains upon mid-stream hyperparameter and logit bias reconfigurations.
+> * **Explicit Sampler Lifecycle Management:** Native C and Java Panama FFM APIs (`resetSampler`, `primeSampler`, `truncateSampler`) for fine-grained control over penalty/DRY tracking and system-prompt decoupling.
+> * **Strict Logits Ownership & Single-Consumption Invariant:** Prevents stale or cross-sequence logits sampling by strictly asserting decode ownership and transitioning logits to consumed (`-2` error return on un-decoded queries).
 > * **Prefill Chunking Optimization:** Reusable chunk evaluation batch buffers eliminate per-chunk dynamic allocation churn during long-prompt ingestion.
-> * **Hardened Multi-Stage Runtime Loader:** Resilient native library loading across standard `java.library.path`, SPI modules, custom paths, and container deployments without source-tree build file dependencies.
-
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -29,10 +30,12 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Decoupled Weights & Execution:** Separates model weight loading (`argus_model_t`) from evaluation context memory states (`argus_context_t`), allowing model reuse across multiple concurrent sessions.
 *   **Bleeding-Edge Multimodal Projectors:** Integrates the new `libmtmd` C++ engine to ingest raw bitmaps, audio PCM arrays, and video files/streams. Tokenizes prompts and media into a unified chunk sequence, executes projection on the GPU, and automatically configures M-RoPE position grids and non-causal attention matrices.
 *   **Unmanaged Video Iteration Pipe:** Decodes and streams video files frame-by-frame using internal FFmpeg subprocess pipes, yielding raw RGB frames or localized timestamp text chunks (e.g., `[12m34s]`) at a specified target frame rate.
-*   **Pointers-Only FFM Alignment:** Replaces pass-by-value and volatile C++ polymorphic boundaries with strictly aligned, flat C functions accepting pointers. Structure padding is manually packed to prevent compilers from injecting alignment gaps.
+*   **Pointers-Only FFM Alignment:** Replaces pass-by-value and volatile C++ polymorphic boundaries with strictly aligned, flat C functions accepting pointers. Structure padding is manually packed to prevent compilers from injecting alignment gaps (exact 56-byte `argus_sampler_params_t`).
 *   **Absolute Zero-Copy Memory Boundaries:** Eliminates JVM heap primitive arrays (`int[]`, `float[]`) across hot paths. Integrates Project Panama `MemorySegment` parameters directly, allowing token tapes, audio waves, and video frames to generate speech and text with zero GC footprint.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
-*   **Zero-Allocation Persistent Sampler & Penalty State:** Caches unmanaged sampler chains directly on context sessions, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes without per-token heap allocation overhead.
+*   **Zero-Allocation Persistent Sampler & Sequence Isolation:** Caches unmanaged sampler chains per sequence slot, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes without per-token heap allocation overhead.
+*   **Deterministic Stochastic Seeding & Entropy Control:** Exposes 64-bit RNG seeds for exact multi-pass token reproducibility alongside temperature, top-p, min-p, top-k, repetition, frequency, presence, and DRY penalty hyperparameter envelopes.
+*   **Decoupled System Prompt Priming & Lifecycle:** Supports explicit priming (`primeSampler`) of penalty histories to guide generation without polluting KV caches, alongside instant slot resets (`resetSampler`) and rollback replays (`truncateSampler`).
 *   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer with lockstep KV cache synchronization.
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
@@ -292,12 +295,13 @@ try (ArgusContext context = ArgusContext.init(arena, model, config);
 
 ### Extended Autoregressive Sampling & Persistent Sampler Caching
 
-Configure rich sampling profiles (`top_p`, `min_p`, `top_k`, `temperature`, repetition penalties, and DRY n-gram penalties) with zero per-token heap allocation:
+Configure rich sampling profiles (`top_p`, `min_p`, `top_k`, `temperature`, `seed`, repetition penalties, and DRY n-gram penalties) with zero per-token heap allocation:
 
 ```java
-// Create custom sampling configuration profile (or use ArgusSamplerConfig.createDefault() / greedy())
+// Create custom sampling configuration profile with deterministic RNG seed
 ArgusSamplerConfig samplerConfig = new ArgusSamplerConfig.Builder()
     .temperature(0.7f)
+    .seed(42L) // 64-bit deterministic RNG seed (-1L for random entropy)
     .topP(0.90f)
     .minP(0.05f)
     .topK(40)
@@ -309,12 +313,31 @@ ArgusSamplerConfig samplerConfig = new ArgusSamplerConfig.Builder()
     .build();
 
 while (generating) {
+    // 1. Evaluate batch on sequence slot 0 (requesting terminal logits)
     context.decodeBatch(batch);
 
-    // Persistent sampler caches unmanaged chain and updates token history in place
-    int token = context.sampleToken(seqId, samplerConfig);
+    // 2. Persistent sampler caches unmanaged chain and updates token history in place
+    int token = context.sampleToken(0, samplerConfig);
     if (model.vocabIsEog(token)) break;
 }
+```
+
+### Sampler Lifecycle & Decoupled Prompt Priming
+
+Explicitly manage sequence slot sampler penalty histories without polluting KV cache states:
+
+```java
+// 1. Prime penalty history with initial system prompt tokens (bypassing KV cache pollution)
+int[] primeTokens = new int[] { 100, 101, 102 };
+MemorySegment primeSeg = arena.allocate(ValueLayout.JAVA_INT, primeTokens.length);
+for (int i = 0; i < primeTokens.length; i++) primeSeg.setAtIndex(ValueLayout.JAVA_INT, i, primeTokens[i]);
+context.primeSampler(0, primeSeg, primeTokens.length);
+
+// 2. Roll back sampler history to prefix length during branch pruning (replays surviving tokens)
+context.truncateSampler(0, 64);
+
+// 3. Reset sequence slot sampler chain and history to pristine state
+context.resetSampler(0); // Pass -1 to reset all sequence slots
 ```
 
 ### Model-Agnostic Logit Bias Sampling

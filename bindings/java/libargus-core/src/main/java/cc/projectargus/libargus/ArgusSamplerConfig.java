@@ -16,6 +16,7 @@ package cc.projectargus.libargus;
  * @param dryBase            DRY exponential base (defaults to 1.75f)
  * @param dryAllowedLength   DRY allowed common n-gram length before penalty (defaults to 2)
  * @param dryPenaltyLastN    DRY penalty lookback window (-1 or 0 matches full context)
+ * @param seed               RNG seed for distribution sampling (-1L matches random / LLAMA_DEFAULT_SEED)
  */
 public record ArgusSamplerConfig(
     float temperature,
@@ -29,11 +30,12 @@ public record ArgusSamplerConfig(
     float dryMultiplier,
     float dryBase,
     int dryAllowedLength,
-    int dryPenaltyLastN
+    int dryPenaltyLastN,
+    long seed
 ) {
 
     /**
-     * Creates a default production sampling profile (temp 0.7, topP 0.9, minP 0.05, topK 40, repeatPenalty 1.1).
+     * Creates a default production sampling profile (temp 0.7, topP 0.9, minP 0.05, topK 40, repeatPenalty 1.1, random seed).
      */
     public static ArgusSamplerConfig createDefault() {
         return new Builder().build();
@@ -43,7 +45,7 @@ public record ArgusSamplerConfig(
      * Creates a pure greedy / argmax sampling profile.
      */
     public static ArgusSamplerConfig greedy() {
-        return new Builder().temperature(0.0f).repeatPenalty(1.0f).topP(1.0f).minP(0.0f).topK(0).build();
+        return new Builder().temperature(0.0f).repeatPenalty(1.0f).topP(1.0f).minP(0.0f).topK(0).seed(-1L).build();
     }
 
     public static final class Builder {
@@ -59,6 +61,7 @@ public record ArgusSamplerConfig(
         private float dryBase = 1.75f;
         private int dryAllowedLength = 2;
         private int dryPenaltyLastN = -1;
+        private long seed = -1L;
 
         public Builder() {}
 
@@ -76,6 +79,7 @@ public record ArgusSamplerConfig(
                 this.dryBase = source.dryBase();
                 this.dryAllowedLength = source.dryAllowedLength();
                 this.dryPenaltyLastN = source.dryPenaltyLastN();
+                this.seed = source.seed();
             }
         }
 
@@ -119,6 +123,11 @@ public record ArgusSamplerConfig(
             return this;
         }
 
+        public Builder seed(long seed) {
+            this.seed = seed;
+            return this;
+        }
+
         public Builder dry(float multiplier, float base, int allowedLength, int penaltyLastN) {
             this.dryMultiplier = multiplier;
             this.dryBase = base;
@@ -140,7 +149,8 @@ public record ArgusSamplerConfig(
                 dryMultiplier,
                 dryBase,
                 dryAllowedLength,
-                dryPenaltyLastN
+                dryPenaltyLastN,
+                seed
             );
         }
     }

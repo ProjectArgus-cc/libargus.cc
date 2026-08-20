@@ -423,12 +423,71 @@ public final class ArgusContext implements AutoCloseable {
                 ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_penalty_last_n")),
                 config.dryPenaltyLastN()
             );
+            samplerParamsSeg.set(ValueLayout.JAVA_LONG,
+                ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("seed")),
+                config.seed()
+            );
 
             return (int) ArgusBindings.argus_sample_token_ext.invokeExact(
                 ctxPtr, seqId, samplerParamsSeg, biasSeg, biasCount
             );
         } catch (Throwable t) {
             throw new RuntimeException("Failed to sample token with extended config", t);
+        }
+    }
+
+    /**
+     * Resets the sampler state and clears penalty/DRY token history for a sequence slot.
+     *
+     * @param seqId sequence ID (-1 for all sequences)
+     */
+    public void resetSampler(int seqId) {
+        try {
+            int res = (int) ArgusBindings.argus_sampler_reset.invokeExact(ctxPtr, seqId);
+            if (res < 0) {
+                throw new RuntimeException("Failed to reset sampler for sequence " + seqId);
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to reset sampler for sequence " + seqId, t);
+        }
+    }
+
+    /**
+     * Primes a sequence slot's sampler history with prompt or external tokens.
+     * Accepted tokens will be tracked for repetition penalties and DRY n-gram suppression.
+     *
+     * @param seqId     sequence ID
+     * @param tokensSeg off-heap segment containing 4-byte int tokens
+     * @param nTokens   number of tokens
+     * @return 0 on success, negative on failure
+     */
+    public int primeSampler(int seqId, MemorySegment tokensSeg, int nTokens) {
+        Objects.requireNonNull(tokensSeg);
+        if (nTokens <= 0) {
+            return 0;
+        }
+        try {
+            return (int) ArgusBindings.argus_sampler_prime.invokeExact(ctxPtr, seqId, tokensSeg, nTokens);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to prime sampler for sequence " + seqId, t);
+        }
+    }
+
+    /**
+     * Truncates a sequence slot's sampler token history to the specified length.
+     * Resets the sampler chain and replays the surviving prefix.
+     *
+     * @param seqId     sequence ID
+     * @param newLength retained token history length
+     */
+    public void truncateSampler(int seqId, int newLength) {
+        try {
+            int res = (int) ArgusBindings.argus_sampler_truncate.invokeExact(ctxPtr, seqId, newLength);
+            if (res < 0) {
+                throw new RuntimeException("Failed to truncate sampler for sequence " + seqId);
+            }
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to truncate sampler for sequence " + seqId, t);
         }
     }
 

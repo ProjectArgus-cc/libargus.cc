@@ -291,18 +291,31 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
     argus_ctx->enable_draft_mtp     = params->enable_draft_mtp;
     argus_ctx->vocoder_ctx          = nullptr;
     argus_ctx->vocoder_model_ref    = nullptr;
-    argus_ctx->cached_sampler_chain = nullptr;
-    argus_ctx->has_cached_sampler   = false;
+    argus_ctx->last_decoded_seq_id  = -1;
+
+    argus_ctx->seq_samplers.resize(seq_max);
+    for (int32_t i = 0; i < seq_max; ++i) {
+        argus_ctx->seq_samplers[i].chain = nullptr;
+        argus_ctx->seq_samplers[i].has_cached_chain = false;
+        argus_ctx->seq_samplers[i].has_logits = false;
+        argus_ctx->seq_samplers[i].last_logits_pos = -1;
+        if (params->context_length > 0) {
+            argus_ctx->seq_samplers[i].history.reserve((size_t)params->context_length);
+        }
+    }
 
     return argus_ctx;
 }
 
 void argus_context_free(argus_context_t * ctx) {
     if (ctx) {
-        if (ctx->cached_sampler_chain) {
-            llama_sampler_free(ctx->cached_sampler_chain);
-            ctx->cached_sampler_chain = nullptr;
+        for (auto & slot : ctx->seq_samplers) {
+            if (slot.chain) {
+                llama_sampler_free(slot.chain);
+                slot.chain = nullptr;
+            }
         }
+        ctx->seq_samplers.clear();
         if (ctx->ctx) {
             llama_free(ctx->ctx);
         }
@@ -376,7 +389,7 @@ int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t *
 }
 
 int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size) {
-    if (!model || !out_buf || buf_size <= 0) {
+    if (!model || !model->vocab || !out_buf || buf_size <= 0 || token < 0) {
         return -1;
     }
 
@@ -404,7 +417,7 @@ int32_t argus_vocab_n_tokens(const argus_model_t * model) {
 }
 
 bool argus_vocab_is_eog(const argus_model_t * model, int32_t token) {
-    return model && model->vocab ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
+    return (model && model->vocab && token >= 0) ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
 }
 
 int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size) {
@@ -601,8 +614,8 @@ static int32_t decode_tokens_chunked(
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
         bool is_last_chunk = (decoded + chunk_size == n_tokens);
-        // Force logits/embeddings output calculation on terminal token of final chunk
-        bool request_logits_chunk = request_logits || is_last_chunk;
+        // Only request logits on terminal token of final chunk if caller requested logits
+        bool request_logits_chunk = request_logits && is_last_chunk;
 
         bool is_encoder_or_embeddings = llama_model_has_encoder(llama_get_model(lctx)) || (llama_pooling_type(lctx) != LLAMA_POOLING_TYPE_NONE);
 
@@ -647,24 +660,47 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
-    // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
-    prune_kv_cache_if_rollback(ctx->ctx, batch_payload->seq_id, batch_payload->start_pos);
-    prune_kv_cache_if_rollback(ctx->draft_ctx, batch_payload->seq_id, batch_payload->start_pos);
-
-    // Reset sampler state on prefix rollback or prompt restart
-    if (ctx->cached_sampler_chain) {
-        llama_sampler_reset(ctx->cached_sampler_chain);
+    int32_t seq_id = batch_payload->seq_id;
+    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
     }
 
-    return decode_tokens_chunked(
+    // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
+    prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
+    prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+
+    // Rollback sampler history if start_pos is less than history size
+    auto & slot = ctx->seq_samplers[seq_id];
+    if (batch_payload->start_pos < (int32_t)slot.history.size()) {
+        slot.history.resize((size_t)batch_payload->start_pos);
+        if (slot.chain) {
+            llama_sampler_reset(slot.chain);
+            for (llama_token t : slot.history) {
+                llama_sampler_accept(slot.chain, t);
+            }
+        }
+    }
+
+    int32_t res = decode_tokens_chunked(
         ctx->ctx,
         batch_payload->tokens,
         batch_payload->n_tokens,
         batch_payload->start_pos,
-        batch_payload->seq_id,
+        seq_id,
         batch_payload->request_logits,
         batch_payload->abort_flag
     );
+
+    if (res == 0) {
+        ctx->last_decoded_seq_id = seq_id;
+        slot.has_logits = batch_payload->request_logits;
+        slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
+    } else {
+        slot.has_logits = false;
+        slot.last_logits_pos = -1;
+    }
+
+    return res;
 }
 
 int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats) {
@@ -710,7 +746,8 @@ static bool sampler_params_equal(const argus_sampler_params_t & a, const argus_s
            a.dry_multiplier == b.dry_multiplier &&
            a.dry_base == b.dry_base &&
            a.dry_allowed_length == b.dry_allowed_length &&
-           a.dry_penalty_last_n == b.dry_penalty_last_n;
+           a.dry_penalty_last_n == b.dry_penalty_last_n &&
+           a.seed == b.seed;
 }
 
 static bool logit_biases_equal(const std::vector<argus_logit_bias_t> & cached, const argus_logit_bias_t * biases, int32_t bias_count) {
@@ -780,41 +817,60 @@ static struct llama_sampler * build_sampler_chain(
         llama_sampler_chain_add(chain, llama_sampler_init_min_p(sparams->min_p, 1));
     }
 
-    // 7. Temperature & Greedy selection
-    if (sparams->temperature > 0.0f) {
+    // 7. Temperature & Stochastic Distribution / Greedy Selection
+    if (sparams->temperature <= 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    } else {
         llama_sampler_chain_add(chain, llama_sampler_init_temp(sparams->temperature));
+        uint32_t dist_seed = (sparams->seed == 0xFFFFFFFFFFFFFFFFULL)
+            ? LLAMA_DEFAULT_SEED
+            : static_cast<uint32_t>(sparams->seed);
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(dist_seed));
     }
-    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
 
     return chain;
 }
 
-static struct llama_sampler * get_or_update_sampler(
+static struct llama_sampler * get_or_update_slot_sampler(
     argus_context_t              * ctx,
+    int32_t                        seq_id,
     const argus_sampler_params_t * sparams,
     const argus_logit_bias_t     * biases,
     int32_t                        bias_count
 ) {
-    if (!ctx->has_cached_sampler ||
-        !sampler_params_equal(ctx->cached_sparams, *sparams) ||
-        !logit_biases_equal(ctx->cached_biases, biases, bias_count)) {
-
-        if (ctx->cached_sampler_chain) {
-            llama_sampler_free(ctx->cached_sampler_chain);
-            ctx->cached_sampler_chain = nullptr;
-        }
-
-        ctx->cached_sampler_chain = build_sampler_chain(ctx, sparams, biases, bias_count);
-        ctx->cached_sparams       = *sparams;
-        if (biases && bias_count > 0) {
-            ctx->cached_biases.assign(biases, biases + bias_count);
-        } else {
-            ctx->cached_biases.clear();
-        }
-        ctx->has_cached_sampler   = true;
+    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return nullptr;
     }
 
-    return ctx->cached_sampler_chain;
+    auto & slot = ctx->seq_samplers[seq_id];
+
+    if (!slot.has_cached_chain ||
+        !sampler_params_equal(slot.cached_sparams, *sparams) ||
+        !logit_biases_equal(slot.cached_biases, biases, bias_count)) {
+
+        if (slot.chain) {
+            llama_sampler_free(slot.chain);
+            slot.chain = nullptr;
+        }
+
+        slot.chain = build_sampler_chain(ctx, sparams, biases, bias_count);
+        slot.cached_sparams = *sparams;
+        if (biases && bias_count > 0) {
+            slot.cached_biases.assign(biases, biases + bias_count);
+        } else {
+            slot.cached_biases.clear();
+        }
+        slot.has_cached_chain = true;
+
+        // Replay retained sequence history into newly constructed chain
+        if (slot.chain && !slot.history.empty()) {
+            for (llama_token t : slot.history) {
+                llama_sampler_accept(slot.chain, t);
+            }
+        }
+    }
+
+    return slot.chain;
 }
 
 int32_t argus_sample_token_ext(
@@ -829,15 +885,31 @@ int32_t argus_sample_token_ext(
     }
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
-    (void)seq_id;
 
-    struct llama_sampler * sampler = get_or_update_sampler(ctx, sparams, biases, bias_count);
+    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+
+    auto & slot = ctx->seq_samplers[seq_id];
+
+    // Logits validation: Must be the sequence evaluated last, with logits requested and available
+    if (ctx->last_decoded_seq_id != seq_id || !slot.has_logits) {
+        return -2; // Logits unavailable for target sequence
+    }
+
+    struct llama_sampler * sampler = get_or_update_slot_sampler(ctx, seq_id, sparams, biases, bias_count);
     if (!sampler) {
         return -1;
     }
 
+    // Sample from the last logits row (-1). llama_sampler_sample accepts the token internally.
     int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
-    llama_sampler_accept(sampler, token);
+
+    // Record token into sequence history ring buffer
+    slot.history.push_back(token);
+
+    // Consume logits
+    slot.has_logits = false;
 
     return token;
 }
@@ -850,6 +922,7 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
     sparams.top_p          = 1.0f;
     sparams.min_p          = 0.0f;
     sparams.top_k          = 0;
+    sparams.seed           = 0xFFFFFFFFFFFFFFFFULL;
 
     return argus_sample_token_ext(ctx, seq_id, &sparams, nullptr, 0);
 }
@@ -869,8 +942,77 @@ int32_t argus_sample_token_with_bias(
     sparams.top_p          = 1.0f;
     sparams.min_p          = 0.0f;
     sparams.top_k          = 0;
+    sparams.seed           = 0xFFFFFFFFFFFFFFFFULL;
 
     return argus_sample_token_ext(ctx, seq_id, &sparams, biases, bias_count);
+}
+
+int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    if (seq_id < 0) {
+        // Reset all sequence slots
+        for (auto & slot : ctx->seq_samplers) {
+            slot.history.clear();
+            slot.has_logits = false;
+            slot.last_logits_pos = -1;
+            if (slot.chain) {
+                llama_sampler_reset(slot.chain);
+            }
+        }
+        return 0;
+    }
+
+    if (seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+
+    auto & slot = ctx->seq_samplers[seq_id];
+    slot.history.clear();
+    slot.has_logits = false;
+    slot.last_logits_pos = -1;
+    if (slot.chain) {
+        llama_sampler_reset(slot.chain);
+    }
+    return 0;
+}
+
+int32_t argus_sampler_prime(argus_context_t * ctx, int32_t seq_id, const int32_t * tokens, int32_t n_tokens) {
+    if (!ctx || !tokens || n_tokens <= 0 || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    auto & slot = ctx->seq_samplers[seq_id];
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        slot.history.push_back(tokens[i]);
+        if (slot.chain) {
+            llama_sampler_accept(slot.chain, tokens[i]);
+        }
+    }
+    return 0;
+}
+
+int32_t argus_sampler_truncate(argus_context_t * ctx, int32_t seq_id, int32_t new_length) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size() || new_length < 0) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    auto & slot = ctx->seq_samplers[seq_id];
+    if (new_length < (int32_t)slot.history.size()) {
+        slot.history.resize((size_t)new_length);
+        if (slot.chain) {
+            llama_sampler_reset(slot.chain);
+            for (llama_token t : slot.history) {
+                llama_sampler_accept(slot.chain, t);
+            }
+        }
+    }
+    return 0;
 }
 
 void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
@@ -887,8 +1029,37 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
     if (ctx->draft_ctx) {
         llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), seq_id, p0, p1);
     }
-    if (ctx->cached_sampler_chain) {
-        llama_sampler_reset(ctx->cached_sampler_chain);
+
+    // Sequence-specific sampler reset
+    if (seq_id < 0) {
+        for (auto & slot : ctx->seq_samplers) {
+            slot.history.clear();
+            slot.has_logits = false;
+            slot.last_logits_pos = -1;
+            if (slot.chain) {
+                llama_sampler_reset(slot.chain);
+            }
+        }
+    } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
+        auto & slot = ctx->seq_samplers[seq_id];
+        if (p0 <= 0 && p1 < 0) {
+            // Full clear
+            slot.history.clear();
+            slot.has_logits = false;
+            slot.last_logits_pos = -1;
+            if (slot.chain) {
+                llama_sampler_reset(slot.chain);
+            }
+        } else if (p0 >= 0 && p0 < (int32_t)slot.history.size()) {
+            // Truncation
+            slot.history.resize((size_t)p0);
+            if (slot.chain) {
+                llama_sampler_reset(slot.chain);
+                for (llama_token t : slot.history) {
+                    llama_sampler_accept(slot.chain, t);
+                }
+            }
+        }
     }
 }
 
@@ -1003,13 +1174,13 @@ int32_t argus_synthesize_speech(
     struct llama_sampler * sampler = llama_sampler_chain_init(sparams);
     // Apply repeating penalty and temperature
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.1f));
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    llama_sampler_chain_add(sampler, llama_sampler_init_dist(voice_seed > 0 ? (uint32_t)voice_seed : LLAMA_DEFAULT_SEED));
 
     struct llama_batch batch = llama_batch_init(1, 0, 1);
 
     while (n_decode <= n_predict) {
         llama_token new_token_id = llama_sampler_sample(sampler, ctx->ctx, -1);
-        llama_sampler_accept(sampler, new_token_id);
+        // Note: llama_sampler_sample already accepts token internally
 
         generated_codes.push_back(new_token_id);
 

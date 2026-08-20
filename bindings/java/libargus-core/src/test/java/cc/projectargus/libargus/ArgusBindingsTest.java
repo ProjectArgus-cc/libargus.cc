@@ -263,13 +263,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.1", ArgusBindings.VERSION);
+        assertEquals("1.6.2", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.1", nativeVer);
+            assertEquals("1.6.2", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -369,7 +369,7 @@ public class ArgusBindingsTest {
     @Test
     public void testSamplerParamsLayoutAndConfig() {
         System.out.println("[Java Test] Validating SamplerParams struct layout and ArgusSamplerConfig...");
-        assertEquals(48L, cc.projectargus.libargus.internal.ArgusLayouts.SAMPLER_PARAMS.byteSize());
+        assertEquals(56L, cc.projectargus.libargus.internal.ArgusLayouts.SAMPLER_PARAMS.byteSize());
 
         ArgusSamplerConfig defaultCfg = ArgusSamplerConfig.createDefault();
         assertEquals(0.7f, defaultCfg.temperature());
@@ -379,6 +379,7 @@ public class ArgusBindingsTest {
         assertEquals(0.05f, defaultCfg.minP());
         assertEquals(40, defaultCfg.topK());
         assertEquals(0.0f, defaultCfg.dryMultiplier());
+        assertEquals(-1L, defaultCfg.seed());
 
         ArgusSamplerConfig customCfg = new ArgusSamplerConfig.Builder()
             .temperature(0.5f)
@@ -389,6 +390,7 @@ public class ArgusBindingsTest {
             .topP(0.85f)
             .minP(0.10f)
             .topK(20)
+            .seed(987654321L)
             .dry(0.5f, 1.8f, 3, 100)
             .build();
 
@@ -400,6 +402,7 @@ public class ArgusBindingsTest {
         assertEquals(0.85f, customCfg.topP());
         assertEquals(0.10f, customCfg.minP());
         assertEquals(20, customCfg.topK());
+        assertEquals(987654321L, customCfg.seed());
         assertEquals(0.5f, customCfg.dryMultiplier());
         assertEquals(1.8f, customCfg.dryBase());
         assertEquals(3, customCfg.dryAllowedLength());
@@ -462,7 +465,7 @@ public class ArgusBindingsTest {
                 assertEquals(4, context.getSeqPosMax(0));
                 System.out.println("  - Java batch decoded. Initial seq_pos_max: " + context.getSeqPosMax(0));
 
-                // 4. Automagic rollback verification (Finding 1)
+                // 4. Automagic rollback verification
                 int[] branchTokens = new int[] { 8, 9 }; // e, f starting at pos 2
                 MemorySegment branchSeg = arena.allocate(ValueLayout.JAVA_INT, branchTokens.length);
                 for (int i = 0; i < branchTokens.length; i++) {
@@ -474,13 +477,46 @@ public class ArgusBindingsTest {
                 assertEquals(3, context.getSeqPosMax(0));
                 System.out.println("  - Java prefix rollback verified in lockstep. New seq_pos_max: " + context.getSeqPosMax(0));
 
-                // 5. Extended sampling verification (Finding 2 & Extended ABI)
-                ArgusSamplerConfig sampleCfg = ArgusSamplerConfig.createDefault();
+                // 5. Extended sampling verification (Deterministic Seeding)
+                ArgusSamplerConfig sampleCfg = new ArgusSamplerConfig.Builder()
+                    .temperature(0.7f)
+                    .seed(42L)
+                    .build();
                 int sampledToken = context.sampleToken(0, sampleCfg);
                 assertTrue(sampledToken >= 0 && sampledToken < 64);
                 System.out.println("  - Java extended sampler produced token: " + sampledToken);
 
-                // 6. Logit steering bias verification
+                // Verify logits consumption: immediate subsequent sample without decode returns -2
+                int reSample = context.sampleToken(0, sampleCfg);
+                assertEquals(-2, reSample);
+                System.out.println("  - Java logits consumption verified (returned -2 on repeated sample).");
+
+                // 6. Multi-Sequence Logits Isolation Verification
+                int[] s0Toks = new int[] { 1, 10 };
+                MemorySegment s0Seg = arena.allocate(ValueLayout.JAVA_INT, s0Toks.length);
+                for (int i = 0; i < s0Toks.length; i++) s0Seg.setAtIndex(ValueLayout.JAVA_INT, i, s0Toks[i]);
+                assertEquals(0, context.decodeBatch(s0Seg, s0Toks.length, 0, 0, true));
+
+                int[] s1Toks = new int[] { 1, 20 };
+                MemorySegment s1Seg = arena.allocate(ValueLayout.JAVA_INT, s1Toks.length);
+                for (int i = 0; i < s1Toks.length; i++) s1Seg.setAtIndex(ValueLayout.JAVA_INT, i, s1Toks[i]);
+                assertEquals(0, context.decodeBatch(s1Seg, s1Toks.length, 0, 1, true));
+
+                // Sampling seq 0 must return -2 because seq 1 was decoded last
+                assertEquals(-2, context.sampleToken(0, sampleCfg));
+                System.out.println("  - Java cross-sequence logits contamination prevented (-2 returned for seq 0).");
+
+                // Sampling seq 1 succeeds
+                int s1Token = context.sampleToken(1, sampleCfg);
+                assertTrue(s1Token >= 0 && s1Token < 64);
+                System.out.println("  - Java seq 1 sampled successfully: " + s1Token);
+
+                // 7. Logit steering bias verification
+                int[] steerToks = new int[] { 1, 4 };
+                MemorySegment steerSeg = arena.allocate(ValueLayout.JAVA_INT, steerToks.length);
+                for (int i = 0; i < steerToks.length; i++) steerSeg.setAtIndex(ValueLayout.JAVA_INT, i, steerToks[i]);
+                assertEquals(0, context.decodeBatch(steerSeg, steerToks.length, 0, 0, true));
+
                 MemorySegment biasSeg1 = arena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS, 1);
                 biasSeg1.setAtIndex(ValueLayout.JAVA_INT, 0, 10);
                 biasSeg1.setAtIndex(ValueLayout.JAVA_FLOAT, 1, 1000.0f);
@@ -489,6 +525,7 @@ public class ArgusBindingsTest {
                 assertEquals(10, biasedToken1);
                 System.out.println("  - Java logit bias steering produced forced token: " + biasedToken1);
 
+                assertEquals(0, context.decodeBatch(steerSeg, steerToks.length, 0, 0, true));
                 MemorySegment biasSeg2 = arena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS, 1);
                 biasSeg2.setAtIndex(ValueLayout.JAVA_INT, 0, 15);
                 biasSeg2.setAtIndex(ValueLayout.JAVA_FLOAT, 1, 1000.0f);
@@ -496,11 +533,62 @@ public class ArgusBindingsTest {
                 int biasedToken2 = context.sampleTokenWithBias(0, sampleCfg, biasSeg2, 1);
                 assertEquals(15, biasedToken2);
                 System.out.println("  - Java logit bias steering dynamically updated to token: " + biasedToken2);
+
+                // 8. Deterministic Seeding vs Entropy Verification
+                java.util.List<Integer> run1 = new java.util.ArrayList<>();
+                java.util.List<Integer> run2 = new java.util.ArrayList<>();
+                ArgusSamplerConfig seedCfg = new ArgusSamplerConfig.Builder()
+                    .temperature(0.8f)
+                    .topK(10)
+                    .seed(777L)
+                    .build();
+
+                // Run 1
+                context.clearCacheSlot(0, 0, -1);
+                context.resetSampler(0);
+                int[] seedPrompt = new int[] { 1, 4, 5 };
+                MemorySegment spSeg = arena.allocate(ValueLayout.JAVA_INT, seedPrompt.length);
+                for (int i = 0; i < seedPrompt.length; i++) spSeg.setAtIndex(ValueLayout.JAVA_INT, i, seedPrompt[i]);
+                assertEquals(0, context.decodeBatch(spSeg, seedPrompt.length, 0, 0, true));
+
+                for (int i = 0; i < 4; i++) {
+                    int t = context.sampleToken(0, seedCfg);
+                    assertTrue(t >= 0);
+                    run1.add(t);
+                    MemorySegment nextSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                    nextSeg.setAtIndex(ValueLayout.JAVA_INT, 0, t);
+                    assertEquals(0, context.decodeBatch(nextSeg, 1, 3 + i, 0, true));
+                }
+
+                // Run 2 (same seed 777L)
+                context.clearCacheSlot(0, 0, -1);
+                context.resetSampler(0);
+                assertEquals(0, context.decodeBatch(spSeg, seedPrompt.length, 0, 0, true));
+
+                for (int i = 0; i < 4; i++) {
+                    int t = context.sampleToken(0, seedCfg);
+                    assertTrue(t >= 0);
+                    run2.add(t);
+                    MemorySegment nextSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                    nextSeg.setAtIndex(ValueLayout.JAVA_INT, 0, t);
+                    assertEquals(0, context.decodeBatch(nextSeg, 1, 3 + i, 0, true));
+                }
+
+                assertEquals(run1, run2, "Seed 777L should produce deterministic token stream across runs");
+                System.out.println("  - Java seed reproducibility verified: " + run1);
+
+                // 9. Sampler Priming & Lifecycle
+                int[] primeToks = new int[] { 12, 13, 14 };
+                MemorySegment primeSeg = arena.allocate(ValueLayout.JAVA_INT, primeToks.length);
+                for (int i = 0; i < primeToks.length; i++) primeSeg.setAtIndex(ValueLayout.JAVA_INT, i, primeToks[i]);
+                assertEquals(0, context.primeSampler(0, primeSeg, 3));
+                context.truncateSampler(0, 1);
+                context.resetSampler(0);
+                System.out.println("  - Java sampler lifecycle (prime, truncate, reset) verified.");
             }
         } finally {
             ArgusBackend.free();
         }
-        System.out.println("[Java Test] Fanged end-to-end model execution verification completed successfully!");
     }
 }
 

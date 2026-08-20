@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.1
+ * @version 1.6.2
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -141,18 +141,19 @@ typedef struct argus_logit_bias {
  * @brief Extended sampling configuration parameters.
  */
 typedef struct argus_sampler_params {
-    float   temperature;          /**< Entropy control value (<= 0.0f = greedy) (4 bytes) */
-    float   repeat_penalty;       /**< Repetition penalty factor (<= 1.0f = disabled) (4 bytes) */
-    int32_t repeat_last_n;        /**< Last n tokens to penalize (0 = default 64) (4 bytes) */
-    float   frequency_penalty;    /**< Frequency penalty factor (0.0f = disabled) (4 bytes) */
-    float   presence_penalty;     /**< Presence penalty factor (0.0f = disabled) (4 bytes) */
-    float   top_p;                /**< Nucleus sampling threshold (>= 1.0f = disabled) (4 bytes) */
-    float   min_p;                /**< Minimum probability threshold (<= 0.0f = disabled) (4 bytes) */
-    int32_t top_k;                /**< Top-K sampling cap (<= 0 = disabled) (4 bytes) */
-    float   dry_multiplier;       /**< DRY repetition penalty multiplier (0.0f = disabled) (4 bytes) */
-    float   dry_base;             /**< DRY exponential base (1.75f default) (4 bytes) */
-    int32_t dry_allowed_length;   /**< DRY allowed n-gram length before penalty (2 default) (4 bytes) */
-    int32_t dry_penalty_last_n;   /**< DRY penalty lookback window (-1 = full context) (4 bytes) */
+    float    temperature;          /**< Entropy control value (<= 0.0f = greedy) (4 bytes) */
+    float    repeat_penalty;       /**< Repetition penalty factor (<= 1.0f = disabled) (4 bytes) */
+    int32_t  repeat_last_n;        /**< Last n tokens to penalize (0 = default 64) (4 bytes) */
+    float    frequency_penalty;    /**< Frequency penalty factor (0.0f = disabled) (4 bytes) */
+    float    presence_penalty;     /**< Presence penalty factor (0.0f = disabled) (4 bytes) */
+    float    top_p;                /**< Nucleus sampling threshold (>= 1.0f = disabled) (4 bytes) */
+    float    min_p;                /**< Minimum probability threshold (<= 0.0f = disabled) (4 bytes) */
+    int32_t  top_k;                /**< Top-K sampling cap (<= 0 = disabled) (4 bytes) */
+    float    dry_multiplier;       /**< DRY repetition penalty multiplier (0.0f = disabled) (4 bytes) */
+    float    dry_base;             /**< DRY exponential base (1.75f default) (4 bytes) */
+    int32_t  dry_allowed_length;   /**< DRY allowed n-gram length before penalty (2 default) (4 bytes) */
+    int32_t  dry_penalty_last_n;   /**< DRY penalty lookback window (-1 = full context) (4 bytes) */
+    uint64_t seed;                 /**< RNG seed for distribution sampling (0xFFFFFFFFFFFFFFFFULL = random) (8 bytes) */
 } argus_sampler_params_t;
 
 // =========================================================================
@@ -507,10 +508,10 @@ ARGUS_API int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, fl
  * @brief Samples a single token from the last computed layer logits matrix.
  * This is a synchronized mutating context operation.
  * @param ctx Reference execution context.
- * @param seq_id Target sequence track track being sampled.
- * @param temperature Mathematical extraction entropy control value.
- * @param repeat_penalty Token frequency suppression multiplier factor.
- * @return The resolved token ID primitive.
+ * @param seq_id Target sequence track being sampled.
+ * @param temperature Mathematical extraction entropy control value (<= 0.0f = greedy).
+ * @param repeat_penalty Token frequency suppression multiplier factor (<= 1.0f = disabled).
+ * @return The resolved token ID primitive, -1 on invalid args, or -2 if logits unavailable for seq_id.
  */
 ARGUS_API int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperature, float repeat_penalty);
 
@@ -518,12 +519,12 @@ ARGUS_API int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, floa
  * @brief Samples a single token applying specified logit bias weightings.
  * This is a synchronized mutating context operation.
  * @param ctx Reference execution context.
- * @param seq_id Target sequence track track being sampled.
- * @param temperature Mathematical extraction entropy control value.
- * @param repeat_penalty Token frequency suppression multiplier factor.
+ * @param seq_id Target sequence track being sampled.
+ * @param temperature Mathematical extraction entropy control value (<= 0.0f = greedy).
+ * @param repeat_penalty Token frequency suppression multiplier factor (<= 1.0f = disabled).
  * @param biases Contiguous unmanaged array containing target tokens and bias values.
  * @param bias_count Total count of biased tokens in the array.
- * @return The resolved token ID primitive.
+ * @return The resolved token ID primitive, -1 on invalid args, or -2 if logits unavailable for seq_id.
  */
 ARGUS_API int32_t argus_sample_token_with_bias(
     argus_context_t          * ctx, 
@@ -539,10 +540,10 @@ ARGUS_API int32_t argus_sample_token_with_bias(
  * This is a synchronized mutating context operation.
  * @param ctx Reference execution context.
  * @param seq_id Target sequence track being sampled.
- * @param sparams Extended sampler configuration parameters (top_p, min_p, top_k, temp, penalties, dry).
+ * @param sparams Extended sampler configuration parameters (top_p, min_p, top_k, temp, penalties, dry, seed).
  * @param biases Optional array of logit bias weightings.
  * @param bias_count Count of biased tokens.
- * @return The resolved token ID primitive, or negative on failure.
+ * @return The resolved token ID primitive, -1 on invalid args, or -2 if logits unavailable for seq_id.
  */
 ARGUS_API int32_t argus_sample_token_ext(
     argus_context_t              * ctx,
@@ -551,6 +552,38 @@ ARGUS_API int32_t argus_sample_token_ext(
     const argus_logit_bias_t     * biases,
     int32_t                        bias_count
 );
+
+/**
+ * @brief Resets the sampler state and clears penalty/DRY token history for a sequence slot.
+ * This is a synchronized mutating context operation.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot (-1 for all sequences).
+ * @return 0 on success, negative on failure.
+ */
+ARGUS_API int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id);
+
+/**
+ * @brief Primes a sequence slot's stateful sampler history with prompt or external tokens.
+ * Accepted tokens are tracked for repetition penalties and DRY n-gram suppression.
+ * This is a synchronized mutating context operation.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @param tokens Array of token IDs to prime into history.
+ * @param n_tokens Number of tokens in the array.
+ * @return 0 on success, negative on failure.
+ */
+ARGUS_API int32_t argus_sampler_prime(argus_context_t * ctx, int32_t seq_id, const int32_t * tokens, int32_t n_tokens);
+
+/**
+ * @brief Truncates a sequence slot's sampler token history to the specified length.
+ * Resets the sampler chain and replays the surviving prefix.
+ * This is a synchronized mutating context operation.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @param new_length Retained history token length.
+ * @return 0 on success, negative on failure.
+ */
+ARGUS_API int32_t argus_sampler_truncate(argus_context_t * ctx, int32_t seq_id, int32_t new_length);
 
 /**
  * @brief Prunes targeted token chains out of the active unmanaged L1 VRAM sequence cache.

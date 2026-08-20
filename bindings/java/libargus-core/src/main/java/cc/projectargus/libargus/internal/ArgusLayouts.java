@@ -139,18 +139,19 @@ public final class ArgusLayouts {
      * Memory layout for argus_sampler_params_t
      * <pre>
      * typedef struct argus_sampler_params {
-     *     float   temperature;          // 4 bytes
-     *     float   repeat_penalty;       // 4 bytes
-     *     int32_t repeat_last_n;        // 4 bytes
-     *     float   frequency_penalty;    // 4 bytes
-     *     float   presence_penalty;     // 4 bytes
-     *     float   top_p;                // 4 bytes
-     *     float   min_p;                // 4 bytes
-     *     int32_t top_k;                // 4 bytes
-     *     float   dry_multiplier;       // 4 bytes
-     *     float   dry_base;             // 4 bytes
-     *     int32_t dry_allowed_length;   // 4 bytes
-     *     int32_t dry_penalty_last_n;   // 4 bytes
+     *     float    temperature;          // 4 bytes
+     *     float    repeat_penalty;       // 4 bytes
+     *     int32_t  repeat_last_n;        // 4 bytes
+     *     float    frequency_penalty;    // 4 bytes
+     *     float    presence_penalty;     // 4 bytes
+     *     float    top_p;                // 4 bytes
+     *     float    min_p;                // 4 bytes
+     *     int32_t  top_k;                // 4 bytes
+     *     float    dry_multiplier;       // 4 bytes
+     *     float    dry_base;             // 4 bytes
+     *     int32_t  dry_allowed_length;   // 4 bytes
+     *     int32_t  dry_penalty_last_n;   // 4 bytes
+     *     uint64_t seed;                 // 8 bytes
      * } argus_sampler_params_t;
      * </pre>
      */
@@ -166,6 +167,7 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_FLOAT.withName("dry_multiplier"),
         ValueLayout.JAVA_FLOAT.withName("dry_base"),
         ValueLayout.JAVA_INT.withName("dry_allowed_length"),
-        ValueLayout.JAVA_INT.withName("dry_penalty_last_n")
+        ValueLayout.JAVA_INT.withName("dry_penalty_last_n"),
+        ValueLayout.JAVA_LONG.withName("seed")
     ).withName("argus_sampler_params");
 }

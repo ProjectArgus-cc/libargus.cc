@@ -279,6 +279,15 @@ int32_t argus_eval_multimodal_chunks(
     );
 
     *out_new_n_past = (int32_t)new_n_past_val;
+
+    if (res == 0) {
+        ctx->last_decoded_seq_id = seq_id;
+        if (seq_id >= 0 && seq_id < (int32_t)ctx->seq_samplers.size()) {
+            ctx->seq_samplers[seq_id].has_logits = logits_last;
+            ctx->seq_samplers[seq_id].last_logits_pos = logits_last ? ((int32_t)new_n_past_val - 1) : -1;
+        }
+    }
+
     return res;
 }
 
