@@ -263,7 +263,16 @@ int32_t argus_eval_multimodal_chunks(
         return -1;
     }
 
-    std::lock_guard<std::mutex> lock(ctx->mtx);
+    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+
+    // Invalidate pending logits before starting multimodal projection evaluation
+    ctx->seq_samplers[seq_id].has_logits = false;
+    ctx->seq_samplers[seq_id].last_logits_pos = -1;
+    if (ctx->last_decoded_seq_id == seq_id) {
+        ctx->last_decoded_seq_id = -1;
+    }
 
     llama_pos new_n_past_val = n_past;
 
@@ -282,10 +291,8 @@ int32_t argus_eval_multimodal_chunks(
 
     if (res == 0) {
         ctx->last_decoded_seq_id = seq_id;
-        if (seq_id >= 0 && seq_id < (int32_t)ctx->seq_samplers.size()) {
-            ctx->seq_samplers[seq_id].has_logits = logits_last;
-            ctx->seq_samplers[seq_id].last_logits_pos = logits_last ? ((int32_t)new_n_past_val - 1) : -1;
-        }
+        ctx->seq_samplers[seq_id].has_logits = logits_last;
+        ctx->seq_samplers[seq_id].last_logits_pos = logits_last ? ((int32_t)new_n_past_val - 1) : -1;
     }
 
     return res;

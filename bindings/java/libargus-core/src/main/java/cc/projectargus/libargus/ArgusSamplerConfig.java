@@ -16,7 +16,7 @@ package cc.projectargus.libargus;
  * @param dryBase            DRY exponential base (defaults to 1.75f)
  * @param dryAllowedLength   DRY allowed common n-gram length before penalty (defaults to 2)
  * @param dryPenaltyLastN    DRY penalty lookback window (-1 or 0 matches full context)
- * @param seed               RNG seed for distribution sampling (-1L matches random / LLAMA_DEFAULT_SEED)
+ * @param seed               RNG seed for distribution sampling (-1 matches random / LLAMA_DEFAULT_SEED)
  */
 public record ArgusSamplerConfig(
     float temperature,
@@ -31,7 +31,7 @@ public record ArgusSamplerConfig(
     float dryBase,
     int dryAllowedLength,
     int dryPenaltyLastN,
-    long seed
+    int seed
 ) {
 
     /**
@@ -45,7 +45,7 @@ public record ArgusSamplerConfig(
      * Creates a pure greedy / argmax sampling profile.
      */
     public static ArgusSamplerConfig greedy() {
-        return new Builder().temperature(0.0f).repeatPenalty(1.0f).topP(1.0f).minP(0.0f).topK(0).seed(-1L).build();
+        return new Builder().temperature(0.0f).repeatPenalty(1.0f).topP(1.0f).minP(0.0f).topK(0).seed(-1).build();
     }
 
     public static final class Builder {
@@ -61,7 +61,7 @@ public record ArgusSamplerConfig(
         private float dryBase = 1.75f;
         private int dryAllowedLength = 2;
         private int dryPenaltyLastN = -1;
-        private long seed = -1L;
+        private int seed = -1;
 
         public Builder() {}
 
@@ -123,7 +123,7 @@ public record ArgusSamplerConfig(
             return this;
         }
 
-        public Builder seed(long seed) {
+        public Builder seed(int seed) {
             this.seed = seed;
             return this;
         }

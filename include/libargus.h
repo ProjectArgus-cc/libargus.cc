@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.2
+ * @version 1.6.3
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -153,7 +153,8 @@ typedef struct argus_sampler_params {
     float    dry_base;             /**< DRY exponential base (1.75f default) (4 bytes) */
     int32_t  dry_allowed_length;   /**< DRY allowed n-gram length before penalty (2 default) (4 bytes) */
     int32_t  dry_penalty_last_n;   /**< DRY penalty lookback window (-1 = full context) (4 bytes) */
-    uint64_t seed;                 /**< RNG seed for distribution sampling (0xFFFFFFFFFFFFFFFFULL = random) (8 bytes) */
+    uint32_t seed;                 /**< RNG seed for distribution sampling (0xFFFFFFFF = random) (4 bytes) */
+    uint8_t  reserved_padding[4];  /**< Explicit alignment padding securing 8-byte boundaries (4 bytes) */
 } argus_sampler_params_t;
 
 // =========================================================================

@@ -151,7 +151,8 @@ public final class ArgusLayouts {
      *     float    dry_base;             // 4 bytes
      *     int32_t  dry_allowed_length;   // 4 bytes
      *     int32_t  dry_penalty_last_n;   // 4 bytes
-     *     uint64_t seed;                 // 8 bytes
+     *     uint32_t seed;                 // 4 bytes
+     *     uint8_t  reserved_padding[4];  // 4 bytes padding
      * } argus_sampler_params_t;
      * </pre>
      */
@@ -168,6 +169,7 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_FLOAT.withName("dry_base"),
         ValueLayout.JAVA_INT.withName("dry_allowed_length"),
         ValueLayout.JAVA_INT.withName("dry_penalty_last_n"),
-        ValueLayout.JAVA_LONG.withName("seed")
+        ValueLayout.JAVA_INT.withName("seed"),
+        MemoryLayout.paddingLayout(4).withName("reserved_padding")
     ).withName("argus_sampler_params");
 }

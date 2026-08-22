@@ -423,7 +423,7 @@ public final class ArgusContext implements AutoCloseable {
                 ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("dry_penalty_last_n")),
                 config.dryPenaltyLastN()
             );
-            samplerParamsSeg.set(ValueLayout.JAVA_LONG,
+            samplerParamsSeg.set(ValueLayout.JAVA_INT,
                 ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("seed")),
                 config.seed()
             );

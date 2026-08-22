@@ -8,14 +8,15 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.6.2 Release — State-Machine Sampler Overhaul, Stochastic Seeding & Multi-Sequence Isolation**
+> **v1.6.3 Release — State-Machine Sampler Overhaul, Stochastic Seeding & Multi-Sequence Isolation**
 > 
-> * **Stochastic Distribution & Deterministic RNG Seeding:** True entropy distribution sampling with configurable 64-bit seed (`uint64_t seed` in C ABI, `long seed` in Panama FFM `ArgusSamplerConfig`) with bit-identical reproducible generation, and true greedy argmax selection when `temperature <= 0.0f`.
+> * **Stochastic Distribution & Deterministic RNG Seeding:** True entropy distribution sampling with configurable 32-bit seed (`uint32_t seed` in C ABI, `int seed` in Panama FFM `ArgusSamplerConfig`) with bit-identical reproducible generation, and true greedy argmax selection when `temperature <= 0.0f`.
+> * **Coordinate-Decoupled History Rollback:** History entries are tagged with evaluated KV positions (`kv_pos = -1` for decoupled primed tokens), ensuring branch pruning only discards orphaned generated tokens while 100% preserving primed system prompts.
 > * **Double-Accept Elimination:** Eliminates penalty inflation defects across text and speech synthesis loops by strictly adhering to `llama.cpp` internal sampler acceptance mechanics.
 > * **Multi-Sequence Slot Isolation:** Sequence-isolated sampler chains and pre-allocated history buffers per sequence slot (`n_seq_max`), preventing cross-sequence penalty pollution.
-> * **Zero-Allocation History Replay:** Seamlessly preserves and replays retained sequence token histories into rebuilt sampler chains upon mid-stream hyperparameter and logit bias reconfigurations.
+> * **Persistent RNG Continuity:** Seamlessly preserves and transfers active distribution sampler RNG states across non-seed hyperparameter and logit bias mutations.
 > * **Explicit Sampler Lifecycle Management:** Native C and Java Panama FFM APIs (`resetSampler`, `primeSampler`, `truncateSampler`) for fine-grained control over penalty/DRY tracking and system-prompt decoupling.
-> * **Strict Logits Ownership & Single-Consumption Invariant:** Prevents stale or cross-sequence logits sampling by strictly asserting decode ownership and transitioning logits to consumed (`-2` error return on un-decoded queries).
+> * **Strict Logits Ownership & Single-Consumption Invariant:** Prevents stale or cross-sequence logits sampling across KV mutations, evaluation errors, and decode completions (`-2` error return on un-decoded queries).
 > * **Prefill Chunking Optimization:** Reusable chunk evaluation batch buffers eliminate per-chunk dynamic allocation churn during long-prompt ingestion.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
@@ -34,8 +35,8 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 *   **Absolute Zero-Copy Memory Boundaries:** Eliminates JVM heap primitive arrays (`int[]`, `float[]`) across hot paths. Integrates Project Panama `MemorySegment` parameters directly, allowing token tapes, audio waves, and video frames to generate speech and text with zero GC footprint.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
 *   **Zero-Allocation Persistent Sampler & Sequence Isolation:** Caches unmanaged sampler chains per sequence slot, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes without per-token heap allocation overhead.
-*   **Deterministic Stochastic Seeding & Entropy Control:** Exposes 64-bit RNG seeds for exact multi-pass token reproducibility alongside temperature, top-p, min-p, top-k, repetition, frequency, presence, and DRY penalty hyperparameter envelopes.
-*   **Decoupled System Prompt Priming & Lifecycle:** Supports explicit priming (`primeSampler`) of penalty histories to guide generation without polluting KV caches, alongside instant slot resets (`resetSampler`) and rollback replays (`truncateSampler`).
+*   **Deterministic Stochastic Seeding & RNG Continuity:** Exposes 32-bit RNG seeds with seamless state preservation across parameter and logit bias mutations alongside temperature, top-p, min-p, top-k, repetition, frequency, presence, and DRY penalty hyperparameter envelopes.
+*   **Coordinate-Decoupled Priming & Lifecycle:** Supports explicit priming (`primeSampler`) of penalty histories with tagged coordinate tracking to guide generation without polluting KV caches, alongside instant slot resets (`resetSampler`) and rollback replays (`truncateSampler`).
 *   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer with lockstep KV cache synchronization.
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
@@ -301,7 +302,7 @@ Configure rich sampling profiles (`top_p`, `min_p`, `top_k`, `temperature`, `see
 // Create custom sampling configuration profile with deterministic RNG seed
 ArgusSamplerConfig samplerConfig = new ArgusSamplerConfig.Builder()
     .temperature(0.7f)
-    .seed(42L) // 64-bit deterministic RNG seed (-1L for random entropy)
+    .seed(42) // 32-bit deterministic RNG seed (-1 for random entropy)
     .topP(0.90f)
     .minP(0.05f)
     .topK(40)
@@ -362,11 +363,54 @@ try (Arena sessionArena = Arena.ofConfined()) {
         
         // Zero-copy, zero-allocation token generation downcall passing raw pointer with extended sampler config
         int token = context.sampleTokenWithBias(
-            seqId, samplerConfig, biasSeg, steerTokens.length
+            0, samplerConfig, biasSeg, steerTokens.length
         );
         if (model.vocabIsEog(token)) break;
     }
 }
+```
+
+---
+
+## Sampler State Machine & Invariants
+
+`libargus` enforces strict state-machine invariants across unmanaged memory boundaries to guarantee thread safety, mathematical correctness, and reproducible sampling:
+
+| Subsystem / Contract | Invariant / Behavior | Native C ABI / Panama FFM |
+|---|---|---|
+| **Logits Ownership** | Single-consumption model. Returns `-2` if target sequence was not evaluated last, if logits were already sampled, or if state was mutated. | `argus_sample_token_ext()` returns `-2` |
+| **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned. | `argus_sampler_prime()`, `argus_decode_batch()` |
+| **Entropy & RNG Seeding** | 32-bit seed (`0xFFFFFFFF` / `-1` for random entropy). Pure greedy argmax when `temperature <= 0.0f`. Distribution sampling when `temperature > 0.0f`. | `argus_sampler_params_t.seed` |
+| **RNG Continuity** | Dynamic hyperparameter (temp, penalties, top-p) or logit bias tuning preserves and transfers the active RNG stream without resetting to draw #0. | `llama_sampler_clone()` on reconfigure |
+| **Penalty History Replay** | Rebuilding filter chains on reconfiguration zero-allocation replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
+| **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
+
+---
+
+## Native Memory Layout & Project Panama Alignment
+
+All native C structures are packed with explicit padding to guarantee exact 8-byte alignment across x86-64 and AArch64 without compiler layout drift:
+
+### `argus_sampler_params_t` (56 Bytes, 8-Byte Aligned)
+```
+Offset  Size  Type       Field Name            Description
+---------------------------------------------------------------------------------------------
+0       4     float      temperature           Entropy control (<= 0.0f is greedy / argmax)
+4       4     float      repeat_penalty        Repetition suppression multiplier
+8       4     int32_t    repeat_last_n         Lookback token window (0 defaults to 64)
+12      4     float      frequency_penalty     Frequency penalty factor (0.0f is disabled)
+16      4     float      presence_penalty      Presence penalty factor (0.0f is disabled)
+20      4     float      top_p                 Nucleus sampling threshold (>= 1.0f is disabled)
+24      4     float      min_p                 Min probability threshold (<= 0.0f is disabled)
+28      4     int32_t    top_k                 Top-K candidate cap (<= 0 is disabled)
+32      4     float      dry_multiplier        DRY penalty multiplier (0.0f is disabled)
+36      4     float      dry_base              DRY exponential base (defaults to 1.75f)
+40      4     int32_t    dry_allowed_length    DRY allowed n-gram length (defaults to 2)
+44      4     int32_t    dry_penalty_last_n    DRY lookback window (-1 matches full context)
+48      4     uint32_t   seed                  RNG seed (0xFFFFFFFF = random / LLAMA_DEFAULT_SEED)
+52      4     uint8_t[4] reserved_padding      Explicit alignment padding securing 8-byte boundary
+---------------------------------------------------------------------------------------------
+Total Struct Byte Size: 56 bytes (0 padding holes)
 ```
 
 ### Dynamic CPU Thread Allocation & Governor Control

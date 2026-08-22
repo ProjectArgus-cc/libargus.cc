@@ -254,6 +254,17 @@ public class ArgusBindingsTest {
     }
 
     @Test
+    public void testStructLayoutSizes() {
+        System.out.println("[Java Test] Validating FFM struct layout byte sizes against 64-bit alignment...");
+        assertEquals(56L, cc.projectargus.libargus.internal.ArgusLayouts.SAMPLER_PARAMS.byteSize(), "SAMPLER_PARAMS layout must be exactly 56 bytes");
+        assertEquals(40L, cc.projectargus.libargus.internal.ArgusLayouts.CONTEXT_PARAMS.byteSize(), "CONTEXT_PARAMS layout must be exactly 40 bytes");
+        assertEquals(16L, cc.projectargus.libargus.internal.ArgusLayouts.AUDIO_PARAMS.byteSize(), "AUDIO_PARAMS layout must be exactly 16 bytes");
+        assertEquals(32L, cc.projectargus.libargus.internal.ArgusLayouts.TOKEN_BATCH.byteSize(), "TOKEN_BATCH layout must be exactly 32 bytes");
+        assertEquals(16L, cc.projectargus.libargus.internal.ArgusLayouts.MULTIMODAL_PARAMS.byteSize(), "MULTIMODAL_PARAMS layout must be exactly 16 bytes");
+        assertEquals(8L, cc.projectargus.libargus.internal.ArgusLayouts.LOGIT_BIAS.byteSize(), "LOGIT_BIAS layout must be exactly 8 bytes");
+    }
+
+    @Test
     public void testCustomNativeDirExtraction() {
         System.out.println("[Java Test] Validating custom native dir property...");
         assertNotNull(ArgusBindings.EXTRACTED_DIR);
@@ -263,13 +274,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.2", ArgusBindings.VERSION);
+        assertEquals("1.6.3", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.2", nativeVer);
+            assertEquals("1.6.3", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -390,7 +401,7 @@ public class ArgusBindingsTest {
             .topP(0.85f)
             .minP(0.10f)
             .topK(20)
-            .seed(987654321L)
+            .seed(987654321)
             .dry(0.5f, 1.8f, 3, 100)
             .build();
 
@@ -402,7 +413,7 @@ public class ArgusBindingsTest {
         assertEquals(0.85f, customCfg.topP());
         assertEquals(0.10f, customCfg.minP());
         assertEquals(20, customCfg.topK());
-        assertEquals(987654321L, customCfg.seed());
+        assertEquals(987654321, customCfg.seed());
         assertEquals(0.5f, customCfg.dryMultiplier());
         assertEquals(1.8f, customCfg.dryBase());
         assertEquals(3, customCfg.dryAllowedLength());
@@ -480,7 +491,7 @@ public class ArgusBindingsTest {
                 // 5. Extended sampling verification (Deterministic Seeding)
                 ArgusSamplerConfig sampleCfg = new ArgusSamplerConfig.Builder()
                     .temperature(0.7f)
-                    .seed(42L)
+                    .seed(42)
                     .build();
                 int sampledToken = context.sampleToken(0, sampleCfg);
                 assertTrue(sampledToken >= 0 && sampledToken < 64);
@@ -511,7 +522,14 @@ public class ArgusBindingsTest {
                 assertTrue(s1Token >= 0 && s1Token < 64);
                 System.out.println("  - Java seq 1 sampled successfully: " + s1Token);
 
-                // 7. Logit steering bias verification
+                // 7. Stale Logits Invalidation on Partial KV Cache Mutation
+                assertEquals(0, context.decodeBatch(s0Seg, s0Toks.length, 0, 0, true));
+                context.clearCacheSlot(0, 1, -1);
+                int invalidatedSample = context.sampleToken(0, sampleCfg);
+                assertEquals(-2, invalidatedSample, "Partial KV mutation must invalidate pending logits (-2)");
+                System.out.println("  - Java stale logits invalidation verified upon KV cache mutation.");
+
+                // 8. Logit steering bias verification
                 int[] steerToks = new int[] { 1, 4 };
                 MemorySegment steerSeg = arena.allocate(ValueLayout.JAVA_INT, steerToks.length);
                 for (int i = 0; i < steerToks.length; i++) steerSeg.setAtIndex(ValueLayout.JAVA_INT, i, steerToks[i]);
@@ -534,13 +552,30 @@ public class ArgusBindingsTest {
                 assertEquals(15, biasedToken2);
                 System.out.println("  - Java logit bias steering dynamically updated to token: " + biasedToken2);
 
-                // 8. Deterministic Seeding vs Entropy Verification
+                // 9. Stochastic Distribution Sampling & Entropy Divergence
+                java.util.Set<Integer> distinctToks = new java.util.HashSet<>();
+                for (int seed = 1; seed <= 10; seed++) {
+                    assertEquals(0, context.decodeBatch(steerSeg, steerToks.length, 0, 0, true));
+                    ArgusSamplerConfig distCfg = new ArgusSamplerConfig.Builder()
+                        .temperature(1.5f)
+                        .topK(50)
+                        .topP(1.0f)
+                        .seed(seed)
+                        .build();
+                    int t = context.sampleToken(0, distCfg);
+                    assertTrue(t >= 0);
+                    distinctToks.add(t);
+                }
+                assertTrue(distinctToks.size() >= 2, "High-temperature distribution sampling across seeds must produce divergent tokens");
+                System.out.println("  - Java stochastic distribution entropy verified: " + distinctToks.size() + " distinct tokens.");
+
+                // 10. Deterministic Seeding vs Entropy Verification
                 java.util.List<Integer> run1 = new java.util.ArrayList<>();
                 java.util.List<Integer> run2 = new java.util.ArrayList<>();
                 ArgusSamplerConfig seedCfg = new ArgusSamplerConfig.Builder()
                     .temperature(0.8f)
                     .topK(10)
-                    .seed(777L)
+                    .seed(777)
                     .build();
 
                 // Run 1
@@ -560,7 +595,7 @@ public class ArgusBindingsTest {
                     assertEquals(0, context.decodeBatch(nextSeg, 1, 3 + i, 0, true));
                 }
 
-                // Run 2 (same seed 777L)
+                // Run 2 (same seed 777)
                 context.clearCacheSlot(0, 0, -1);
                 context.resetSampler(0);
                 assertEquals(0, context.decodeBatch(spSeg, seedPrompt.length, 0, 0, true));
@@ -574,10 +609,32 @@ public class ArgusBindingsTest {
                     assertEquals(0, context.decodeBatch(nextSeg, 1, 3 + i, 0, true));
                 }
 
-                assertEquals(run1, run2, "Seed 777L should produce deterministic token stream across runs");
+                assertEquals(run1, run2, "Seed 777 should produce deterministic token stream across runs");
                 System.out.println("  - Java seed reproducibility verified: " + run1);
 
-                // 9. Sampler Priming & Lifecycle
+                // 11. Decoupled Priming Persistence Across KV Rollback
+                context.clearCacheSlot(0, 0, -1);
+                context.resetSampler(0);
+                int[] primedToks = new int[] { 10, 11, 12, 13, 14, 15 };
+                MemorySegment primedSeg = arena.allocate(ValueLayout.JAVA_INT, primedToks.length);
+                for (int i = 0; i < primedToks.length; i++) primedSeg.setAtIndex(ValueLayout.JAVA_INT, i, primedToks[i]);
+                assertEquals(0, context.primeSampler(0, primedSeg, primedToks.length));
+
+                int[] promptD = new int[] { 1, 4, 5, 6 };
+                MemorySegment pDSeg = arena.allocate(ValueLayout.JAVA_INT, promptD.length);
+                for (int i = 0; i < promptD.length; i++) pDSeg.setAtIndex(ValueLayout.JAVA_INT, i, promptD[i]);
+                assertEquals(0, context.decodeBatch(pDSeg, promptD.length, 0, 0, true));
+
+                int sTok = context.sampleToken(0, sampleCfg);
+                assertTrue(sTok >= 0);
+
+                int[] branchD = new int[] { 20, 21 };
+                MemorySegment brSeg = arena.allocate(ValueLayout.JAVA_INT, branchD.length);
+                for (int i = 0; i < branchD.length; i++) brSeg.setAtIndex(ValueLayout.JAVA_INT, i, branchD[i]);
+                assertEquals(0, context.decodeBatch(brSeg, branchD.length, 2, 0, true));
+                System.out.println("  - Java coordinate-decoupled rollback verified (primed tokens preserved across KV rollback).");
+
+                // 12. Sampler Priming & Lifecycle
                 int[] primeToks = new int[] { 12, 13, 14 };
                 MemorySegment primeSeg = arena.allocate(ValueLayout.JAVA_INT, primeToks.length);
                 for (int i = 0; i < primeToks.length; i++) primeSeg.setAtIndex(ValueLayout.JAVA_INT, i, primeToks[i]);

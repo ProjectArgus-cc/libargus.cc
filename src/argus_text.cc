@@ -653,6 +653,26 @@ static int32_t decode_tokens_chunked(
     return 0;
 }
 
+static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx) {
+        return;
+    }
+    if (seq_id < 0) {
+        for (auto & slot : ctx->seq_samplers) {
+            slot.has_logits = false;
+            slot.last_logits_pos = -1;
+        }
+        ctx->last_decoded_seq_id = -1;
+    } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
+        auto & slot = ctx->seq_samplers[seq_id];
+        slot.has_logits = false;
+        slot.last_logits_pos = -1;
+        if (ctx->last_decoded_seq_id == seq_id) {
+            ctx->last_decoded_seq_id = -1;
+        }
+    }
+}
+
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch_payload) {
     if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
         return -1;
@@ -665,19 +685,31 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         return -1;
     }
 
+    // Invalidate existing pending logits prior to state mutation
+    invalidate_seq_logits(ctx, seq_id);
+
     // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
     prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
     prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
 
-    // Rollback sampler history if start_pos is less than history size
+    // Coordinate-decoupled rollback: prune only generated tokens matching kv_pos >= start_pos
+    // Decoupled primed tokens (kv_pos == -1) and surviving prefix tokens (kv_pos < start_pos) are preserved.
     auto & slot = ctx->seq_samplers[seq_id];
-    if (batch_payload->start_pos < (int32_t)slot.history.size()) {
-        slot.history.resize((size_t)batch_payload->start_pos);
-        if (slot.chain) {
-            llama_sampler_reset(slot.chain);
-            for (llama_token t : slot.history) {
-                llama_sampler_accept(slot.chain, t);
-            }
+    bool history_pruned = false;
+    auto it = slot.history.begin();
+    while (it != slot.history.end()) {
+        if (it->kv_pos >= 0 && it->kv_pos >= batch_payload->start_pos) {
+            it = slot.history.erase(it);
+            history_pruned = true;
+        } else {
+            ++it;
+        }
+    }
+
+    if (history_pruned && slot.chain) {
+        llama_sampler_reset(slot.chain);
+        for (const auto & entry : slot.history) {
+            llama_sampler_accept(slot.chain, entry.token);
         }
     }
 
@@ -696,8 +728,7 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         slot.has_logits = batch_payload->request_logits;
         slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
     } else {
-        slot.has_logits = false;
-        slot.last_logits_pos = -1;
+        invalidate_seq_logits(ctx, seq_id);
     }
 
     return res;
@@ -772,7 +803,8 @@ static struct llama_sampler * build_sampler_chain(
     const argus_context_t        * ctx,
     const argus_sampler_params_t * sparams,
     const argus_logit_bias_t     * biases,
-    int32_t                        bias_count
+    int32_t                        bias_count,
+    struct llama_sampler         * existing_dist = nullptr
 ) {
     const struct llama_vocab * vocab = (ctx->model_ref && ctx->model_ref->vocab) 
         ? ctx->model_ref->vocab 
@@ -822,10 +854,14 @@ static struct llama_sampler * build_sampler_chain(
         llama_sampler_chain_add(chain, llama_sampler_init_greedy());
     } else {
         llama_sampler_chain_add(chain, llama_sampler_init_temp(sparams->temperature));
-        uint32_t dist_seed = (sparams->seed == 0xFFFFFFFFFFFFFFFFULL)
-            ? LLAMA_DEFAULT_SEED
-            : static_cast<uint32_t>(sparams->seed);
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(dist_seed));
+        if (existing_dist) {
+            llama_sampler_chain_add(chain, existing_dist);
+        } else {
+            uint32_t dist_seed = (sparams->seed == 0xFFFFFFFF)
+                ? LLAMA_DEFAULT_SEED
+                : sparams->seed;
+            llama_sampler_chain_add(chain, llama_sampler_init_dist(dist_seed));
+        }
     }
 
     return chain;
@@ -848,12 +884,27 @@ static struct llama_sampler * get_or_update_slot_sampler(
         !sampler_params_equal(slot.cached_sparams, *sparams) ||
         !logit_biases_equal(slot.cached_biases, biases, bias_count)) {
 
+        struct llama_sampler * preserved_dist = nullptr;
+
+        // If seed is unchanged and temperature > 0, preserve active distribution sampler RNG state
+        if (slot.chain && slot.has_cached_chain &&
+            slot.cached_sparams.temperature > 0.0f && sparams->temperature > 0.0f &&
+            slot.cached_sparams.seed == sparams->seed) {
+            int chain_len = llama_sampler_chain_n(slot.chain);
+            if (chain_len > 0) {
+                struct llama_sampler * last_sampler = llama_sampler_chain_get(slot.chain, chain_len - 1);
+                if (last_sampler) {
+                    preserved_dist = llama_sampler_clone(last_sampler);
+                }
+            }
+        }
+
         if (slot.chain) {
             llama_sampler_free(slot.chain);
             slot.chain = nullptr;
         }
 
-        slot.chain = build_sampler_chain(ctx, sparams, biases, bias_count);
+        slot.chain = build_sampler_chain(ctx, sparams, biases, bias_count, preserved_dist);
         slot.cached_sparams = *sparams;
         if (biases && bias_count > 0) {
             slot.cached_biases.assign(biases, biases + bias_count);
@@ -864,8 +915,8 @@ static struct llama_sampler * get_or_update_slot_sampler(
 
         // Replay retained sequence history into newly constructed chain
         if (slot.chain && !slot.history.empty()) {
-            for (llama_token t : slot.history) {
-                llama_sampler_accept(slot.chain, t);
+            for (const auto & entry : slot.history) {
+                llama_sampler_accept(slot.chain, entry.token);
             }
         }
     }
@@ -905,11 +956,13 @@ int32_t argus_sample_token_ext(
     // Sample from the last logits row (-1). llama_sampler_sample accepts the token internally.
     int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
 
-    // Record token into sequence history ring buffer
-    slot.history.push_back(token);
+    // Record token into sequence history tagged with its assigned KV cache position
+    int32_t assigned_kv_pos = (slot.last_logits_pos >= 0) ? (slot.last_logits_pos + 1) : -1;
+    slot.history.push_back({token, assigned_kv_pos});
 
     // Consume logits
     slot.has_logits = false;
+    slot.last_logits_pos = -1;
 
     return token;
 }
@@ -922,7 +975,7 @@ int32_t argus_sample_token(argus_context_t * ctx, int32_t seq_id, float temperat
     sparams.top_p          = 1.0f;
     sparams.min_p          = 0.0f;
     sparams.top_k          = 0;
-    sparams.seed           = 0xFFFFFFFFFFFFFFFFULL;
+    sparams.seed           = 0xFFFFFFFF;
 
     return argus_sample_token_ext(ctx, seq_id, &sparams, nullptr, 0);
 }
@@ -942,7 +995,7 @@ int32_t argus_sample_token_with_bias(
     sparams.top_p          = 1.0f;
     sparams.min_p          = 0.0f;
     sparams.top_k          = 0;
-    sparams.seed           = 0xFFFFFFFFFFFFFFFFULL;
+    sparams.seed           = 0xFFFFFFFF;
 
     return argus_sample_token_ext(ctx, seq_id, &sparams, biases, bias_count);
 }
@@ -953,12 +1006,12 @@ int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id) {
     }
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
+    invalidate_seq_logits(ctx, seq_id);
+
     if (seq_id < 0) {
         // Reset all sequence slots
         for (auto & slot : ctx->seq_samplers) {
             slot.history.clear();
-            slot.has_logits = false;
-            slot.last_logits_pos = -1;
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
@@ -972,8 +1025,6 @@ int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id) {
 
     auto & slot = ctx->seq_samplers[seq_id];
     slot.history.clear();
-    slot.has_logits = false;
-    slot.last_logits_pos = -1;
     if (slot.chain) {
         llama_sampler_reset(slot.chain);
     }
@@ -988,7 +1039,7 @@ int32_t argus_sampler_prime(argus_context_t * ctx, int32_t seq_id, const int32_t
 
     auto & slot = ctx->seq_samplers[seq_id];
     for (int32_t i = 0; i < n_tokens; ++i) {
-        slot.history.push_back(tokens[i]);
+        slot.history.push_back({tokens[i], -1}); // -1: Decoupled primed token
         if (slot.chain) {
             llama_sampler_accept(slot.chain, tokens[i]);
         }
@@ -1007,8 +1058,8 @@ int32_t argus_sampler_truncate(argus_context_t * ctx, int32_t seq_id, int32_t ne
         slot.history.resize((size_t)new_length);
         if (slot.chain) {
             llama_sampler_reset(slot.chain);
-            for (llama_token t : slot.history) {
-                llama_sampler_accept(slot.chain, t);
+            for (const auto & entry : slot.history) {
+                llama_sampler_accept(slot.chain, entry.token);
             }
         }
     }
@@ -1030,12 +1081,13 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
         llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), seq_id, p0, p1);
     }
 
-    // Sequence-specific sampler reset
+    // Invalidate logits across sequence slots
+    invalidate_seq_logits(ctx, seq_id);
+
+    // Sequence-specific sampler reset / coordinate-linked pruning
     if (seq_id < 0) {
         for (auto & slot : ctx->seq_samplers) {
             slot.history.clear();
-            slot.has_logits = false;
-            slot.last_logits_pos = -1;
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
@@ -1045,18 +1097,25 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
         if (p0 <= 0 && p1 < 0) {
             // Full clear
             slot.history.clear();
-            slot.has_logits = false;
-            slot.last_logits_pos = -1;
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
-        } else if (p0 >= 0 && p0 < (int32_t)slot.history.size()) {
-            // Truncation
-            slot.history.resize((size_t)p0);
-            if (slot.chain) {
+        } else if (p0 >= 0) {
+            // Partial clear: prune entries where kv_pos >= p0 && kv_pos >= 0
+            bool history_pruned = false;
+            auto it = slot.history.begin();
+            while (it != slot.history.end()) {
+                if (it->kv_pos >= 0 && it->kv_pos >= p0 && (p1 < 0 || it->kv_pos < p1)) {
+                    it = slot.history.erase(it);
+                    history_pruned = true;
+                } else {
+                    ++it;
+                }
+            }
+            if (history_pruned && slot.chain) {
                 llama_sampler_reset(slot.chain);
-                for (llama_token t : slot.history) {
-                    llama_sampler_accept(slot.chain, t);
+                for (const auto & entry : slot.history) {
+                    llama_sampler_accept(slot.chain, entry.token);
                 }
             }
         }
