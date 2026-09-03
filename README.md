@@ -22,6 +22,58 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 
 ---
 
+## Installation & Dependency Setup
+
+`libargus` is distributed on Maven Central for JDK 22+ (Project Panama FFM).
+
+### Maven (`pom.xml`)
+```xml
+<dependencies>
+    <!-- Core Java Panama FFM Bindings & High-Level API -->
+    <dependency>
+        <groupId>cc.projectargus</groupId>
+        <artifactId>libargus-core</artifactId>
+        <version>1.6.4</version>
+    </dependency>
+
+    <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
+    <dependency>
+        <groupId>cc.projectargus</groupId>
+        <artifactId>libargus-native-linux-cpu</artifactId>
+        <version>1.6.4</version>
+        <scope>runtime</scope>
+    </dependency>
+</dependencies>
+```
+
+### Gradle (`build.gradle.kts`)
+```kotlin
+dependencies {
+    // Core Java Panama FFM Bindings & High-Level API
+    implementation("cc.projectargus:libargus-core:1.6.4")
+
+    // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.6.4")
+}
+```
+
+> [!TIP]
+> **JVM Runtime Requirement:** Because `libargus` leverages Project Panama Foreign Function & Memory (FFM) downcalls, you must pass `--enable-native-access=ALL-UNNAMED` to your JVM execution arguments.
+> 
+> **Platform Native Runtimes:** Precompiled SPI runtime artifacts are published to Maven Central for:
+> * `libargus-native-linux-cpu`
+> * `libargus-native-linux-cuda`
+> * `libargus-native-linux-rocm`
+> * `libargus-native-linux-vulkan`
+> * `libargus-native-windows-cpu`
+> * `libargus-native-windows-cuda`
+> * `libargus-native-windows-vulkan`
+> * `libargus-native-macos-metal`
+> 
+> If compiling the native C++ library from source, you only need `libargus-core` and can pass `-Dcc.projectargus.libargus.path=/path/to/libargus.so` or place the binary on `java.library.path`.
+
+---
+
 ## Core Architectural Pillars
 
 *   **Process-Global Backend Singularity:** Eliminates VRAM fragmentation and multi-context driver race conditions by orchestrating a singular, shared initialization pathway (`ggml_backend_load_all()`) across text, audio, speech, and multimodal subsystems.
