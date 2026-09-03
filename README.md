@@ -8,16 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.6.3 Release — State-Machine Sampler Overhaul, Stochastic Seeding & Multi-Sequence Isolation**
+> **v1.6.4 Release — Sampler Continuation State Machine, Multimodal Mutex Serialization & Monotonic RNG Continuity**
 > 
-> * **Stochastic Distribution & Deterministic RNG Seeding:** True entropy distribution sampling with configurable 32-bit seed (`uint32_t seed` in C ABI, `int seed` in Panama FFM `ArgusSamplerConfig`) with bit-identical reproducible generation, and true greedy argmax selection when `temperature <= 0.0f`.
-> * **Coordinate-Decoupled History Rollback:** History entries are tagged with evaluated KV positions (`kv_pos = -1` for decoupled primed tokens), ensuring branch pruning only discards orphaned generated tokens while 100% preserving primed system prompts.
-> * **Double-Accept Elimination:** Eliminates penalty inflation defects across text and speech synthesis loops by strictly adhering to `llama.cpp` internal sampler acceptance mechanics.
-> * **Multi-Sequence Slot Isolation:** Sequence-isolated sampler chains and pre-allocated history buffers per sequence slot (`n_seq_max`), preventing cross-sequence penalty pollution.
-> * **Persistent RNG Continuity:** Seamlessly preserves and transfers active distribution sampler RNG states across non-seed hyperparameter and logit bias mutations.
-> * **Explicit Sampler Lifecycle Management:** Native C and Java Panama FFM APIs (`resetSampler`, `primeSampler`, `truncateSampler`) for fine-grained control over penalty/DRY tracking and system-prompt decoupling.
-> * **Strict Logits Ownership & Single-Consumption Invariant:** Prevents stale or cross-sequence logits sampling across KV mutations, evaluation errors, and decode completions (`-2` error return on un-decoded queries).
-> * **Prefill Chunking Optimization:** Reusable chunk evaluation batch buffers eliminate per-chunk dynamic allocation churn during long-prompt ingestion.
+> * **Autoregressive Continuation State Machine:** Introduces `struct argus_pending_sample` decoupling uncommitted samples from committed KV history. Normal continuation commits tokens directly to history with zero chain resets, zero history replays, and zero RNG stream interruptions.
+> * **Multimodal Context Synchronization:** Restores per-context mutex serialization (`std::lock_guard<std::mutex> lock(ctx->mtx)`) across `argus_eval_multimodal_chunks()`, eliminating data races against concurrent text decoding, sampling, and KV cache mutations.
+> * **Monotonic RNG Stream Continuity:** Preserves and transfers active distribution sampler RNG states during partial KV rollbacks, mismatched token reconciliations, and truncations, preventing pseudorandom sequences from restarting to draw #0.
+> * **Mismatched Sample Eviction:** Safely purges un-decoded speculative samples and rebuilds filter chains when decoded batch tokens deviate from sampled predictions.
+> * **History & Pending Introspection:** Exposes zero-allocation C and Java Panama FFM APIs (`argus_sampler_get_history_count()`, `argus_sampler_has_pending()`) for real-time inspection of sequence penalty buffers and uncommitted sample states.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -337,7 +334,11 @@ context.primeSampler(0, primeSeg, primeTokens.length);
 // 2. Roll back sampler history to prefix length during branch pruning (replays surviving tokens)
 context.truncateSampler(0, 64);
 
-// 3. Reset sequence slot sampler chain and history to pristine state
+// 3. Inspect retained token count and pending sample status
+int historyCount = context.getSamplerHistoryCount(0); // e.g. 64 tokens
+boolean hasPending = context.hasSamplerPending(0);    // false when committed
+
+// 4. Reset sequence slot sampler chain and history to pristine state
 context.resetSampler(0); // Pass -1 to reset all sequence slots
 ```
 
@@ -378,12 +379,15 @@ try (Arena sessionArena = Arena.ofConfined()) {
 
 | Subsystem / Contract | Invariant / Behavior | Native C ABI / Panama FFM |
 |---|---|---|
+| **Continuation Commit** | Pending sample state machine. Normal continuation commits tokens directly to history without chain reset, replay, or RNG interruption. | `argus_decode_batch()`, `argus_sampler_has_pending()` |
 | **Logits Ownership** | Single-consumption model. Returns `-2` if target sequence was not evaluated last, if logits were already sampled, or if state was mutated. | `argus_sample_token_ext()` returns `-2` |
 | **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned. | `argus_sampler_prime()`, `argus_decode_batch()` |
 | **Entropy & RNG Seeding** | 32-bit seed (`0xFFFFFFFF` / `-1` for random entropy). Pure greedy argmax when `temperature <= 0.0f`. Distribution sampling when `temperature > 0.0f`. | `argus_sampler_params_t.seed` |
-| **RNG Continuity** | Dynamic hyperparameter (temp, penalties, top-p) or logit bias tuning preserves and transfers the active RNG stream without resetting to draw #0. | `llama_sampler_clone()` on reconfigure |
-| **Penalty History Replay** | Rebuilding filter chains on reconfiguration zero-allocation replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
+| **Monotonic RNG Continuity** | Dynamic hyperparameter tuning, partial KV rollbacks, and truncations clone the active distribution sampler RNG state without restarting to draw #0. | `llama_sampler_clone()` on reconfigure/rollback |
+| **Multimodal Synchronization**| Per-context mutex serialization across chunk evaluation, eliminating races against concurrent text decode, sampling, and KV mutation. | `argus_eval_multimodal_chunks()` holds `ctx->mtx` |
+| **Penalty History Replay** | Rebuilding filter chains on reconfiguration or rollback zero-allocation replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
 | **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
+| **History Introspection** | Zero-allocation real-time queries for retained token count (primed + committed) and uncommitted sample status. | `argus_sampler_get_history_count()`, `argus_sampler_has_pending()` |
 
 ---
 

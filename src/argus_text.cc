@@ -673,6 +673,8 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
     }
 }
 
+static void rebuild_slot_chain_preserving_rng(argus_context_t * ctx, int32_t seq_id);
+
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch_payload) {
     if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
         return -1;
@@ -688,28 +690,70 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
     // Invalidate existing pending logits prior to state mutation
     invalidate_seq_logits(ctx, seq_id);
 
-    // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
-    prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
-    prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+    // Query current max position in sequence to determine if a true KV rollback occurs
+    llama_memory_t mem = llama_get_memory(ctx->ctx);
+    llama_pos cur_max = mem ? llama_memory_seq_pos_max(mem, seq_id) : -1;
+    bool is_kv_rollback = (cur_max >= 0 && batch_payload->start_pos <= cur_max);
 
-    // Coordinate-decoupled rollback: prune only generated tokens matching kv_pos >= start_pos
-    // Decoupled primed tokens (kv_pos == -1) and surviving prefix tokens (kv_pos < start_pos) are preserved.
     auto & slot = ctx->seq_samplers[seq_id];
-    bool history_pruned = false;
-    auto it = slot.history.begin();
-    while (it != slot.history.end()) {
-        if (it->kv_pos >= 0 && it->kv_pos >= batch_payload->start_pos) {
-            it = slot.history.erase(it);
-            history_pruned = true;
-        } else {
-            ++it;
-        }
-    }
 
-    if (history_pruned && slot.chain) {
-        llama_sampler_reset(slot.chain);
-        for (const auto & entry : slot.history) {
-            llama_sampler_accept(slot.chain, entry.token);
+    if (is_kv_rollback) {
+        // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
+        prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
+        prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+
+        // Discard pending sample if targeted at or beyond rollback point
+        if (slot.pending.valid && slot.pending.kv_pos >= batch_payload->start_pos) {
+            slot.pending = {};
+        }
+
+        // Coordinate-decoupled rollback: prune only committed generated tokens matching kv_pos >= start_pos
+        // Decoupled primed tokens (kv_pos == -1) and surviving prefix tokens (kv_pos < start_pos) are preserved.
+        bool history_pruned = false;
+        auto it = slot.history.begin();
+        while (it != slot.history.end()) {
+            if (it->kv_pos >= 0 && it->kv_pos >= batch_payload->start_pos) {
+                it = slot.history.erase(it);
+                history_pruned = true;
+            } else {
+                ++it;
+            }
+        }
+
+        if (history_pruned) {
+            rebuild_slot_chain_preserving_rng(ctx, seq_id);
+        }
+    } else {
+        // Forward continuation / normal generation / prefill progression
+        if (slot.pending.valid) {
+            if (batch_payload->start_pos == slot.pending.kv_pos && batch_payload->tokens[0] == slot.pending.token) {
+                // Normal continuation commit: token was already accepted into chain by llama_sampler_sample().
+                // Commit directly to history without resetting chain or resetting RNG.
+                slot.history.push_back({slot.pending.token, slot.pending.kv_pos});
+                slot.pending = {};
+
+                // If caller passed additional tokens in continuation batch, accept and commit them
+                for (int32_t i = 1; i < batch_payload->n_tokens; ++i) {
+                    int32_t tok_pos = batch_payload->start_pos + i;
+                    slot.history.push_back({batch_payload->tokens[i], tok_pos});
+                    if (slot.chain) {
+                        llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
+                    }
+                }
+            } else {
+                // Mismatched token decoded instead of sampled pending token.
+                // Discard pending, rebuild chain to evict speculative sample, and accept decoded batch.
+                slot.pending = {};
+                rebuild_slot_chain_preserving_rng(ctx, seq_id);
+
+                for (int32_t i = 0; i < batch_payload->n_tokens; ++i) {
+                    int32_t tok_pos = batch_payload->start_pos + i;
+                    slot.history.push_back({batch_payload->tokens[i], tok_pos});
+                    if (slot.chain) {
+                        llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
+                    }
+                }
+            }
         }
     }
 
@@ -867,6 +911,54 @@ static struct llama_sampler * build_sampler_chain(
     return chain;
 }
 
+static struct llama_sampler * clone_active_dist_sampler(struct llama_sampler * chain) {
+    if (!chain) {
+        return nullptr;
+    }
+    int chain_len = llama_sampler_chain_n(chain);
+    if (chain_len > 0) {
+        struct llama_sampler * last_sampler = llama_sampler_chain_get(chain, chain_len - 1);
+        if (last_sampler) {
+            return llama_sampler_clone(last_sampler);
+        }
+    }
+    return nullptr;
+}
+
+static void rebuild_slot_chain_preserving_rng(argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return;
+    }
+    auto & slot = ctx->seq_samplers[seq_id];
+    if (!slot.has_cached_chain) {
+        return;
+    }
+
+    struct llama_sampler * preserved_dist = nullptr;
+    if (slot.chain && slot.cached_sparams.temperature > 0.0f) {
+        preserved_dist = clone_active_dist_sampler(slot.chain);
+    }
+
+    if (slot.chain) {
+        llama_sampler_free(slot.chain);
+        slot.chain = nullptr;
+    }
+
+    slot.chain = build_sampler_chain(
+        ctx,
+        &slot.cached_sparams,
+        slot.cached_biases.empty() ? nullptr : slot.cached_biases.data(),
+        (int32_t)slot.cached_biases.size(),
+        preserved_dist
+    );
+
+    if (slot.chain && !slot.history.empty()) {
+        for (const auto & entry : slot.history) {
+            llama_sampler_accept(slot.chain, entry.token);
+        }
+    }
+}
+
 static struct llama_sampler * get_or_update_slot_sampler(
     argus_context_t              * ctx,
     int32_t                        seq_id,
@@ -890,13 +982,7 @@ static struct llama_sampler * get_or_update_slot_sampler(
         if (slot.chain && slot.has_cached_chain &&
             slot.cached_sparams.temperature > 0.0f && sparams->temperature > 0.0f &&
             slot.cached_sparams.seed == sparams->seed) {
-            int chain_len = llama_sampler_chain_n(slot.chain);
-            if (chain_len > 0) {
-                struct llama_sampler * last_sampler = llama_sampler_chain_get(slot.chain, chain_len - 1);
-                if (last_sampler) {
-                    preserved_dist = llama_sampler_clone(last_sampler);
-                }
-            }
+            preserved_dist = clone_active_dist_sampler(slot.chain);
         }
 
         if (slot.chain) {
@@ -918,6 +1004,9 @@ static struct llama_sampler * get_or_update_slot_sampler(
             for (const auto & entry : slot.history) {
                 llama_sampler_accept(slot.chain, entry.token);
             }
+        }
+        if (slot.chain && slot.pending.valid) {
+            llama_sampler_accept(slot.chain, slot.pending.token);
         }
     }
 
@@ -956,9 +1045,11 @@ int32_t argus_sample_token_ext(
     // Sample from the last logits row (-1). llama_sampler_sample accepts the token internally.
     int32_t token = llama_sampler_sample(sampler, ctx->ctx, -1);
 
-    // Record token into sequence history tagged with its assigned KV cache position
+    // Record token into sequence pending sample tagged with its expected KV cache position
     int32_t assigned_kv_pos = (slot.last_logits_pos >= 0) ? (slot.last_logits_pos + 1) : -1;
-    slot.history.push_back({token, assigned_kv_pos});
+    slot.pending.token = token;
+    slot.pending.kv_pos = assigned_kv_pos;
+    slot.pending.valid = true;
 
     // Consume logits
     slot.has_logits = false;
@@ -1012,6 +1103,7 @@ int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id) {
         // Reset all sequence slots
         for (auto & slot : ctx->seq_samplers) {
             slot.history.clear();
+            slot.pending = {};
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
@@ -1025,6 +1117,7 @@ int32_t argus_sampler_reset(argus_context_t * ctx, int32_t seq_id) {
 
     auto & slot = ctx->seq_samplers[seq_id];
     slot.history.clear();
+    slot.pending = {};
     if (slot.chain) {
         llama_sampler_reset(slot.chain);
     }
@@ -1054,16 +1147,28 @@ int32_t argus_sampler_truncate(argus_context_t * ctx, int32_t seq_id, int32_t ne
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
     auto & slot = ctx->seq_samplers[seq_id];
+    slot.pending = {};
     if (new_length < (int32_t)slot.history.size()) {
         slot.history.resize((size_t)new_length);
-        if (slot.chain) {
-            llama_sampler_reset(slot.chain);
-            for (const auto & entry : slot.history) {
-                llama_sampler_accept(slot.chain, entry.token);
-            }
-        }
+        rebuild_slot_chain_preserving_rng(ctx, seq_id);
     }
     return 0;
+}
+
+int32_t argus_sampler_get_history_count(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    return (int32_t)ctx->seq_samplers[seq_id].history.size();
+}
+
+int32_t argus_sampler_has_pending(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    return ctx->seq_samplers[seq_id].pending.valid ? 1 : 0;
 }
 
 void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
@@ -1088,6 +1193,7 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
     if (seq_id < 0) {
         for (auto & slot : ctx->seq_samplers) {
             slot.history.clear();
+            slot.pending = {};
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
@@ -1097,11 +1203,15 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
         if (p0 <= 0 && p1 < 0) {
             // Full clear
             slot.history.clear();
+            slot.pending = {};
             if (slot.chain) {
                 llama_sampler_reset(slot.chain);
             }
         } else if (p0 >= 0) {
-            // Partial clear: prune entries where kv_pos >= p0 && kv_pos >= 0
+            // Partial clear: prune entries where kv_pos >= p0 && (p1 < 0 || kv_pos < p1) && kv_pos >= 0
+            if (slot.pending.valid && slot.pending.kv_pos >= p0 && (p1 < 0 || slot.pending.kv_pos < p1)) {
+                slot.pending = {};
+            }
             bool history_pruned = false;
             auto it = slot.history.begin();
             while (it != slot.history.end()) {
@@ -1112,11 +1222,8 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
                     ++it;
                 }
             }
-            if (history_pruned && slot.chain) {
-                llama_sampler_reset(slot.chain);
-                for (const auto & entry : slot.history) {
-                    llama_sampler_accept(slot.chain, entry.token);
-                }
+            if (history_pruned) {
+                rebuild_slot_chain_preserving_rng(ctx, seq_id);
             }
         }
     }

@@ -274,13 +274,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.3", ArgusBindings.VERSION);
+        assertEquals("1.6.4", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.3", nativeVer);
+            assertEquals("1.6.4", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -581,19 +581,32 @@ public class ArgusBindingsTest {
                 // Run 1
                 context.clearCacheSlot(0, 0, -1);
                 context.resetSampler(0);
+                assertEquals(0, context.getSamplerHistoryCount(0));
+                assertFalse(context.hasSamplerPending(0));
+
                 int[] seedPrompt = new int[] { 1, 4, 5 };
                 MemorySegment spSeg = arena.allocate(ValueLayout.JAVA_INT, seedPrompt.length);
                 for (int i = 0; i < seedPrompt.length; i++) spSeg.setAtIndex(ValueLayout.JAVA_INT, i, seedPrompt[i]);
                 assertEquals(0, context.decodeBatch(spSeg, seedPrompt.length, 0, 0, true));
 
                 for (int i = 0; i < 4; i++) {
+                    assertFalse(context.hasSamplerPending(0));
+                    assertEquals(i, context.getSamplerHistoryCount(0));
+
                     int t = context.sampleToken(0, seedCfg);
                     assertTrue(t >= 0);
+                    assertTrue(context.hasSamplerPending(0));
+                    assertEquals(i, context.getSamplerHistoryCount(0));
+
                     run1.add(t);
                     MemorySegment nextSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
                     nextSeg.setAtIndex(ValueLayout.JAVA_INT, 0, t);
                     assertEquals(0, context.decodeBatch(nextSeg, 1, 3 + i, 0, true));
+
+                    assertFalse(context.hasSamplerPending(0));
+                    assertEquals(i + 1, context.getSamplerHistoryCount(0));
                 }
+                assertEquals(4, context.getSamplerHistoryCount(0));
 
                 // Run 2 (same seed 777)
                 context.clearCacheSlot(0, 0, -1);
@@ -610,37 +623,75 @@ public class ArgusBindingsTest {
                 }
 
                 assertEquals(run1, run2, "Seed 777 should produce deterministic token stream across runs");
-                System.out.println("  - Java seed reproducibility verified: " + run1);
+                System.out.println("  - Java seed reproducibility & monotonic history growth verified: " + run1);
 
-                // 11. Decoupled Priming Persistence Across KV Rollback
+                // 11. Mismatched Pending Sample Rejection
+                context.clearCacheSlot(0, 0, -1);
+                context.resetSampler(0);
+                assertEquals(0, context.decodeBatch(spSeg, seedPrompt.length, 0, 0, true));
+                int sampT = context.sampleToken(0, seedCfg);
+                assertTrue(sampT >= 0);
+                assertTrue(context.hasSamplerPending(0));
+                assertEquals(0, context.getSamplerHistoryCount(0));
+
+                int mismatchT = (sampT + 1) % 64;
+                MemorySegment mmSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                mmSeg.setAtIndex(ValueLayout.JAVA_INT, 0, mismatchT);
+                assertEquals(0, context.decodeBatch(mmSeg, 1, 3, 0, true));
+                assertFalse(context.hasSamplerPending(0));
+                assertEquals(1, context.getSamplerHistoryCount(0));
+                System.out.println("  - Java mismatched pending sample reconciliation verified.");
+
+                // 12. Decoupled Priming Persistence Across KV Rollback
                 context.clearCacheSlot(0, 0, -1);
                 context.resetSampler(0);
                 int[] primedToks = new int[] { 10, 11, 12, 13, 14, 15 };
                 MemorySegment primedSeg = arena.allocate(ValueLayout.JAVA_INT, primedToks.length);
                 for (int i = 0; i < primedToks.length; i++) primedSeg.setAtIndex(ValueLayout.JAVA_INT, i, primedToks[i]);
                 assertEquals(0, context.primeSampler(0, primedSeg, primedToks.length));
+                assertEquals(6, context.getSamplerHistoryCount(0));
 
                 int[] promptD = new int[] { 1, 4, 5, 6 };
                 MemorySegment pDSeg = arena.allocate(ValueLayout.JAVA_INT, promptD.length);
                 for (int i = 0; i < promptD.length; i++) pDSeg.setAtIndex(ValueLayout.JAVA_INT, i, promptD[i]);
                 assertEquals(0, context.decodeBatch(pDSeg, promptD.length, 0, 0, true));
+                assertEquals(6, context.getSamplerHistoryCount(0));
 
-                int sTok = context.sampleToken(0, sampleCfg);
-                assertTrue(sTok >= 0);
+                int sTok1 = context.sampleToken(0, sampleCfg);
+                assertTrue(sTok1 >= 0);
+                assertTrue(context.hasSamplerPending(0));
+                MemorySegment c1Seg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                c1Seg.setAtIndex(ValueLayout.JAVA_INT, 0, sTok1);
+                assertEquals(0, context.decodeBatch(c1Seg, 1, 4, 0, true));
+                assertFalse(context.hasSamplerPending(0));
+                assertEquals(7, context.getSamplerHistoryCount(0));
+
+                int sTok2 = context.sampleToken(0, sampleCfg);
+                assertTrue(sTok2 >= 0);
+                assertTrue(context.hasSamplerPending(0));
+                MemorySegment c2Seg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                c2Seg.setAtIndex(ValueLayout.JAVA_INT, 0, sTok2);
+                assertEquals(0, context.decodeBatch(c2Seg, 1, 5, 0, true));
+                assertFalse(context.hasSamplerPending(0));
+                assertEquals(8, context.getSamplerHistoryCount(0));
 
                 int[] branchD = new int[] { 20, 21 };
                 MemorySegment brSeg = arena.allocate(ValueLayout.JAVA_INT, branchD.length);
                 for (int i = 0; i < branchD.length; i++) brSeg.setAtIndex(ValueLayout.JAVA_INT, i, branchD[i]);
                 assertEquals(0, context.decodeBatch(brSeg, branchD.length, 2, 0, true));
+                assertEquals(6, context.getSamplerHistoryCount(0));
                 System.out.println("  - Java coordinate-decoupled rollback verified (primed tokens preserved across KV rollback).");
 
-                // 12. Sampler Priming & Lifecycle
+                // 13. Sampler Priming & Lifecycle
                 int[] primeToks = new int[] { 12, 13, 14 };
                 MemorySegment primeSeg = arena.allocate(ValueLayout.JAVA_INT, primeToks.length);
                 for (int i = 0; i < primeToks.length; i++) primeSeg.setAtIndex(ValueLayout.JAVA_INT, i, primeToks[i]);
                 assertEquals(0, context.primeSampler(0, primeSeg, 3));
+                assertEquals(9, context.getSamplerHistoryCount(0));
                 context.truncateSampler(0, 1);
+                assertEquals(1, context.getSamplerHistoryCount(0));
                 context.resetSampler(0);
+                assertEquals(0, context.getSamplerHistoryCount(0));
                 System.out.println("  - Java sampler lifecycle (prime, truncate, reset) verified.");
             }
         } finally {

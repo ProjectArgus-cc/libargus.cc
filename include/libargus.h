@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.3
+ * @version 1.6.4
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -585,6 +585,22 @@ ARGUS_API int32_t argus_sampler_prime(argus_context_t * ctx, int32_t seq_id, con
  * @return 0 on success, negative on failure.
  */
 ARGUS_API int32_t argus_sampler_truncate(argus_context_t * ctx, int32_t seq_id, int32_t new_length);
+
+/**
+ * @brief Queries the number of tokens currently retained in a sequence slot's sampler history (primed + committed).
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @return Number of retained history tokens, or -1 on invalid argument.
+ */
+ARGUS_API int32_t argus_sampler_get_history_count(const argus_context_t * ctx, int32_t seq_id);
+
+/**
+ * @brief Queries whether a sequence slot has an uncommitted pending sample awaiting decode.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @return 1 if a pending sample exists, 0 if no pending sample, or -1 on invalid argument.
+ */
+ARGUS_API int32_t argus_sampler_has_pending(const argus_context_t * ctx, int32_t seq_id);
 
 /**
  * @brief Prunes targeted token chains out of the active unmanaged L1 VRAM sequence cache.

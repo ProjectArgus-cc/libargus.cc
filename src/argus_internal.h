@@ -16,11 +16,18 @@ struct argus_history_entry {
     int32_t     kv_pos;  // 4 bytes: evaluated KV cache position (-1 for decoupled/primed tokens)
 };
 
+struct argus_pending_sample {
+    llama_token token   = -1;
+    int32_t     kv_pos  = -1;
+    bool        valid   = false;
+};
+
 struct argus_seq_sampler {
     struct llama_sampler             * chain              = nullptr;
     argus_sampler_params_t             cached_sparams     = {};
     std::vector<argus_logit_bias_t>    cached_biases;
-    std::vector<argus_history_entry>   history;           // Pre-reserved to context_length
+    std::vector<argus_history_entry>   history;           // Pre-reserved to context_length (primed + committed)
+    argus_pending_sample               pending;           // Active sample accepted into chain, awaiting decode
     int32_t                            last_logits_pos    = -1;
     bool                               has_logits         = false;
     bool                               has_cached_chain   = false;

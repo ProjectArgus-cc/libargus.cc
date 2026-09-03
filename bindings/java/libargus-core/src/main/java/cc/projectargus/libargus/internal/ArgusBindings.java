@@ -427,6 +427,16 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );
 
+    public static final MethodHandle argus_sampler_get_history_count = bind("argus_sampler_get_history_count",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_sampler_has_pending = bind("argus_sampler_has_pending",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );

@@ -11,6 +11,9 @@
 #include <cstring>
 #include <vector>
 #include <set>
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 #define ARGUS_CHECK(cond) \
     do { \
@@ -30,7 +33,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.6.3") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), "1.6.4") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -386,6 +389,9 @@ int main() {
         // Run 1
         argus_kv_cache_clear_slot(ctx, 0, 0, -1);
         argus_sampler_reset(ctx, 0);
+        ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
+
         int32_t seed_prompt[] = { 1, 4, 5 };
         argus_token_batch_t b_seed = {};
         b_seed.tokens = seed_prompt;
@@ -396,8 +402,14 @@ int main() {
         ARGUS_CHECK(argus_decode_batch(ctx, &b_seed) == 0);
 
         for (int i = 0; i < 4; ++i) {
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == i);
+
             int32_t t = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
             ARGUS_CHECK(t >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == i);
+
             run1_tokens.push_back(t);
             int32_t next_t = t;
             argus_token_batch_t b_next = {};
@@ -407,7 +419,11 @@ int main() {
             b_next.seq_id = 0;
             b_next.request_logits = true;
             ARGUS_CHECK(argus_decode_batch(ctx, &b_next) == 0);
+
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == i + 1);
         }
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 4);
 
         // Run 2 (same seed 777)
         argus_kv_cache_clear_slot(ctx, 0, 0, -1);
@@ -430,13 +446,36 @@ int main() {
 
         ARGUS_CHECK(run1_tokens.size() == 4);
         ARGUS_CHECK(run1_tokens == run2_tokens);
-        std::cout << "  - Seed reproducibility verified: identical token stream generated across runs." << std::endl;
+        std::cout << "  - Seed reproducibility & monotonic continuation history growth verified: " << run1_tokens.size() << " tokens." << std::endl;
 
-        // 7.11. Decoupled Priming Persistence Across KV Rollback
+        // 7.11. Mismatched Pending Sample Rejection & Reconciliation
+        argus_kv_cache_clear_slot(ctx, 0, 0, -1);
+        argus_sampler_reset(ctx, 0);
+        ARGUS_CHECK(argus_decode_batch(ctx, &b_seed) == 0);
+        int32_t sampled_t = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
+        ARGUS_CHECK(sampled_t >= 0);
+        ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
+
+        // Intentionally decode a different token than the one sampled
+        int32_t mismatched_t = (sampled_t + 1) % 64;
+        argus_token_batch_t b_mismatch = {};
+        b_mismatch.tokens = &mismatched_t;
+        b_mismatch.n_tokens = 1;
+        b_mismatch.start_pos = 3;
+        b_mismatch.seq_id = 0;
+        b_mismatch.request_logits = true;
+        ARGUS_CHECK(argus_decode_batch(ctx, &b_mismatch) == 0);
+        ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 1);
+        std::cout << "  - Mismatched pending sample reconciliation verified (un-decoded sample evicted, decoded token committed)." << std::endl;
+
+        // 7.12. Decoupled Priming Persistence Across Continuation and KV Rollback
         argus_kv_cache_clear_slot(ctx, 0, 0, -1);
         argus_sampler_reset(ctx, 0);
         int32_t primed[] = { 10, 11, 12, 13, 14, 15 };
         ARGUS_CHECK(argus_sampler_prime(ctx, 0, primed, 6) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 6);
 
         // Decode prompt at pos 0..3
         int32_t prompt_d[] = { 1, 4, 5, 6 };
@@ -447,12 +486,35 @@ int main() {
         b_pd.seq_id = 0;
         b_pd.request_logits = true;
         ARGUS_CHECK(argus_decode_batch(ctx, &b_pd) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 6); // Decoupled primed tokens intact
 
         // Sample token at pos 4
-        int32_t s_tok = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
-        ARGUS_CHECK(s_tok >= 0);
+        int32_t s_tok1 = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
+        ARGUS_CHECK(s_tok1 >= 0);
+        ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+        argus_token_batch_t b_c1 = {};
+        b_c1.tokens = &s_tok1;
+        b_c1.n_tokens = 1;
+        b_c1.start_pos = 4;
+        b_c1.seq_id = 0;
+        b_c1.request_logits = true;
+        ARGUS_CHECK(argus_decode_batch(ctx, &b_c1) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 7); // 6 primed + 1 committed
 
-        // Roll back KV cache to pos 2
+        // Sample token at pos 5
+        int32_t s_tok2 = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
+        ARGUS_CHECK(s_tok2 >= 0);
+        ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+        argus_token_batch_t b_c2 = {};
+        b_c2.tokens = &s_tok2;
+        b_c2.n_tokens = 1;
+        b_c2.start_pos = 5;
+        b_c2.seq_id = 0;
+        b_c2.request_logits = true;
+        ARGUS_CHECK(argus_decode_batch(ctx, &b_c2) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 8); // 6 primed + 2 committed
+
+        // Roll back KV cache to pos 2 (start_pos = 2)
         int32_t branch_d[] = { 20, 21 };
         argus_token_batch_t b_br = {};
         b_br.tokens = branch_d;
@@ -461,17 +523,58 @@ int main() {
         b_br.seq_id = 0;
         b_br.request_logits = true;
         ARGUS_CHECK(argus_decode_batch(ctx, &b_br) == 0);
+        // Pruning removes generated tokens at kv_pos >= 2 (s_tok1 at 4, s_tok2 at 5)
+        // Decoupled primed tokens (kv_pos == -1) remain 100% intact!
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 6);
         std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved across KV rollback)." << std::endl;
 
-        // 7.12. Sampler Lifecycle (prime, truncate, reset)
+        // 7.13. Multimodal Context Mutex Serialization & Concurrency
+        {
+            std::atomic<bool> worker_done{false};
+            std::atomic<int32_t> error_count{0};
+
+            std::thread worker([&]() {
+                for (int iter = 0; iter < 50; ++iter) {
+                    int32_t out_past = 0;
+                    // Concurrent calls to argus_eval_multimodal_chunks must safely serialize under ctx->mtx
+                    int32_t res = argus_eval_multimodal_chunks(nullptr, ctx, nullptr, 0, 0, 32, false, &out_past);
+                    if (res != -1) {
+                        error_count.fetch_add(1);
+                    }
+                    std::this_thread::sleep_for(std::chrono::microseconds(50));
+                }
+                worker_done.store(true);
+            });
+
+            // Main thread performs concurrent decode batches and context thread queries
+            for (int iter = 0; iter < 50; ++iter) {
+                argus_token_batch_t b_sync = {};
+                b_sync.tokens = seed_prompt;
+                b_sync.n_tokens = 3;
+                b_sync.start_pos = 0;
+                b_sync.seq_id = 0;
+                b_sync.request_logits = false;
+                ARGUS_CHECK(argus_decode_batch(ctx, &b_sync) == 0);
+                ARGUS_CHECK(argus_get_n_threads(ctx) > 0);
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
+
+            worker.join();
+            ARGUS_CHECK(error_count.load() == 0);
+            std::cout << "  - Multimodal context mutex serialization verified under concurrent worker threads." << std::endl;
+        }
+
+        // 7.14. Sampler Lifecycle (prime, truncate, reset)
         int32_t prime_tokens[] = { 12, 13, 14 };
         int32_t prime_res = argus_sampler_prime(ctx, 0, prime_tokens, 3);
         ARGUS_CHECK(prime_res == 0);
         ARGUS_CHECK(argus_sampler_truncate(ctx, 0, 1) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 1);
         ARGUS_CHECK(argus_sampler_reset(ctx, 0) == 0);
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
         std::cout << "  - Sampler lifecycle (prime, truncate, reset) verified." << std::endl;
 
-        // 7.13. Cleanup
+        // 7.15. Cleanup
         argus_context_free(ctx);
         argus_model_free(draft_model);
         argus_model_free(model);

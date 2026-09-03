@@ -267,6 +267,8 @@ int32_t argus_eval_multimodal_chunks(
         return -1;
     }
 
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
     // Invalidate pending logits before starting multimodal projection evaluation
     ctx->seq_samplers[seq_id].has_logits = false;
     ctx->seq_samplers[seq_id].last_logits_pos = -1;

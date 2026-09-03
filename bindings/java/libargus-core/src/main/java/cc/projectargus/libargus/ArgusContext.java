@@ -492,6 +492,42 @@ public final class ArgusContext implements AutoCloseable {
     }
 
     /**
+     * Queries the number of history tokens (primed + committed) retained in a sequence slot's sampler.
+     *
+     * @param seqId sequence ID
+     * @return count of retained tokens
+     */
+    public int getSamplerHistoryCount(int seqId) {
+        try {
+            int res = (int) ArgusBindings.argus_sampler_get_history_count.invokeExact(ctxPtr, seqId);
+            if (res < 0) {
+                throw new RuntimeException("Failed to query sampler history count for sequence " + seqId);
+            }
+            return res;
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query sampler history count for sequence " + seqId, t);
+        }
+    }
+
+    /**
+     * Queries whether a sequence slot has an uncommitted pending sample awaiting decode.
+     *
+     * @param seqId sequence ID
+     * @return true if a pending sample exists, false otherwise
+     */
+    public boolean hasSamplerPending(int seqId) {
+        try {
+            int res = (int) ArgusBindings.argus_sampler_has_pending.invokeExact(ctxPtr, seqId);
+            if (res < 0) {
+                throw new RuntimeException("Failed to query sampler pending status for sequence " + seqId);
+            }
+            return res == 1;
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query sampler pending status for sequence " + seqId, t);
+        }
+    }
+
+    /**
      * Removes/prunes a segment from the KV cache sequence tracking lists.
      * Mutex-locked inside the native layer.
      *
