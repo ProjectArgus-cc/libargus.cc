@@ -6,6 +6,8 @@
 #include <vector>
 #include <cstring>
 #include <mutex>
+#include <thread>
+#include <chrono>
 
 // Internal wrappers
 struct argus_multimodal {
@@ -269,6 +271,9 @@ int32_t argus_eval_multimodal_chunks(
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
 
+    // Reconcile and discard any pending text sample prior to multimodal evaluation
+    discard_slot_pending_preserving_rng(ctx, seq_id);
+
     // Invalidate pending logits before starting multimodal projection evaluation
     ctx->seq_samplers[seq_id].has_logits = false;
     ctx->seq_samplers[seq_id].last_logits_pos = -1;
@@ -298,6 +303,28 @@ int32_t argus_eval_multimodal_chunks(
     }
 
     return res;
+}
+
+int32_t argus_multimodal_test_lock_sync(argus_context_t * ctx, int32_t seq_id, int32_t hold_us) {
+    if (!ctx) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+
+    if (seq_id >= 0 && seq_id < (int32_t)ctx->seq_samplers.size()) {
+        discard_slot_pending_preserving_rng(ctx, seq_id);
+        ctx->seq_samplers[seq_id].has_logits = false;
+        ctx->seq_samplers[seq_id].last_logits_pos = -1;
+        if (ctx->last_decoded_seq_id == seq_id) {
+            ctx->last_decoded_seq_id = -1;
+        }
+    }
+
+    if (hold_us > 0) {
+        std::this_thread::sleep_for(std::chrono::microseconds(hold_us));
+    }
+
+    return 0;
 }
 
 } // extern "C"

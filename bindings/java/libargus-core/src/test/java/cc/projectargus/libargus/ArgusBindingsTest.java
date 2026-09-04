@@ -274,13 +274,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.4", ArgusBindings.VERSION);
+        assertEquals("1.6.5", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.4", nativeVer);
+            assertEquals("1.6.5", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -693,6 +693,41 @@ public class ArgusBindingsTest {
                 context.resetSampler(0);
                 assertEquals(0, context.getSamplerHistoryCount(0));
                 System.out.println("  - Java sampler lifecycle (prime, truncate, reset) verified.");
+
+                // 14. Transactional Cancellation & Retry Invariant
+                context.clearCacheSlot(0, 0, -1);
+                context.resetSampler(0);
+                int[] abortBatch = new int[] { 1, 2, 3 };
+                MemorySegment abortSeg = arena.allocate(ValueLayout.JAVA_INT, abortBatch.length);
+                for (int i = 0; i < abortBatch.length; i++) abortSeg.setAtIndex(ValueLayout.JAVA_INT, i, abortBatch[i]);
+                try (ArgusAbortFlag abortFlag = new ArgusAbortFlag()) {
+                    abortFlag.abort();
+                    int abortRet = context.decodeBatch(abortSeg, abortBatch.length, 0, 0, true, abortFlag);
+                    assertEquals(-2, abortRet, "Pre-aborted decode should return -2");
+                    assertEquals(0, context.getSamplerHistoryCount(0), "No tokens should be committed to history on abort");
+                    assertFalse(context.hasSamplerPending(0), "No pending sample should exist on aborted decode");
+
+                    // Retry with cleared abort flag should succeed cleanly
+                    abortFlag.reset();
+                    int retryRet = context.decodeBatch(abortSeg, abortBatch.length, 0, 0, true, abortFlag);
+                    assertEquals(0, retryRet, "Retry after clearing abort flag must succeed");
+                }
+                System.out.println("  - Java transactional decode cancellation & retry invariant verified.");
+
+                // 15. Ghost Token Elimination & Canonical Discard
+                int sampledTok = context.sampleToken(0, sampleCfg);
+                assertTrue(sampledTok >= 0);
+                assertTrue(context.hasSamplerPending(0));
+                assertEquals(0, context.getSamplerHistoryCount(0));
+
+                assertTrue(context.discardPendingSample(0), "discardPendingSample should return true when pending sample exists");
+                assertFalse(context.hasSamplerPending(0), "Pending sample must be cleared after discard");
+                assertEquals(0, context.getSamplerHistoryCount(0), "Discarded token must not be added to history");
+                assertFalse(context.discardPendingSample(0), "Subsequent discard must return false");
+
+                // Sampling without decoding must fail with -2
+                assertEquals(-2, context.sampleToken(0, sampleCfg), "Sampling without new logits must return -2");
+                System.out.println("  - Java ghost token elimination & canonical discard verified.");
             }
         } finally {
             ArgusBackend.free();

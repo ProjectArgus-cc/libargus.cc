@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.4
+ * @version 1.6.5
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -603,6 +603,17 @@ ARGUS_API int32_t argus_sampler_get_history_count(const argus_context_t * ctx, i
 ARGUS_API int32_t argus_sampler_has_pending(const argus_context_t * ctx, int32_t seq_id);
 
 /**
+ * @brief Explicitly discards an uncommitted pending sample from a sequence slot.
+ * Purges the pending token from internal sampler penalty filters via chain rebuild,
+ * preserves the active RNG stream, and leaves committed history and KV cache untouched.
+ * This is a synchronized mutating context operation.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @return 1 if a pending sample was discarded, 0 if no pending sample existed, or negative on failure.
+ */
+ARGUS_API int32_t argus_sampler_discard_pending(argus_context_t * ctx, int32_t seq_id);
+
+/**
  * @brief Prunes targeted token chains out of the active unmanaged L1 VRAM sequence cache.
  * Automatically synchronizes pruning across speculative draft contexts if present.
  * This is a synchronized mutating context operation.
@@ -879,6 +890,16 @@ ARGUS_API int32_t argus_eval_multimodal_chunks(
     int32_t n_batch,
     bool logits_last,
     int32_t * out_new_n_past);
+
+/**
+ * @brief Diagnostic and testing hook to verify multimodal context mutex serialization.
+ * Acquires ctx->mtx, clears pending logits, holds the lock for the specified duration, and releases.
+ * @param ctx Target execution context.
+ * @param seq_id Target sequence slot.
+ * @param hold_us Microseconds to hold the context mutex.
+ * @return 0 on success, negative on invalid argument.
+ */
+ARGUS_API int32_t argus_multimodal_test_lock_sync(argus_context_t * ctx, int32_t seq_id, int32_t hold_us);
 
 #ifdef __cplusplus
 }

@@ -528,6 +528,26 @@ public final class ArgusContext implements AutoCloseable {
     }
 
     /**
+     * Explicitly discards an uncommitted pending sample from a sequence slot.
+     * Purges the pending token from internal sampler penalty filters via chain rebuild,
+     * preserves the active RNG stream, and leaves committed history and KV cache untouched.
+     *
+     * @param seqId sequence ID
+     * @return true if a pending sample was discarded and filters rebuilt, false if no pending sample existed
+     */
+    public boolean discardPendingSample(int seqId) {
+        try {
+            int res = (int) ArgusBindings.argus_sampler_discard_pending.invokeExact(ctxPtr, seqId);
+            if (res < 0) {
+                throw new RuntimeException("Failed to discard pending sample for sequence " + seqId);
+            }
+            return res == 1;
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to discard pending sample for sequence " + seqId, t);
+        }
+    }
+
+    /**
      * Removes/prunes a segment from the KV cache sequence tracking lists.
      * Mutex-locked inside the native layer.
      *

@@ -8,13 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.6.4 Release — Sampler Continuation State Machine, Multimodal Mutex Serialization & Monotonic RNG Continuity**
+> **v1.6.5 Release — Ghost Token Elimination, Transactional Staged Decode, Multimodal Reconciliation & Explicit Pending Discard**
 > 
-> * **Autoregressive Continuation State Machine:** Introduces `struct argus_pending_sample` decoupling uncommitted samples from committed KV history. Normal continuation commits tokens directly to history with zero chain resets, zero history replays, and zero RNG stream interruptions.
-> * **Multimodal Context Synchronization:** Restores per-context mutex serialization (`std::lock_guard<std::mutex> lock(ctx->mtx)`) across `argus_eval_multimodal_chunks()`, eliminating data races against concurrent text decoding, sampling, and KV cache mutations.
-> * **Monotonic RNG Stream Continuity:** Preserves and transfers active distribution sampler RNG states during partial KV rollbacks, mismatched token reconciliations, and truncations, preventing pseudorandom sequences from restarting to draw #0.
-> * **Mismatched Sample Eviction:** Safely purges un-decoded speculative samples and rebuilds filter chains when decoded batch tokens deviate from sampled predictions.
-> * **History & Pending Introspection:** Exposes zero-allocation C and Java Panama FFM APIs (`argus_sampler_get_history_count()`, `argus_sampler_has_pending()`) for real-time inspection of sequence penalty buffers and uncommitted sample states.
+> * **Ghost Token Elimination & Canonical State Invariant:** Strictly enforces the canonical sampler invariant: `canonical sampler state = committed history + optional pending sample`. Discarding pending metadata completely purges uncommitted tokens from penalty/DRY filter chains while preserving active distribution RNG streams.
+> * **Transactional Staged Decode:** Preflight cancellation checks (`abort_flag`) and post-decode atomic commits ensure that tokens are only added to sequence history after native compute succeeds. Decode failure or cancellation leaves zero phantom history entries.
+> * **Multimodal Evaluation Reconciliation:** `argus_eval_multimodal_chunks()` automatically reconciles and purges pending text tokens on the target sequence under context mutex lock, preventing stale speculative state from polluting multimodal contexts.
+> * **Explicit Discard API:** Exposes `argus_sampler_discard_pending()` (C ABI) and `context.discardPendingSample(seqId)` (Java Panama FFM) to allow callers to reject sampled tokens and invalidate stale logits without resetting sampler chains.
+> * **Fanged Concurrency Verification:** Replaces passive null-checks with active thread-contention assertions (`argus_multimodal_test_lock_sync()`) verifying mutual exclusion between multimodal evaluation and text decoding.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -33,14 +33,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.6.4</version>
+        <version>1.6.5</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.6.4</version>
+        <version>1.6.5</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -50,10 +50,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.6.4")
+    implementation("cc.projectargus:libargus-core:1.6.5")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.6.4")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.6.5")
 }
 ```
 

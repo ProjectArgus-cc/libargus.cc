@@ -33,7 +33,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.6.4") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), "1.6.5") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -528,26 +528,101 @@ int main() {
         ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 6);
         std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved across KV rollback)." << std::endl;
 
-        // 7.13. Multimodal Context Mutex Serialization & Concurrency
+        // 7.13. Transactional Decode Cancellation & Retry Invariant
+        {
+            argus_kv_cache_clear_slot(ctx, 0, 0, -1);
+            argus_sampler_reset(ctx, 0);
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_seed) == 0);
+
+            int32_t pend_t = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
+            ARGUS_CHECK(pend_t >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
+
+            // Decode batch with abort_flag set to 1
+            int32_t abort_val = 1;
+            argus_token_batch_t b_abort = {};
+            b_abort.tokens = &pend_t;
+            b_abort.n_tokens = 1;
+            b_abort.start_pos = 3;
+            b_abort.seq_id = 0;
+            b_abort.request_logits = true;
+            b_abort.abort_flag = &abort_val;
+
+            int32_t abort_res = argus_decode_batch(ctx, &b_abort);
+            ARGUS_CHECK(abort_res == -2);
+            // Invariant: Pre-cancelled decode must NOT commit token or corrupt pending state
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
+
+            // Now retry with abort_val = 0: decode succeeds and commits exactly once
+            abort_val = 0;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_abort) == 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 1);
+            std::cout << "  - Transactional decode cancellation & retry invariant verified (zero false commits on abort)." << std::endl;
+        }
+
+        // 7.14. Ghost Token Elimination & Canonical Pending Discard
+        {
+            // Sample a token
+            int32_t disc_t = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
+            ARGUS_CHECK(disc_t >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+
+            // Explicit discard
+            ARGUS_CHECK(argus_sampler_discard_pending(ctx, 0) == 1);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+            ARGUS_CHECK(argus_sampler_discard_pending(ctx, 0) == 0); // No pending sample to discard
+
+            // Discard via no-op history truncation (new_length == history.size())
+            int32_t t_next = 10;
+            argus_token_batch_t b_n = {};
+            b_n.tokens = &t_next;
+            b_n.n_tokens = 1;
+            b_n.start_pos = 4;
+            b_n.seq_id = 0;
+            b_n.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_n) == 0);
+
+            int32_t pend_trunc = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
+            ARGUS_CHECK(pend_trunc >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+            int32_t cur_hist_len = argus_sampler_get_history_count(ctx, 0);
+            ARGUS_CHECK(argus_sampler_truncate(ctx, 0, cur_hist_len) == 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+
+            // Multimodal evaluation automatic pending discard
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_n) == 0);
+            int32_t pend_mm = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
+            ARGUS_CHECK(pend_mm >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+            ARGUS_CHECK(argus_multimodal_test_lock_sync(ctx, 0, 0) == 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
+            std::cout << "  - Ghost token elimination & canonical pending discard verified." << std::endl;
+        }
+
+        // 7.15. Multimodal Context Mutex Serialization & Concurrency
         {
             std::atomic<bool> worker_done{false};
             std::atomic<int32_t> error_count{0};
+            std::atomic<int32_t> sync_calls{0};
 
             std::thread worker([&]() {
-                for (int iter = 0; iter < 50; ++iter) {
-                    int32_t out_past = 0;
-                    // Concurrent calls to argus_eval_multimodal_chunks must safely serialize under ctx->mtx
-                    int32_t res = argus_eval_multimodal_chunks(nullptr, ctx, nullptr, 0, 0, 32, false, &out_past);
-                    if (res != -1) {
+                for (int iter = 0; iter < 100; ++iter) {
+                    // Actively acquires and holds ctx->mtx for 100 microseconds per iteration
+                    int32_t res = argus_multimodal_test_lock_sync(ctx, 0, 100);
+                    if (res != 0) {
                         error_count.fetch_add(1);
                     }
-                    std::this_thread::sleep_for(std::chrono::microseconds(50));
+                    sync_calls.fetch_add(1);
+                    std::this_thread::sleep_for(std::chrono::microseconds(20));
                 }
                 worker_done.store(true);
             });
 
             // Main thread performs concurrent decode batches and context thread queries
-            for (int iter = 0; iter < 50; ++iter) {
+            for (int iter = 0; iter < 100; ++iter) {
                 argus_token_batch_t b_sync = {};
                 b_sync.tokens = seed_prompt;
                 b_sync.n_tokens = 3;
@@ -556,15 +631,16 @@ int main() {
                 b_sync.request_logits = false;
                 ARGUS_CHECK(argus_decode_batch(ctx, &b_sync) == 0);
                 ARGUS_CHECK(argus_get_n_threads(ctx) > 0);
-                std::this_thread::sleep_for(std::chrono::microseconds(50));
+                std::this_thread::sleep_for(std::chrono::microseconds(20));
             }
 
             worker.join();
             ARGUS_CHECK(error_count.load() == 0);
-            std::cout << "  - Multimodal context mutex serialization verified under concurrent worker threads." << std::endl;
+            ARGUS_CHECK(sync_calls.load() == 100);
+            std::cout << "  - Multimodal context mutex serialization verified under active contention (100 synchronized passes)." << std::endl;
         }
 
-        // 7.14. Sampler Lifecycle (prime, truncate, reset)
+        // 7.16. Sampler Lifecycle (prime, truncate, reset)
         int32_t prime_tokens[] = { 12, 13, 14 };
         int32_t prime_res = argus_sampler_prime(ctx, 0, prime_tokens, 3);
         ARGUS_CHECK(prime_res == 0);

@@ -49,4 +49,7 @@ struct argus_context {
     int32_t                          last_decoded_seq_id = -1;
 };
 
+// Internal helper to discard a sequence slot's pending sample and rebuild its chain
+extern "C" bool discard_slot_pending_preserving_rng(argus_context_t * ctx, int32_t seq_id);
+
 #endif // ARGUS_INTERNAL_H
