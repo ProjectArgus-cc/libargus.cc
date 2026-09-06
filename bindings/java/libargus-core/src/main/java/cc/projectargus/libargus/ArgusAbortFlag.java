@@ -1,62 +1,95 @@
 package cc.projectargus.libargus;
 
-import java.lang.foreign.Arena;
+import cc.projectargus.libargus.internal.ArgusBindings;
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * A safe, thread-safe cancellation flag encapsulating an unmanaged memory segment
- * to signal early termination to long-running native prefill loops.
- * Implements AutoCloseable to clean up its internal Arena.
+ * A thread-safe native reference-counted atomic cancellation object (argus_abort_flag_t)
+ * to signal early termination to long-running native prefill and decode loops.
+ * Implements AutoCloseable with idempotent release.
  */
 public final class ArgusAbortFlag implements AutoCloseable {
-    private final Arena arena;
     private final MemorySegment handle;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     /**
-     * Initializes a new ArgusAbortFlag with a default value of 0 (do not abort).
+     * Initializes a new native reference-counted atomic abort flag.
      */
     public ArgusAbortFlag() {
-        this.arena = Arena.ofShared(); // Shared arena permits cross-thread access and modification
-        this.handle = arena.allocate(ValueLayout.JAVA_INT);
-        this.handle.set(ValueLayout.JAVA_INT, 0, 0);
+        try {
+            this.handle = (MemorySegment) ArgusBindings.argus_abort_flag_create.invokeExact();
+            if (this.handle == null || this.handle.equals(MemorySegment.NULL)) {
+                throw new ArgusNativeException(2, "Failed to allocate native argus_abort_flag_t");
+            }
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Native abort flag instantiation failed", t);
+        }
     }
 
     /**
-     * Writes 1 to the cancellation flag, signaling the native loop to abort execution.
-     * This operation is thread-safe and can be called from any control thread.
+     * Signals cancellation to any active or subsequent native execution loops.
      */
     public void abort() {
-        handle.set(ValueLayout.JAVA_INT, 0, 1);
+        checkNotClosed();
+        try {
+            ArgusBindings.argus_abort_flag_request.invokeExact(handle);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to signal native abort flag", t);
+        }
     }
 
     /**
-     * Resets the cancellation flag back to 0.
+     * Resets the cancellation flag back to false.
      */
     public void reset() {
-        handle.set(ValueLayout.JAVA_INT, 0, 0);
+        checkNotClosed();
+        try {
+            ArgusBindings.argus_abort_flag_reset.invokeExact(handle);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to reset native abort flag", t);
+        }
     }
 
     /**
-     * Checks if the flag has been set to abort.
-     *
-     * @return true if the abort signal is active
+     * Checks if cancellation has been requested.
      */
     public boolean isAborted() {
-        return handle.get(ValueLayout.JAVA_INT, 0) != 0;
+        checkNotClosed();
+        try {
+            return (boolean) ArgusBindings.argus_abort_flag_is_requested.invokeExact(handle);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to query native abort flag status", t);
+        }
     }
 
     /**
      * Retrieves the underlying unmanaged memory segment handle.
-     *
-     * @return the unmanaged MemorySegment pointer
      */
     public MemorySegment getHandle() {
+        checkNotClosed();
         return handle;
+    }
+
+    public boolean isClosed() {
+        return closed.get();
+    }
+
+    private void checkNotClosed() {
+        if (closed.get()) {
+            throw new IllegalStateException("ArgusAbortFlag has already been closed");
+        }
     }
 
     @Override
     public void close() {
-        arena.close();
+        if (closed.compareAndSet(false, true)) {
+            try {
+                ArgusBindings.argus_abort_flag_release.invokeExact(handle);
+            } catch (Throwable t) {
+                // Suppress destruction errors
+            }
+        }
     }
 }

@@ -24,6 +24,8 @@ include(FetchContent)
 # =========================================================================
 option(GGML_CUDA "Compile with NVIDIA CUDA Core acceleration" ON)
 option(GGML_METAL "Compile with Apple Silicon Metal acceleration" OFF)
+option(GGML_HIP "Compile with AMD ROCm/HIP acceleration" OFF)
+option(GGML_VULKAN "Compile with Vulkan acceleration" OFF)
 
 if(GGML_CUDA)
     add_compile_definitions(GGML_USE_CUDA)
@@ -34,13 +36,18 @@ if(GGML_CUDA)
         # Target Turing (7.5), Ampere (8.0, 8.6), Ada Lovelace (8.9), Hopper (9.0) + 90-virtual PTX fallback
         set(CMAKE_CUDA_ARCHITECTURES "75-real;80-real;86-real;89-real;90-real;90-virtual")
     endif()
-
-
 endif()
-
 
 if(GGML_METAL)
     add_compile_definitions(GGML_USE_METAL)
+endif()
+
+if(GGML_HIP)
+    add_compile_definitions(GGML_USE_HIP)
+endif()
+
+if(GGML_VULKAN)
+    add_compile_definitions(GGML_USE_VULKAN)
 endif()
 
 # =========================================================================

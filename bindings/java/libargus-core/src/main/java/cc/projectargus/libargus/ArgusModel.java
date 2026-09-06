@@ -2,20 +2,25 @@ package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusLayouts;
+import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Wraps loaded GGUF model weights in unmanaged memory.
- * Implements AutoCloseable to ensure resources are cleaned up safely.
+ * Wraps loaded GGUF model weights in unmanaged memory with native reference counting.
+ * Implements AutoCloseable to ensure resources are cleaned up safely and idempotently.
  */
 public final class ArgusModel implements AutoCloseable {
     private MemorySegment modelPtr;
-    private final java.util.concurrent.atomic.AtomicInteger refCount = new java.util.concurrent.atomic.AtomicInteger(1);
+    private final AtomicInteger refCount = new AtomicInteger(1);
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicInteger activeOperations = new AtomicInteger(0);
 
     ArgusModel(MemorySegment modelPtr) {
         this.modelPtr = Objects.requireNonNull(modelPtr);
@@ -25,16 +30,44 @@ public final class ArgusModel implements AutoCloseable {
         int current;
         do {
             current = refCount.get();
-            if (current <= 0) {
+            if (current <= 0 || closed.get()) {
                 throw new IllegalStateException("Cannot acquire reference; ArgusModel has already been closed");
             }
         } while (!refCount.compareAndSet(current, current + 1));
+
+        if (!modelPtr.equals(MemorySegment.NULL)) {
+            try {
+                boolean ok = (boolean) ArgusBindings.argus_model_retain.invokeExact(modelPtr);
+                if (!ok) {
+                    refCount.decrementAndGet();
+                    throw new IllegalStateException("Failed to retain native model handle");
+                }
+            } catch (Throwable t) {
+                refCount.decrementAndGet();
+                if (t instanceof RuntimeException re) throw re;
+                throw new RuntimeException("Failed to retain native model handle", t);
+            }
+        }
     }
 
     void release() {
-        if (refCount.decrementAndGet() == 0) {
-            freeNativeModel();
+        int remaining = refCount.decrementAndGet();
+        if (remaining >= 0) {
+            if (!modelPtr.equals(MemorySegment.NULL)) {
+                try {
+                    ArgusBindings.argus_model_release.invokeExact(modelPtr);
+                } catch (Throwable t) {
+                    // Suppress destruction exceptions
+                }
+            }
+            if (remaining == 0) {
+                modelPtr = MemorySegment.NULL;
+            }
         }
+    }
+
+    public boolean isClosed() {
+        return closed.get();
     }
 
     int getRefCount() {
@@ -45,16 +78,20 @@ public final class ArgusModel implements AutoCloseable {
         this.modelPtr = MemorySegment.NULL;
     }
 
-    private synchronized void freeNativeModel() {
-        if (modelPtr != null && !modelPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_model_free.invokeExact(modelPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to free native model resources", t);
-            } finally {
-                modelPtr = MemorySegment.NULL;
-            }
+    private MemorySegment acquireReadLease() {
+        if (closed.get()) {
+            throw new IllegalStateException("ArgusModel has already been closed");
         }
+        activeOperations.incrementAndGet();
+        if (closed.get() || modelPtr.equals(MemorySegment.NULL)) {
+            activeOperations.decrementAndGet();
+            throw new IllegalStateException("ArgusModel has already been closed");
+        }
+        return modelPtr;
+    }
+
+    private void releaseReadLease() {
+        activeOperations.decrementAndGet();
     }
 
     /**
@@ -427,6 +464,45 @@ public final class ArgusModel implements AutoCloseable {
     }
 
     /**
+     * Converts text into vocabulary token IDs directly using this model's unmanaged vocabulary.
+     * Thread-safe, lock-free, zero-copy.
+     *
+     * @param textSeg      input UTF-8 text segment
+     * @param outTokensSeg destination int32 token array segment
+     * @param addBos       whether to prepend BOS token
+     * @return count of tokens written
+     */
+    public int tokenize(MemorySegment textSeg, MemorySegment outTokensSeg, boolean addBos) {
+        Objects.requireNonNull(textSeg);
+        Objects.requireNonNull(outTokensSeg);
+        ArgusValidation.checkReadable(textSeg, 0, "textSeg");
+        ArgusValidation.checkWritable(outTokensSeg, ValueLayout.JAVA_INT.byteSize(), "outTokensSeg");
+        long maxTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
+        long textLen = textSeg.byteSize();
+
+        MemorySegment handle = acquireReadLease();
+        try {
+            int res = (int) ArgusBindings.argus_tokenize_n.invokeExact(
+                handle,
+                textSeg,
+                textLen,
+                outTokensSeg,
+                (int) maxTokens,
+                addBos
+            );
+            if (res < 0) {
+                ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+            }
+            return res;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to tokenize input text", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
      * Returns the raw memory address representing the unmanaged model structure.
      */
     public MemorySegment getHandle() {
@@ -435,6 +511,8 @@ public final class ArgusModel implements AutoCloseable {
 
     @Override
     public void close() {
-        release();
+        if (closed.compareAndSet(false, true)) {
+            release();
+        }
     }
 }

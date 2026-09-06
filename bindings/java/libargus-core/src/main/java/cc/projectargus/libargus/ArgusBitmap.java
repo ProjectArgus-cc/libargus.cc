@@ -1,11 +1,13 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Wraps raw/parsed media content in native memory.
@@ -13,12 +15,14 @@ import java.util.Objects;
  */
 public final class ArgusBitmap implements AutoCloseable {
     private MemorySegment bitmapPtr;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     ArgusBitmap(MemorySegment bitmapPtr) {
         this.bitmapPtr = Objects.requireNonNull(bitmapPtr);
     }
 
     void setHandle(MemorySegment handle) {
+        checkNotClosed();
         this.bitmapPtr = Objects.requireNonNull(handle);
     }
 
@@ -27,13 +31,20 @@ public final class ArgusBitmap implements AutoCloseable {
      */
     public static ArgusBitmap fromRgb(int width, int height, MemorySegment rgbDataSeg) {
         Objects.requireNonNull(rgbDataSeg);
+        ArgusValidation.checkPositive(width, "width");
+        ArgusValidation.checkPositive(height, "height");
+        long numPixels = ArgusValidation.multiplyExactBytes(width, height, "pixels");
+        long requiredBytes = ArgusValidation.multiplyExactBytes(numPixels, 3, "rgbDataSeg");
+        ArgusValidation.checkReadable(rgbDataSeg, requiredBytes, "rgbDataSeg");
+
         try {
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_from_rgb.invokeExact(width, height, rgbDataSeg);
             if (ptr.equals(MemorySegment.NULL)) {
-                throw new RuntimeException("Native argus_bitmap_from_rgb returned NULL");
+                ArgusNativeException.checkStatus(-1, "argus_bitmap_from_rgb");
             }
             return new ArgusBitmap(ptr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to create ArgusBitmap from RGB data", t);
         }
     }
@@ -43,13 +54,18 @@ public final class ArgusBitmap implements AutoCloseable {
      */
     public static ArgusBitmap fromPcm(MemorySegment pcmDataSeg, int nSamples) {
         Objects.requireNonNull(pcmDataSeg);
+        ArgusValidation.checkPositive(nSamples, "nSamples");
+        long requiredBytes = ArgusValidation.multiplyExactBytes(nSamples, ValueLayout.JAVA_FLOAT.byteSize(), "pcmDataSeg");
+        ArgusValidation.checkReadable(pcmDataSeg, requiredBytes, "pcmDataSeg");
+
         try {
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_from_pcm.invokeExact(pcmDataSeg, nSamples);
             if (ptr.equals(MemorySegment.NULL)) {
-                throw new RuntimeException("Native argus_bitmap_from_pcm returned NULL");
+                ArgusNativeException.checkStatus(-1, "argus_bitmap_from_pcm");
             }
             return new ArgusBitmap(ptr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to create ArgusBitmap from PCM data", t);
         }
     }
@@ -74,6 +90,7 @@ public final class ArgusBitmap implements AutoCloseable {
             }
             return new ArgusBitmap(ptr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from file: " + filePath, t);
         }
     }
@@ -99,16 +116,31 @@ public final class ArgusBitmap implements AutoCloseable {
             }
             return new ArgusBitmap(ptr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from memory buffer", t);
         }
     }
 
     public MemorySegment getHandle() {
+        checkNotClosed();
         return bitmapPtr;
     }
 
+    public boolean isClosed() {
+        return closed.get();
+    }
+
+    private void checkNotClosed() {
+        if (closed.get() || bitmapPtr == null || bitmapPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("ArgusBitmap has been closed");
+        }
+    }
+
     @Override
-    public synchronized void close() {
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         if (bitmapPtr != null && !bitmapPtr.equals(MemorySegment.NULL)) {
             try {
                 ArgusBindings.argus_bitmap_free.invokeExact(bitmapPtr);

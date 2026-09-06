@@ -33,7 +33,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.6.5") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.0") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -524,9 +524,10 @@ int main() {
         b_br.request_logits = true;
         ARGUS_CHECK(argus_decode_batch(ctx, &b_br) == 0);
         // Pruning removes generated tokens at kv_pos >= 2 (s_tok1 at 4, s_tok2 at 5)
-        // Decoupled primed tokens (kv_pos == -1) remain 100% intact!
-        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 6);
-        std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved across KV rollback)." << std::endl;
+        // Decoupled primed tokens (kv_pos == -1, count 6) remain 100% intact.
+        // Rollback replacement tokens (2 tokens) are committed to history and accepted by sampler.
+        ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 8); // 6 primed + 2 replacement tokens
+        std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved & replacement tokens committed)." << std::endl;
 
         // 7.13. Transactional Decode Cancellation & Retry Invariant
         {
@@ -539,15 +540,22 @@ int main() {
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
             ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
 
-            // Decode batch with abort_flag set to 1
-            int32_t abort_val = 1;
+            // Ref-counted abort flag allocation & request
+            argus_abort_flag_t * abort_flag = argus_abort_flag_create();
+            ARGUS_CHECK(abort_flag != nullptr);
+            ARGUS_CHECK(!argus_abort_flag_is_requested(abort_flag));
+            ARGUS_CHECK(argus_abort_flag_retain(abort_flag)); // refcount 2
+
+            argus_abort_flag_request(abort_flag);
+            ARGUS_CHECK(argus_abort_flag_is_requested(abort_flag));
+
             argus_token_batch_t b_abort = {};
             b_abort.tokens = &pend_t;
             b_abort.n_tokens = 1;
             b_abort.start_pos = 3;
             b_abort.seq_id = 0;
             b_abort.request_logits = true;
-            b_abort.abort_flag = &abort_val;
+            b_abort.abort_flag = abort_flag;
 
             int32_t abort_res = argus_decode_batch(ctx, &b_abort);
             ARGUS_CHECK(abort_res == -2);
@@ -555,11 +563,15 @@ int main() {
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
             ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
 
-            // Now retry with abort_val = 0: decode succeeds and commits exactly once
-            abort_val = 0;
+            // Now retry after resetting abort flag: decode succeeds and commits exactly once
+            argus_abort_flag_reset(abort_flag);
+            ARGUS_CHECK(!argus_abort_flag_is_requested(abort_flag));
             ARGUS_CHECK(argus_decode_batch(ctx, &b_abort) == 0);
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
             ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 1);
+
+            argus_abort_flag_release(abort_flag); // refcount back to 1
+            argus_abort_flag_release(abort_flag); // refcount to 0, safely freed
             std::cout << "  - Transactional decode cancellation & retry invariant verified (zero false commits on abort)." << std::endl;
         }
 
@@ -655,11 +667,68 @@ int main() {
         argus_model_free(draft_model);
         argus_model_free(model);
         std::cout << "  - End-to-end model and context resources successfully released." << std::endl;
+
+        // 7.17. Build Features & Tokenize-N Verification
+        {
+            uint64_t features = argus_build_features();
+            ARGUS_CHECK((features & ARGUS_FEATURE_CPU) != 0);
+            std::cout << "  - Build features bitmask verified (0x" << std::hex << features << std::dec << ")." << std::endl;
+        }
+
+        // 7.18. Ref-counted Model Ownership & Deferred Backend Teardown
+        {
+            argus_model_params_t mparams = {};
+            mparams.model_path = valid_model_path;
+            mparams.gpu_layers = 0;
+            argus_model_t * m = argus_model_load(&mparams);
+            ARGUS_CHECK(m != nullptr);
+            ARGUS_CHECK(argus_backend_is_initialized());
+
+            // Retain model reference (refs = 2)
+            ARGUS_CHECK(argus_model_retain(m));
+
+            // Verify argus_tokenize_n boundary validation & exception containment
+            int32_t out_toks[16];
+            ARGUS_CHECK(argus_tokenize_n(nullptr, "abc", 2, out_toks, 16, false) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            ARGUS_CHECK(argus_tokenize_n(m, nullptr, 2, out_toks, 16, false) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            ARGUS_CHECK(argus_tokenize_n(m, "abc", 2, nullptr, 16, false) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            ARGUS_CHECK(argus_tokenize_n(m, "abc", 2, out_toks, 0, false) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // C++ exception containment: tiny.gguf lacks SPM space piece, throwing in llama.cpp
+            int32_t n_toks = argus_tokenize_n(m, "abc", 2, out_toks, 16, false);
+            ARGUS_CHECK(n_toks == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INTERNAL);
+            ARGUS_CHECK(std::strstr(argus_last_error_message(), "unordered_map::at") != nullptr);
+            argus_clear_error();
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_SUCCESS);
+            std::cout << "  - Exception containment & boundary validation for argus_tokenize_n verified." << std::endl;
+
+            // Call argus_backend_free while model is retained
+            argus_backend_free();
+            // Backend must NOT be torn down yet because model is alive
+            ARGUS_CHECK(argus_backend_is_initialized());
+
+            // Release first reference (refs = 1)
+            argus_model_release(m);
+            ARGUS_CHECK(argus_backend_is_initialized());
+
+            // Release final reference (refs = 0) -> triggers deferred backend teardown
+            argus_model_release(m);
+            ARGUS_CHECK(!argus_backend_is_initialized());
+            std::cout << "  - Ref-counted model ownership & deferred backend teardown verified." << std::endl;
+        }
     } else {
         std::cerr << "[Test] WARNING: tests/data/tiny.gguf not found; skipped model execution pass." << std::endl;
     }
 
-    // 8. Free the global backends
+    // 8. Free the global backends (idempotent if already torn down by deferred teardown)
     argus_backend_free();
     std::cout << "[Test] Backend freed successfully." << std::endl;
 

@@ -3,13 +3,28 @@
 
 #include "libargus.h"
 #include "llama.h"
+#include <atomic>
 #include <mutex>
 #include <vector>
 
 struct argus_model {
+    std::atomic<uint32_t>          refs{1};
     struct llama_model           * model;
     const  struct llama_vocab    * vocab;
 };
+
+struct argus_abort_flag {
+    std::atomic<uint32_t>          refs{1};
+    std::atomic<bool>              requested{false};
+};
+
+// Thread-local diagnostic state helpers
+void set_last_error(argus_error_code_t code, const char * msg);
+void clear_last_error();
+
+// Backend active resource tracking
+void argus_backend_resource_inc();
+void argus_backend_resource_dec();
 
 struct argus_history_entry {
     llama_token token;   // 4 bytes: vocabulary token ID

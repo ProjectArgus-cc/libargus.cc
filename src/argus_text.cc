@@ -140,36 +140,73 @@ extern "C" {
 // Model Lifecycle
 // =========================================================================
 
-argus_model_t * argus_model_load(const argus_model_params_t * params) {
-    if (!params || !params->model_path) {
-        return nullptr;
-    }
-
-    struct llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = params->gpu_layers;
-    if (params->use_mlock) {
-        mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
-    }
-
-    struct llama_model * model = llama_model_load_from_file(params->model_path, mparams);
+bool argus_model_retain(argus_model_t * model) {
     if (!model) {
-        return nullptr;
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "model pointer is NULL");
+        return false;
     }
+    model->refs.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
 
-    argus_model_t * argus_model_ptr = new argus_model();
-    argus_model_ptr->model = model;
-    argus_model_ptr->vocab = llama_model_get_vocab(model);
-
-    return argus_model_ptr;
+void argus_model_release(argus_model_t * model) {
+    if (!model) {
+        return;
+    }
+    if (model->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        if (model->model) {
+            llama_model_free(model->model);
+            model->model = nullptr;
+        }
+        delete model;
+        argus_backend_resource_dec();
+    }
 }
 
 void argus_model_free(argus_model_t * model) {
-    if (model) {
-        if (model->model) {
-            llama_model_free(model->model);
+    argus_model_release(model);
+}
+
+argus_model_t * argus_model_load(const argus_model_params_t * params) {
+    try {
+        clear_last_error();
+        if (!params || !params->model_path) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "model params or model path is NULL");
+            return nullptr;
         }
-        delete model;
+
+        struct llama_model_params mparams = llama_model_default_params();
+        mparams.n_gpu_layers = params->gpu_layers;
+        if (params->use_mlock) {
+            mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+        }
+
+        struct llama_model * model = llama_model_load_from_file(params->model_path, mparams);
+        if (!model) {
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to load llama model from file");
+            return nullptr;
+        }
+
+        argus_model_t * argus_model_ptr = nullptr;
+        try {
+            argus_model_ptr = new argus_model();
+            argus_model_ptr->refs = 1;
+            argus_model_ptr->model = model;
+            argus_model_ptr->vocab = llama_model_get_vocab(model);
+            argus_backend_resource_inc();
+            return argus_model_ptr;
+        } catch (...) {
+            llama_model_free(model);
+            throw;
+        }
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_MODEL_LOAD, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during model load");
     }
+    return nullptr;
 }
 
 // =========================================================================
@@ -177,138 +214,187 @@ void argus_model_free(argus_model_t * model) {
 // =========================================================================
 
 argus_context_t * argus_context_init(argus_model_t * model, const argus_context_params_t * params) {
-    if (!model || !params) {
-        return nullptr;
-    }
-
-    struct llama_context_params cparams = llama_context_default_params();
-    int32_t limit_batch = (params->context_length < 2048) ? params->context_length : 2048;
-
-    int32_t seq_max = params->n_seq_max;
-    if (seq_max <= 0) {
-        bool requires_multi_seq = (params->draft_model != nullptr) || 
-                                  (params->spec_draft_n_max > 0) || 
-                                  params->enable_draft_mtp;
-        seq_max = requires_multi_seq ? 4 : 1;
-    }
-
-    bool kv_unified_active = params->kv_unified || (params->n_seq_max == 0);
-
-    // Bound the batch size by the sequence slot size to prevent KV cache slot allocation crashes.
-    // Account for GGML padding of slot sizes to multiples of 256 cells.
-    int32_t n_ctx_seq = kv_unified_active ? params->context_length : (params->context_length / seq_max);
-    n_ctx_seq = GGML_PAD(n_ctx_seq, 256);
-    if (n_ctx_seq < limit_batch) {
-        limit_batch = n_ctx_seq;
-    }
-
-    // Bound the batch size by the base model's sliding window size (SWA) if present
-    if (model->model) {
-        int32_t base_swa = llama_model_n_swa(model->model);
-        if (base_swa > 0 && base_swa < limit_batch) {
-            limit_batch = base_swa;
-        }
-    }
-
-    // Bounding by the draft model's sliding window size (SWA) if present to prevent draft context crash
-    if (params->draft_model && params->draft_model->model) {
-        int32_t draft_swa = llama_model_n_swa(params->draft_model->model);
-        if (draft_swa > 0 && draft_swa < limit_batch) {
-            limit_batch = draft_swa;
-        }
-    }
-
-    // Ensure we have a valid batch size of at least 1
-    if (limit_batch < 1) {
-        limit_batch = 1;
-    }
-
-    cparams.n_ctx           = params->context_length;
-    cparams.n_batch         = limit_batch;
-
-    // Calculate physical micro-batch size (n_ubatch)
-    int32_t req_ubatch = params->u_batch;
-    if (req_ubatch <= 0) {
-        bool is_encoder_or_embed = params->embeddings || (model->model && llama_model_has_encoder(model->model));
-        req_ubatch = is_encoder_or_embed ? limit_batch : ((limit_batch < 512) ? limit_batch : 512);
-    }
-    cparams.n_ubatch        = std::clamp(req_ubatch, 1, limit_batch);
-    cparams.n_seq_max       = seq_max;
-    cparams.kv_unified      = kv_unified_active;
-    cparams.n_threads       = params->cpu_threads;
-    cparams.n_threads_batch = params->cpu_threads;
-
-    // Multi-Token Prediction (MTP) context type configuration
-    cparams.ctx_type = params->enable_draft_mtp ? LLAMA_CONTEXT_TYPE_MTP : LLAMA_CONTEXT_TYPE_DEFAULT;
-
-    // KV cache quantization support
-    cparams.type_k = (enum ggml_type)params->type_k;
-    cparams.type_v = (enum ggml_type)params->type_v;
-
-    // Embeddings support
-    bool is_encoder_model = model->model && llama_model_has_encoder(model->model);
-    cparams.embeddings = params->embeddings || is_encoder_model;
-
-    struct llama_context * ctx = llama_init_from_model(model->model, cparams);
-    if (!ctx) {
-        return nullptr;
-    }
-
-    if (llama_pooling_type(ctx) != LLAMA_POOLING_TYPE_NONE) {
-        llama_set_embeddings(ctx, true);
-    }
-
-    struct llama_context * draft_ctx = nullptr;
-    if (params->draft_model) {
-        if (!params->draft_model->model) {
-            llama_free(ctx);
+    try {
+        clear_last_error();
+        if (!model || !model->model || !params) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid model or context parameters");
             return nullptr;
         }
-        struct llama_context_params dparams = llama_context_default_params();
-        dparams.n_ctx           = params->context_length;
-        dparams.n_batch         = cparams.n_batch;
-        dparams.n_ubatch        = cparams.n_ubatch;
-        dparams.n_seq_max       = cparams.n_seq_max;
-        dparams.kv_unified      = cparams.kv_unified;
-        dparams.n_threads       = params->cpu_threads;
-        dparams.n_threads_batch = params->cpu_threads;
-        dparams.type_k          = cparams.type_k;
-        dparams.type_v          = cparams.type_v;
 
-        draft_ctx = llama_init_from_model(params->draft_model->model, dparams);
-        if (!draft_ctx) {
-            llama_free(ctx);
+        // Retain model reference before proceeding
+        if (!argus_model_retain(model)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "failed to retain primary model");
             return nullptr;
         }
-    }
 
-    argus_context_t * argus_ctx = new argus_context();
-    argus_ctx->ctx                  = ctx;
-    argus_ctx->draft_ctx            = draft_ctx;
-    argus_ctx->model_ref            = model;
-    argus_ctx->draft_model_ref      = const_cast<argus_model_t *>(params->draft_model);
-    argus_ctx->spec_draft_n_max     = params->spec_draft_n_max;
-    argus_ctx->enable_draft_mtp     = params->enable_draft_mtp;
-    argus_ctx->vocoder_ctx          = nullptr;
-    argus_ctx->vocoder_model_ref    = nullptr;
-    argus_ctx->last_decoded_seq_id  = -1;
-
-    argus_ctx->seq_samplers.resize(seq_max);
-    for (int32_t i = 0; i < seq_max; ++i) {
-        argus_ctx->seq_samplers[i].chain = nullptr;
-        argus_ctx->seq_samplers[i].has_cached_chain = false;
-        argus_ctx->seq_samplers[i].has_logits = false;
-        argus_ctx->seq_samplers[i].last_logits_pos = -1;
-        if (params->context_length > 0) {
-            argus_ctx->seq_samplers[i].history.reserve((size_t)params->context_length);
+        argus_model_t * draft_model = const_cast<argus_model_t *>(params->draft_model);
+        if (draft_model) {
+            if (!argus_model_retain(draft_model)) {
+                argus_model_release(model);
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "failed to retain draft model");
+                return nullptr;
+            }
         }
-    }
 
-    return argus_ctx;
+        struct llama_context_params cparams = llama_context_default_params();
+        int32_t limit_batch = (params->context_length < 2048) ? params->context_length : 2048;
+
+        int32_t seq_max = params->n_seq_max;
+        if (seq_max <= 0) {
+            bool requires_multi_seq = (params->draft_model != nullptr) || 
+                                      (params->spec_draft_n_max > 0) || 
+                                      params->enable_draft_mtp;
+            seq_max = requires_multi_seq ? 4 : 1;
+        }
+
+        bool kv_unified_active = params->kv_unified || (params->n_seq_max == 0);
+
+        // Bound the batch size by the sequence slot size to prevent KV cache slot allocation crashes.
+        // Account for GGML padding of slot sizes to multiples of 256 cells.
+        int32_t n_ctx_seq = kv_unified_active ? params->context_length : (params->context_length / seq_max);
+        n_ctx_seq = GGML_PAD(n_ctx_seq, 256);
+        if (n_ctx_seq < limit_batch) {
+            limit_batch = n_ctx_seq;
+        }
+
+        // Bound the batch size by the base model's sliding window size (SWA) if present
+        if (model->model) {
+            int32_t base_swa = llama_model_n_swa(model->model);
+            if (base_swa > 0 && base_swa < limit_batch) {
+                limit_batch = base_swa;
+            }
+        }
+
+        // Bounding by the draft model's sliding window size (SWA) if present to prevent draft context crash
+        if (draft_model && draft_model->model) {
+            int32_t draft_swa = llama_model_n_swa(draft_model->model);
+            if (draft_swa > 0 && draft_swa < limit_batch) {
+                limit_batch = draft_swa;
+            }
+        }
+
+        // Ensure we have a valid batch size of at least 1
+        if (limit_batch < 1) {
+            limit_batch = 1;
+        }
+
+        cparams.n_ctx           = params->context_length;
+        cparams.n_batch         = limit_batch;
+
+        // Calculate physical micro-batch size (n_ubatch)
+        int32_t req_ubatch = params->u_batch;
+        if (req_ubatch <= 0) {
+            bool is_encoder_or_embed = params->embeddings || (model->model && llama_model_has_encoder(model->model));
+            req_ubatch = is_encoder_or_embed ? limit_batch : ((limit_batch < 512) ? limit_batch : 512);
+        }
+        cparams.n_ubatch        = std::clamp(req_ubatch, 1, limit_batch);
+        cparams.n_seq_max       = seq_max;
+        cparams.kv_unified      = kv_unified_active;
+        cparams.n_threads       = params->cpu_threads;
+        cparams.n_threads_batch = params->cpu_threads;
+
+        // Multi-Token Prediction (MTP) context type configuration
+        cparams.ctx_type = params->enable_draft_mtp ? LLAMA_CONTEXT_TYPE_MTP : LLAMA_CONTEXT_TYPE_DEFAULT;
+
+        // KV cache quantization support
+        cparams.type_k = (enum ggml_type)params->type_k;
+        cparams.type_v = (enum ggml_type)params->type_v;
+
+        // Embeddings support
+        bool is_encoder_model = model->model && llama_model_has_encoder(model->model);
+        cparams.embeddings = params->embeddings || is_encoder_model;
+
+        struct llama_context * ctx = llama_init_from_model(model->model, cparams);
+        if (!ctx) {
+            if (draft_model) argus_model_release(draft_model);
+            argus_model_release(model);
+            set_last_error(ARGUS_ERROR_BACKEND, "failed to initialize llama context");
+            return nullptr;
+        }
+
+        if (llama_pooling_type(ctx) != LLAMA_POOLING_TYPE_NONE) {
+            llama_set_embeddings(ctx, true);
+        }
+
+        struct llama_context * draft_ctx = nullptr;
+        if (draft_model) {
+            if (!draft_model->model) {
+                llama_free(ctx);
+                argus_model_release(draft_model);
+                argus_model_release(model);
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "draft model has null llama model");
+                return nullptr;
+            }
+            struct llama_context_params dparams = llama_context_default_params();
+            dparams.n_ctx           = params->context_length;
+            dparams.n_batch         = cparams.n_batch;
+            dparams.n_ubatch        = cparams.n_ubatch;
+            dparams.n_seq_max       = cparams.n_seq_max;
+            dparams.kv_unified      = cparams.kv_unified;
+            dparams.n_threads       = params->cpu_threads;
+            dparams.n_threads_batch = params->cpu_threads;
+            dparams.type_k          = cparams.type_k;
+            dparams.type_v          = cparams.type_v;
+
+            draft_ctx = llama_init_from_model(draft_model->model, dparams);
+            if (!draft_ctx) {
+                llama_free(ctx);
+                argus_model_release(draft_model);
+                argus_model_release(model);
+                set_last_error(ARGUS_ERROR_BACKEND, "failed to initialize draft context");
+                return nullptr;
+            }
+        }
+
+        argus_context_t * argus_ctx = nullptr;
+        try {
+            argus_ctx = new argus_context();
+            argus_ctx->ctx                  = ctx;
+            argus_ctx->draft_ctx            = draft_ctx;
+            argus_ctx->model_ref            = model;
+            argus_ctx->draft_model_ref      = draft_model;
+            argus_ctx->spec_draft_n_max     = params->spec_draft_n_max;
+            argus_ctx->enable_draft_mtp     = params->enable_draft_mtp;
+            argus_ctx->vocoder_ctx          = nullptr;
+            argus_ctx->vocoder_model_ref    = nullptr;
+            argus_ctx->last_decoded_seq_id  = -1;
+
+            argus_ctx->seq_samplers.resize(seq_max);
+            for (int32_t i = 0; i < seq_max; ++i) {
+                argus_ctx->seq_samplers[i].chain = nullptr;
+                argus_ctx->seq_samplers[i].has_cached_chain = false;
+                argus_ctx->seq_samplers[i].has_logits = false;
+                argus_ctx->seq_samplers[i].last_logits_pos = -1;
+                if (params->context_length > 0) {
+                    argus_ctx->seq_samplers[i].history.reserve((size_t)params->context_length);
+                }
+            }
+
+            return argus_ctx;
+        } catch (...) {
+            if (draft_ctx) llama_free(draft_ctx);
+            if (ctx) llama_free(ctx);
+            if (draft_model) argus_model_release(draft_model);
+            argus_model_release(model);
+            if (argus_ctx) delete argus_ctx;
+            throw;
+        }
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during context initialization");
+    }
+    return nullptr;
 }
 
 void argus_context_free(argus_context_t * ctx) {
-    if (ctx) {
+    if (!ctx) {
+        return;
+    }
+    try {
+        clear_last_error();
         for (auto & slot : ctx->seq_samplers) {
             if (slot.chain) {
                 llama_sampler_free(slot.chain);
@@ -318,16 +404,36 @@ void argus_context_free(argus_context_t * ctx) {
         ctx->seq_samplers.clear();
         if (ctx->ctx) {
             llama_free(ctx->ctx);
+            ctx->ctx = nullptr;
         }
         if (ctx->draft_ctx) {
             llama_free(ctx->draft_ctx);
+            ctx->draft_ctx = nullptr;
         }
         if (ctx->vocoder_ctx) {
             llama_free(ctx->vocoder_ctx);
+            ctx->vocoder_ctx = nullptr;
+        }
+        if (ctx->vocoder_model_ref) {
+            argus_model_release(const_cast<argus_model_t *>(ctx->vocoder_model_ref));
+            ctx->vocoder_model_ref = nullptr;
+        }
+        if (ctx->draft_model_ref) {
+            argus_model_release(ctx->draft_model_ref);
+            ctx->draft_model_ref = nullptr;
+        }
+        if (ctx->model_ref) {
+            argus_model_release(ctx->model_ref);
+            ctx->model_ref = nullptr;
         }
         delete ctx;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during context free");
     }
 }
+
 
 void argus_set_n_threads(argus_context_t * ctx, int32_t n_threads, int32_t n_threads_batch) {
     if (!ctx) {
@@ -380,12 +486,29 @@ bool argus_context_has_draft(const argus_context_t * ctx) {
 // Tokenizer (Lock-Free, Read-Only Model Vocabulary Operations)
 // =========================================================================
 
+int32_t argus_tokenize_n(const argus_model_t * model, const char * text, size_t text_len, int32_t * out_tokens, int32_t max_tokens, bool add_bos) {
+    try {
+        clear_last_error();
+        if (!model || !model->vocab || !text || !out_tokens || max_tokens <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_tokenize_n");
+            return -1;
+        }
+
+        return llama_tokenize(model->vocab, text, (int32_t)text_len, out_tokens, max_tokens, add_bos, true);
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during tokenization");
+    }
+    return -1;
+}
+
 int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t * out_tokens, int32_t max_tokens, bool add_bos) {
-    if (!model || !text || !out_tokens || max_tokens <= 0) {
+    if (!text) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "text pointer is NULL");
         return -1;
     }
-
-    return llama_tokenize(model->vocab, text, (int32_t)strlen(text), out_tokens, max_tokens, add_bos, true);
+    return argus_tokenize_n(model, text, std::strlen(text), out_tokens, max_tokens, add_bos);
 }
 
 int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size) {
@@ -587,6 +710,84 @@ static void prune_kv_cache_if_rollback(struct llama_context * lctx, int32_t seq_
     }
 }
 
+// =========================================================================
+// Cancellation Abort Flag Lifecycle & Management
+// =========================================================================
+
+argus_abort_flag_t * argus_abort_flag_create(void) {
+    try {
+        clear_last_error();
+        auto * flag = new argus_abort_flag();
+        flag->refs.store(1, std::memory_order_relaxed);
+        flag->requested.store(false, std::memory_order_relaxed);
+        return flag;
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+        return nullptr;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+        return nullptr;
+    }
+}
+
+void argus_abort_flag_request(argus_abort_flag_t * flag) {
+    if (flag) {
+        flag->requested.store(true, std::memory_order_release);
+    }
+}
+
+void argus_abort_flag_reset(argus_abort_flag_t * flag) {
+    if (flag) {
+        flag->requested.store(false, std::memory_order_release);
+    }
+}
+
+bool argus_abort_flag_is_requested(const argus_abort_flag_t * flag) {
+    if (!flag) {
+        return false;
+    }
+    return flag->requested.load(std::memory_order_acquire);
+}
+
+bool argus_abort_flag_retain(argus_abort_flag_t * flag) {
+    if (!flag) {
+        return false;
+    }
+    uint32_t cur = flag->refs.load(std::memory_order_relaxed);
+    while (cur > 0) {
+        if (flag->refs.compare_exchange_weak(cur, cur + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void argus_abort_flag_release(argus_abort_flag_t * flag) {
+    if (!flag) {
+        return;
+    }
+    if (flag->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        delete flag;
+    }
+}
+
+namespace {
+struct abort_flag_lease {
+    argus_abort_flag_t * flag = nullptr;
+    explicit abort_flag_lease(argus_abort_flag_t * f) {
+        if (f && argus_abort_flag_retain(f)) {
+            flag = f;
+        }
+    }
+    ~abort_flag_lease() {
+        if (flag) {
+            argus_abort_flag_release(flag);
+        }
+    }
+    argus_abort_flag_t * get() const { return flag; }
+};
+} // namespace
+
 // Evaluates a sequence of tokens in chunks conforming to the model's native n_batch limit.
 // Precondition: Caller must hold the context level synchronization mutex (ctx->mtx).
 static int32_t decode_tokens_chunked(
@@ -596,7 +797,7 @@ static int32_t decode_tokens_chunked(
     int32_t                start_pos,
     int32_t                seq_id,
     bool                   request_logits,
-    const int32_t        * abort_flag,
+    argus_abort_flag_t   * abort_flag,
     int32_t              * out_n_decoded = nullptr
 ) {
     if (out_n_decoded) {
@@ -631,7 +832,7 @@ static int32_t decode_tokens_chunked(
             batch.logits[i]    = (is_encoder_or_embeddings || (request_logits_chunk && (i == chunk_size - 1))) ? 1 : 0;
         }
 
-        if (abort_flag && *abort_flag) {
+        if (argus_abort_flag_is_requested(abort_flag)) {
             llama_batch_free(batch);
             if (out_n_decoded) {
                 *out_n_decoded = decoded;
@@ -687,60 +888,105 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
 static void rebuild_slot_chain_preserving_rng(argus_context_t * ctx, int32_t seq_id);
 
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch_payload) {
-    if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
-        return -1;
-    }
-
-    // Preflight cancellation check: if already aborted, abort immediately with zero mutations
-    if (batch_payload->abort_flag && *(batch_payload->abort_flag)) {
-        return -2;
-    }
-
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-
-    int32_t seq_id = batch_payload->seq_id;
-    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
-        return -1;
-    }
-
-    // Invalidate existing pending logits prior to state mutation
-    invalidate_seq_logits(ctx, seq_id);
-
-    // Query current max position in sequence to determine if a true KV rollback occurs
-    llama_memory_t mem = llama_get_memory(ctx->ctx);
-    llama_pos cur_max = mem ? llama_memory_seq_pos_max(mem, seq_id) : -1;
-    bool is_kv_rollback = (cur_max >= 0 && batch_payload->start_pos <= cur_max);
-
-    auto & slot = ctx->seq_samplers[seq_id];
-
-    if (is_kv_rollback) {
-        // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
-        prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
-        prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
-
-        // Discard pending sample if targeted at or beyond rollback point
-        bool pending_discarded = false;
-        if (slot.pending.valid && slot.pending.kv_pos >= batch_payload->start_pos) {
-            slot.pending = {};
-            pending_discarded = true;
+    try {
+        clear_last_error();
+        if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid context or batch payload");
+            return -1;
         }
 
-        // Coordinate-decoupled rollback: prune only committed generated tokens matching kv_pos >= start_pos
-        // Decoupled primed tokens (kv_pos == -1) and surviving prefix tokens (kv_pos < start_pos) are preserved.
-        bool history_pruned = false;
-        auto it = slot.history.begin();
-        while (it != slot.history.end()) {
-            if (it->kv_pos >= 0 && it->kv_pos >= batch_payload->start_pos) {
-                it = slot.history.erase(it);
-                history_pruned = true;
-            } else {
-                ++it;
+        // Preflight cancellation check: if already aborted, abort immediately with zero mutations
+        if (argus_abort_flag_is_requested(batch_payload->abort_flag)) {
+            return -2;
+        }
+
+        abort_flag_lease lease(batch_payload->abort_flag);
+
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        int32_t seq_id = batch_payload->seq_id;
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range");
+            return -1;
+        }
+
+        // Invalidate existing pending logits prior to state mutation
+        invalidate_seq_logits(ctx, seq_id);
+
+        // Query current max position in sequence to determine if a true KV rollback occurs
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        llama_pos cur_max = mem ? llama_memory_seq_pos_max(mem, seq_id) : -1;
+        bool is_kv_rollback = (cur_max >= 0 && batch_payload->start_pos <= cur_max);
+
+        auto & slot = ctx->seq_samplers[seq_id];
+
+        if (is_kv_rollback) {
+            // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
+            prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
+            prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+
+            // Discard pending sample if targeted at or beyond rollback point
+            bool pending_discarded = false;
+            if (slot.pending.valid && slot.pending.kv_pos >= batch_payload->start_pos) {
+                slot.pending = {};
+                pending_discarded = true;
             }
+
+            // Coordinate-decoupled rollback: prune only committed generated tokens matching kv_pos >= start_pos
+            // Decoupled primed tokens (kv_pos == -1) and surviving prefix tokens (kv_pos < start_pos) are preserved.
+            bool history_pruned = false;
+            auto it = slot.history.begin();
+            while (it != slot.history.end()) {
+                if (it->kv_pos >= 0 && it->kv_pos >= batch_payload->start_pos) {
+                    it = slot.history.erase(it);
+                    history_pruned = true;
+                } else {
+                    ++it;
+                }
+            }
+
+            if (history_pruned || pending_discarded) {
+                rebuild_slot_chain_preserving_rng(ctx, seq_id);
+            }
+
+            int32_t n_decoded = 0;
+            int32_t res = decode_tokens_chunked(
+                ctx->ctx,
+                batch_payload->tokens,
+                batch_payload->n_tokens,
+                batch_payload->start_pos,
+                seq_id,
+                batch_payload->request_logits,
+                lease.get(),
+                &n_decoded
+            );
+
+            // Closure of the state machine: commit successfully decoded rollback replacement tokens
+            if (n_decoded >= 1) {
+                for (int32_t i = 0; i < n_decoded; ++i) {
+                    int32_t tok_pos = batch_payload->start_pos + i;
+                    slot.history.push_back({batch_payload->tokens[i], tok_pos});
+                    if (slot.chain) {
+                        llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
+                    }
+                }
+            }
+
+            if (res == 0) {
+                ctx->last_decoded_seq_id = seq_id;
+                slot.has_logits = batch_payload->request_logits;
+                slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
+            } else {
+                invalidate_seq_logits(ctx, seq_id);
+            }
+
+            return res;
         }
 
-        if (history_pruned || pending_discarded) {
-            rebuild_slot_chain_preserving_rng(ctx, seq_id);
-        }
+        // Forward continuation / normal generation / prefill progression
+        bool is_matching_continuation = slot.pending.valid &&
+            (batch_payload->start_pos == slot.pending.kv_pos && batch_payload->tokens[0] == slot.pending.token);
+        bool is_mismatched_override = slot.pending.valid && !is_matching_continuation;
 
         int32_t n_decoded = 0;
         int32_t res = decode_tokens_chunked(
@@ -750,9 +996,41 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
             batch_payload->start_pos,
             seq_id,
             batch_payload->request_logits,
-            batch_payload->abort_flag,
+            lease.get(),
             &n_decoded
         );
+
+        // Staged commit: only commit tokens that actually succeeded in native decode
+        if (n_decoded >= 1) {
+            if (is_matching_continuation) {
+                // Normal continuation commit: token 0 was already accepted into chain during sampling.
+                // Move from pending to committed history without resetting chain or RNG.
+                slot.history.push_back({slot.pending.token, slot.pending.kv_pos});
+                slot.pending = {};
+
+                // If caller passed additional tokens in continuation batch, accept and commit them
+                for (int32_t i = 1; i < n_decoded; ++i) {
+                    int32_t tok_pos = batch_payload->start_pos + i;
+                    slot.history.push_back({batch_payload->tokens[i], tok_pos});
+                    if (slot.chain) {
+                        llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
+                    }
+                }
+            } else if (is_mismatched_override) {
+                // Mismatched token decoded instead of sampled pending token.
+                // Discard pending, rebuild chain to evict speculative sample, and accept decoded batch prefix.
+                slot.pending = {};
+                rebuild_slot_chain_preserving_rng(ctx, seq_id);
+
+                for (int32_t i = 0; i < n_decoded; ++i) {
+                    int32_t tok_pos = batch_payload->start_pos + i;
+                    slot.history.push_back({batch_payload->tokens[i], tok_pos});
+                    if (slot.chain) {
+                        llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
+                    }
+                }
+            }
+        }
 
         if (res == 0) {
             ctx->last_decoded_seq_id = seq_id;
@@ -763,66 +1041,16 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         }
 
         return res;
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+        return -1;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+        return -1;
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during batch decode");
+        return -1;
     }
-
-    // Forward continuation / normal generation / prefill progression
-    bool is_matching_continuation = slot.pending.valid &&
-        (batch_payload->start_pos == slot.pending.kv_pos && batch_payload->tokens[0] == slot.pending.token);
-    bool is_mismatched_override = slot.pending.valid && !is_matching_continuation;
-
-    int32_t n_decoded = 0;
-    int32_t res = decode_tokens_chunked(
-        ctx->ctx,
-        batch_payload->tokens,
-        batch_payload->n_tokens,
-        batch_payload->start_pos,
-        seq_id,
-        batch_payload->request_logits,
-        batch_payload->abort_flag,
-        &n_decoded
-    );
-
-    // Staged commit: only commit tokens that actually succeeded in native decode
-    if (n_decoded >= 1) {
-        if (is_matching_continuation) {
-            // Normal continuation commit: token 0 was already accepted into chain during sampling.
-            // Move from pending to committed history without resetting chain or RNG.
-            slot.history.push_back({slot.pending.token, slot.pending.kv_pos});
-            slot.pending = {};
-
-            // If caller passed additional tokens in continuation batch, accept and commit them
-            for (int32_t i = 1; i < n_decoded; ++i) {
-                int32_t tok_pos = batch_payload->start_pos + i;
-                slot.history.push_back({batch_payload->tokens[i], tok_pos});
-                if (slot.chain) {
-                    llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
-                }
-            }
-        } else if (is_mismatched_override) {
-            // Mismatched token decoded instead of sampled pending token.
-            // Discard pending, rebuild chain to evict speculative sample, and accept decoded batch prefix.
-            slot.pending = {};
-            rebuild_slot_chain_preserving_rng(ctx, seq_id);
-
-            for (int32_t i = 0; i < n_decoded; ++i) {
-                int32_t tok_pos = batch_payload->start_pos + i;
-                slot.history.push_back({batch_payload->tokens[i], tok_pos});
-                if (slot.chain) {
-                    llama_sampler_accept(slot.chain, batch_payload->tokens[i]);
-                }
-            }
-        }
-    }
-
-    if (res == 0) {
-        ctx->last_decoded_seq_id = seq_id;
-        slot.has_logits = batch_payload->request_logits;
-        slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
-    } else {
-        invalidate_seq_logits(ctx, seq_id);
-    }
-
-    return res;
 }
 
 int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats) {
@@ -1467,7 +1695,10 @@ int32_t argus_synthesize_speech(
     if (ctx->vocoder_ctx && ctx->vocoder_model_ref != wavtokenizer_model) {
         llama_free(ctx->vocoder_ctx);
         ctx->vocoder_ctx = nullptr;
-        ctx->vocoder_model_ref = nullptr;
+        if (ctx->vocoder_model_ref) {
+            argus_model_release(const_cast<argus_model_t *>(ctx->vocoder_model_ref));
+            ctx->vocoder_model_ref = nullptr;
+        }
     }
 
     if (!ctx->vocoder_ctx) {
@@ -1482,6 +1713,7 @@ int32_t argus_synthesize_speech(
         if (!ctx->vocoder_ctx) {
             return -1;
         }
+        argus_model_retain(const_cast<argus_model_t *>(wavtokenizer_model));
         ctx->vocoder_model_ref = wavtokenizer_model;
     }
 
@@ -1571,7 +1803,7 @@ int32_t argus_synthesize_speech(
     float * scr_real_out = scr_imag_inp + 641;
     float * scr_imag_out = scr_real_out + 1280;
 
-    float hann[n_fft];
+    alignas(64) float hann[1280];
     fill_hann_window(n_fft, true, hann);
 
     for (int l = 0; l < n_codes; ++l) {

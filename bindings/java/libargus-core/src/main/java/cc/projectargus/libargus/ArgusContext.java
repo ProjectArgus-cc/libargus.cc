@@ -2,23 +2,29 @@ package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusLayouts;
+import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Represents an active text inference and speech generation session context.
+ * Owns a private shared arena for concurrent thread safety.
  * Implements AutoCloseable to ensure native resources are safely released.
  */
 public final class ArgusContext implements AutoCloseable {
     private MemorySegment ctxPtr;
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
+    private final Arena contextArena;
     private final MemorySegment batchSeg;
     private final MemorySegment samplerParamsSeg;
-    private final Arena arena;
+    private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private MemorySegment ttsWorkspace = MemorySegment.NULL;
     private long ttsWorkspaceSizeFloats = 0;
@@ -31,35 +37,48 @@ public final class ArgusContext implements AutoCloseable {
         return ttsWorkspaceSizeFloats;
     }
 
-    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, ArgusModel draftModelRef, Arena arena) {
+    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, ArgusModel draftModelRef, Arena contextArena) {
         this.ctxPtr = Objects.requireNonNull(ctxPtr);
         this.modelRef = Objects.requireNonNull(modelRef);
         this.draftModelRef = draftModelRef;
-        this.arena = Objects.requireNonNull(arena);
-        this.batchSeg = arena.allocate(ArgusLayouts.TOKEN_BATCH);
-        this.samplerParamsSeg = arena.allocate(ArgusLayouts.SAMPLER_PARAMS);
+        this.contextArena = Objects.requireNonNull(contextArena);
+        this.batchSeg = contextArena.allocate(ArgusLayouts.TOKEN_BATCH);
+        this.samplerParamsSeg = contextArena.allocate(ArgusLayouts.SAMPLER_PARAMS);
+    }
+
+    /**
+     * Initializes an execution context on the specified model weights using a private shared arena.
+     *
+     * @param model  the loaded model weights
+     * @param config session parameters (length, threads, cache formats, etc.)
+     * @return an active ArgusContext
+     */
+    public static ArgusContext init(ArgusModel model, ArgusContextConfig config) {
+        return init(null, model, config);
     }
 
     /**
      * Initializes an execution context on the specified model weights.
+     * Context creates and owns a private shared arena for its internal unmanaged structs.
      *
-     * @param arena  the allocation scope for context parameter configuration
+     * @param arena  optional caller arena for parameter structures (if null, private shared arena is used)
      * @param model  the loaded model weights
      * @param config session parameters (length, threads, cache formats, etc.)
      * @return an active ArgusContext
      */
     public static ArgusContext init(Arena arena, ArgusModel model, ArgusContextConfig config) {
-        Objects.requireNonNull(arena);
         Objects.requireNonNull(model);
         Objects.requireNonNull(config);
 
+        Arena privateArena = Arena.ofShared();
         model.acquire();
         if (config.draftModel() != null) {
             config.draftModel().acquire();
         }
 
         try {
-            MemorySegment paramsSeg = arena.allocate(ArgusLayouts.CONTEXT_PARAMS);
+            Arena paramArena = (arena != null) ? arena : privateArena;
+            MemorySegment paramsSeg = paramArena.allocate(ArgusLayouts.CONTEXT_PARAMS);
 
             MemorySegment draftModelHandle = (config.draftModel() != null) 
                 ? config.draftModel().getHandle() 
@@ -112,14 +131,16 @@ public final class ArgusContext implements AutoCloseable {
 
             MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(model.getHandle(), paramsSeg);
             if (ctxPtr.equals(MemorySegment.NULL)) {
-                throw new RuntimeException("Native argus_context_init returned NULL");
+                ArgusNativeException.checkStatus(-1, "argus_context_init");
             }
-            return new ArgusContext(ctxPtr, model, config.draftModel(), arena);
+            return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena);
         } catch (Throwable t) {
+            privateArena.close();
             model.release();
             if (config.draftModel() != null) {
                 config.draftModel().release();
             }
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to initialize native context", t);
         }
     }
@@ -131,20 +152,27 @@ public final class ArgusContext implements AutoCloseable {
     public int tokenize(MemorySegment textSeg, MemorySegment outTokensSeg, boolean addBos) {
         Objects.requireNonNull(textSeg);
         Objects.requireNonNull(outTokensSeg);
-        long nTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
-        if (nTokens == 0) {
-            return 0;
-        }
+        ArgusValidation.checkReadable(textSeg, 0, "textSeg");
+        ArgusValidation.checkWritable(outTokensSeg, ValueLayout.JAVA_INT.byteSize(), "outTokensSeg");
+        long maxTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
+        long textLen = textSeg.byteSize();
 
+        checkNotClosed();
         try {
-            return (int) ArgusBindings.argus_tokenize.invokeExact(
+            int res = (int) ArgusBindings.argus_tokenize_n.invokeExact(
                 modelRef.getHandle(),
                 textSeg,
+                textLen,
                 outTokensSeg,
-                (int) nTokens,
+                (int) maxTokens,
                 addBos
             );
+            if (res < 0) {
+                ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+            }
+            return res;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to tokenize input text", t);
         }
     }
@@ -154,6 +182,7 @@ public final class ArgusContext implements AutoCloseable {
      * This operation is lock-free and read-only.
      */
     public String tokenToPiece(int token) {
+        checkNotClosed();
         try (Arena local = Arena.ofConfined()) {
             int bufSize = 256;
             MemorySegment bufSeg = local.allocate(bufSize);
@@ -182,7 +211,8 @@ public final class ArgusContext implements AutoCloseable {
      * Synchronously decodes a batch of tokens in the context.
      * Mutex-locked inside the native layer to prevent concurrency issues.
      *
-     * @param tokens        tokens to evaluate
+     * @param tokensSeg     tokens to evaluate
+     * @param nTokens       number of tokens
      * @param startPos      KV cache offset position
      * @param seqId         sequence tracking ID
      * @param requestLogits true to evaluate logits on the final token of the batch
@@ -196,7 +226,8 @@ public final class ArgusContext implements AutoCloseable {
      * Synchronously decodes a batch of tokens in the context with optional early cancellation.
      * Mutex-locked inside the native layer to prevent concurrency issues.
      *
-     * @param tokens        tokens to evaluate
+     * @param tokensSeg     tokens to evaluate
+     * @param nTokens       number of tokens
      * @param startPos      KV cache offset position
      * @param seqId         sequence tracking ID
      * @param requestLogits true to evaluate logits on the final token of the batch
@@ -212,11 +243,12 @@ public final class ArgusContext implements AutoCloseable {
      * Synchronously decodes a batch of tokens in the context with optional early cancellation.
      * Mutex-locked inside the native layer to prevent concurrency issues.
      *
-     * @param tokens        tokens to evaluate
+     * @param tokensSeg     tokens to evaluate
+     * @param nTokens       number of tokens
      * @param startPos      KV cache offset position
      * @param seqId         sequence tracking ID
      * @param requestLogits true to evaluate logits on the final token of the batch
-     * @param abortFlagSeg  optional memory segment (pointer targeting 4-byte int) for cancellation
+     * @param abortFlagSeg  optional memory segment (pointer targeting argus_abort_flag_t) for cancellation
      * @return 0 on success, -2 if aborted, non-zero on failure
      */
     public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits, MemorySegment abortFlagSeg) {
@@ -226,7 +258,16 @@ public final class ArgusContext implements AutoCloseable {
             return 0;
         }
 
+        long requiredBytes = ArgusValidation.multiplyExactBytes(nTokens, ValueLayout.JAVA_INT.byteSize(), "tokensSeg");
+        ArgusValidation.checkReadable(tokensSeg, requiredBytes, "tokensSeg");
+        ArgusValidation.checkNonNegative(startPos, "startPos");
+        ArgusValidation.checkNonNegative(seqId, "seqId");
+
+        checkNotClosed();
+
+        lifecycleLock.lock();
         try {
+            checkNotClosed();
             batchSeg.set(ValueLayout.ADDRESS, 
                 ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("tokens")), 
                 tokensSeg
@@ -254,7 +295,10 @@ public final class ArgusContext implements AutoCloseable {
 
             return (int) ArgusBindings.argus_decode_batch.invokeExact(ctxPtr, batchSeg);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to decode batch of tokens", t);
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -272,27 +316,39 @@ public final class ArgusContext implements AutoCloseable {
     public int evalMultimodalChunks(ArgusMultimodalContext mctx, ArgusInputChunks chunks, int nPast, int seqId, int nBatch, boolean logitsLast) {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(chunks);
+        ArgusValidation.checkNonNegative(nPast, "nPast");
+        ArgusValidation.checkNonNegative(seqId, "seqId");
+        ArgusValidation.checkPositive(nBatch, "nBatch");
 
-        try (Arena local = Arena.ofConfined()) {
-            MemorySegment outNewNPast = local.allocate(ValueLayout.JAVA_INT);
-            int res = (int) ArgusBindings.argus_eval_multimodal_chunks.invokeExact(
-                mctx.getHandle(),
-                ctxPtr,
-                chunks.getHandle(),
-                nPast,
-                seqId,
-                nBatch,
-                logitsLast,
-                outNewNPast
-            );
+        checkNotClosed();
 
-            if (res != 0) {
-                throw new RuntimeException("Native argus_eval_multimodal_chunks returned error code: " + res);
+        lifecycleLock.lock();
+        try {
+            checkNotClosed();
+            try (Arena local = Arena.ofConfined()) {
+                MemorySegment outNewNPast = local.allocate(ValueLayout.JAVA_INT);
+                int res = (int) ArgusBindings.argus_eval_multimodal_chunks.invokeExact(
+                    mctx.getHandle(),
+                    ctxPtr,
+                    chunks.getHandle(),
+                    nPast,
+                    seqId,
+                    nBatch,
+                    logitsLast,
+                    outNewNPast
+                );
+
+                if (res != 0) {
+                    ArgusNativeException.checkStatus(res, "argus_eval_multimodal_chunks");
+                }
+
+                return outNewNPast.get(ValueLayout.JAVA_INT, 0);
             }
-
-            return outNewNPast.get(ValueLayout.JAVA_INT, 0);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to evaluate multimodal chunks", t);
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -303,12 +359,11 @@ public final class ArgusContext implements AutoCloseable {
      * @return true if speculative draft context is active, false otherwise
      */
     public boolean hasDraftContext() {
-        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
-            return false;
-        }
+        checkNotClosed();
         try {
             return (boolean) ArgusBindings.argus_context_has_draft.invokeExact(ctxPtr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query draft context status", t);
         }
     }
@@ -318,9 +373,11 @@ public final class ArgusContext implements AutoCloseable {
      * Mutex-locked inside the native layer with zero-allocation caching.
      */
     public int sampleToken(int seqId, float temperature, float repeatPenalty) {
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_sample_token.invokeExact(ctxPtr, seqId, temperature, repeatPenalty);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to sample token", t);
         }
     }
@@ -351,11 +408,18 @@ public final class ArgusContext implements AutoCloseable {
     public int sampleTokenWithBias(int seqId, float temperature, float repeatPenalty,
                                    MemorySegment biasSegment, int biasCount) {
         Objects.requireNonNull(biasSegment);
+        ArgusValidation.checkNonNegative(biasCount, "biasCount");
+        if (biasCount > 0) {
+            long requiredBytes = ArgusValidation.multiplyExactBytes(biasCount, ArgusLayouts.LOGIT_BIAS.byteSize(), "biasSegment");
+            ArgusValidation.checkReadable(biasSegment, requiredBytes, "biasSegment");
+        }
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_sample_token_with_bias.invokeExact(
                 ctxPtr, seqId, temperature, repeatPenalty, biasSegment, biasCount
             );
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to sample token with bias", t);
         }
     }
@@ -372,9 +436,18 @@ public final class ArgusContext implements AutoCloseable {
      */
     public int sampleTokenWithBias(int seqId, ArgusSamplerConfig config, MemorySegment biasSegment, int biasCount) {
         Objects.requireNonNull(config);
+        ArgusValidation.checkNonNegative(biasCount, "biasCount");
         MemorySegment biasSeg = (biasSegment != null) ? biasSegment : MemorySegment.NULL;
+        if (biasCount > 0) {
+            long requiredBytes = ArgusValidation.multiplyExactBytes(biasCount, ArgusLayouts.LOGIT_BIAS.byteSize(), "biasSegment");
+            ArgusValidation.checkReadable(biasSeg, requiredBytes, "biasSegment");
+        }
 
+        checkNotClosed();
+
+        lifecycleLock.lock();
         try {
+            checkNotClosed();
             samplerParamsSeg.set(ValueLayout.JAVA_FLOAT,
                 ArgusLayouts.SAMPLER_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("temperature")),
                 config.temperature()
@@ -432,7 +505,10 @@ public final class ArgusContext implements AutoCloseable {
                 ctxPtr, seqId, samplerParamsSeg, biasSeg, biasCount
             );
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to sample token with extended config", t);
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -442,12 +518,14 @@ public final class ArgusContext implements AutoCloseable {
      * @param seqId sequence ID (-1 for all sequences)
      */
     public void resetSampler(int seqId) {
+        checkNotClosed();
         try {
             int res = (int) ArgusBindings.argus_sampler_reset.invokeExact(ctxPtr, seqId);
             if (res < 0) {
-                throw new RuntimeException("Failed to reset sampler for sequence " + seqId);
+                ArgusNativeException.checkStatus(res, "argus_sampler_reset");
             }
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to reset sampler for sequence " + seqId, t);
         }
     }
@@ -463,12 +541,22 @@ public final class ArgusContext implements AutoCloseable {
      */
     public int primeSampler(int seqId, MemorySegment tokensSeg, int nTokens) {
         Objects.requireNonNull(tokensSeg);
-        if (nTokens <= 0) {
+        ArgusValidation.checkNonNegative(nTokens, "nTokens");
+        if (nTokens == 0) {
             return 0;
         }
+        long requiredBytes = ArgusValidation.multiplyExactBytes(nTokens, ValueLayout.JAVA_INT.byteSize(), "tokensSeg");
+        ArgusValidation.checkReadable(tokensSeg, requiredBytes, "tokensSeg");
+
+        checkNotClosed();
         try {
-            return (int) ArgusBindings.argus_sampler_prime.invokeExact(ctxPtr, seqId, tokensSeg, nTokens);
+            int res = (int) ArgusBindings.argus_sampler_prime.invokeExact(ctxPtr, seqId, tokensSeg, nTokens);
+            if (res < 0) {
+                ArgusNativeException.checkStatus(res, "argus_sampler_prime");
+            }
+            return res;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to prime sampler for sequence " + seqId, t);
         }
     }
@@ -481,12 +569,15 @@ public final class ArgusContext implements AutoCloseable {
      * @param newLength retained token history length
      */
     public void truncateSampler(int seqId, int newLength) {
+        ArgusValidation.checkNonNegative(newLength, "newLength");
+        checkNotClosed();
         try {
             int res = (int) ArgusBindings.argus_sampler_truncate.invokeExact(ctxPtr, seqId, newLength);
             if (res < 0) {
-                throw new RuntimeException("Failed to truncate sampler for sequence " + seqId);
+                ArgusNativeException.checkStatus(res, "argus_sampler_truncate");
             }
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to truncate sampler for sequence " + seqId, t);
         }
     }
@@ -498,13 +589,15 @@ public final class ArgusContext implements AutoCloseable {
      * @return count of retained tokens
      */
     public int getSamplerHistoryCount(int seqId) {
+        checkNotClosed();
         try {
             int res = (int) ArgusBindings.argus_sampler_get_history_count.invokeExact(ctxPtr, seqId);
             if (res < 0) {
-                throw new RuntimeException("Failed to query sampler history count for sequence " + seqId);
+                ArgusNativeException.checkStatus(res, "argus_sampler_get_history_count");
             }
             return res;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query sampler history count for sequence " + seqId, t);
         }
     }
@@ -516,13 +609,15 @@ public final class ArgusContext implements AutoCloseable {
      * @return true if a pending sample exists, false otherwise
      */
     public boolean hasSamplerPending(int seqId) {
+        checkNotClosed();
         try {
             int res = (int) ArgusBindings.argus_sampler_has_pending.invokeExact(ctxPtr, seqId);
             if (res < 0) {
-                throw new RuntimeException("Failed to query sampler pending status for sequence " + seqId);
+                ArgusNativeException.checkStatus(res, "argus_sampler_has_pending");
             }
             return res == 1;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query sampler pending status for sequence " + seqId, t);
         }
     }
@@ -536,13 +631,15 @@ public final class ArgusContext implements AutoCloseable {
      * @return true if a pending sample was discarded and filters rebuilt, false if no pending sample existed
      */
     public boolean discardPendingSample(int seqId) {
+        checkNotClosed();
         try {
             int res = (int) ArgusBindings.argus_sampler_discard_pending.invokeExact(ctxPtr, seqId);
             if (res < 0) {
-                throw new RuntimeException("Failed to discard pending sample for sequence " + seqId);
+                ArgusNativeException.checkStatus(res, "argus_sampler_discard_pending");
             }
             return res == 1;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to discard pending sample for sequence " + seqId, t);
         }
     }
@@ -556,9 +653,11 @@ public final class ArgusContext implements AutoCloseable {
      * @param p1    end position (negative is [p0, inf))
      */
     public void clearCacheSlot(int seqId, int p0, int p1) {
+        checkNotClosed();
         try {
             ArgusBindings.argus_kv_cache_clear_slot.invokeExact(ctxPtr, seqId, p0, p1);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to prune KV cache sequence slot", t);
         }
     }
@@ -570,9 +669,11 @@ public final class ArgusContext implements AutoCloseable {
      * @return largest position index in memory, or -1 if sequence slot is empty or invalid
      */
     public int getSeqPosMax(int seqId) {
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_kv_cache_seq_pos_max.invokeExact(ctxPtr, seqId);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query KV cache seq_pos_max", t);
         }
     }
@@ -584,9 +685,11 @@ public final class ArgusContext implements AutoCloseable {
      * @return smallest position index in memory, or -1 if sequence slot is empty or invalid
      */
     public int getSeqPosMin(int seqId) {
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_kv_cache_seq_pos_min.invokeExact(ctxPtr, seqId);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query KV cache seq_pos_min", t);
         }
     }
@@ -596,19 +699,28 @@ public final class ArgusContext implements AutoCloseable {
      * Mutex-locked inside the native layer.
      *
      * @param wavtokenizerModel GGUF weights of the WavTokenizer vocoder model
-     * @param text               input text prompt
-     * @param voiceSeed          seed controlling speaker characteristics
-     * @param outPcm             destination buffer to write 24kHz float PCM audio into
+     * @param textSeg           input text prompt MemorySegment (null-terminated UTF-8)
+     * @param voiceSeed         seed controlling speaker characteristics
+     * @param outPcmSeg         destination buffer to write 24kHz float PCM audio into
+     * @param maxSamples        capacity of output PCM buffer in floats
      * @return sample count generated, or negative on failure
      */
     public int synthesizeSpeech(ArgusModel wavtokenizerModel, MemorySegment textSeg, int voiceSeed, MemorySegment outPcmSeg, int maxSamples) {
         Objects.requireNonNull(textSeg);
         Objects.requireNonNull(outPcmSeg);
-        if (maxSamples <= 0) {
+        ArgusValidation.checkNonNegative(maxSamples, "maxSamples");
+        if (maxSamples == 0) {
             return 0;
         }
+        ArgusValidation.checkReadable(textSeg, 0, "textSeg");
+        long requiredPcmBytes = ArgusValidation.multiplyExactBytes(maxSamples, ValueLayout.JAVA_FLOAT.byteSize(), "outPcmSeg");
+        ArgusValidation.checkWritable(outPcmSeg, requiredPcmBytes, "outPcmSeg");
 
+        checkNotClosed();
+
+        lifecycleLock.lock();
         try {
+            checkNotClosed();
             MemorySegment wavModelHandle = (wavtokenizerModel != null) ? wavtokenizerModel.getHandle() : MemorySegment.NULL;
 
             int res = (int) ArgusBindings.argus_synthesize_speech.invokeExact(
@@ -625,7 +737,7 @@ public final class ArgusContext implements AutoCloseable {
             if (res < -1) {
                 // Resize off-heap workspace buffer with 64-byte SIMD cache line alignment
                 long requiredFloats = -res;
-                this.ttsWorkspace = arena.allocate(
+                this.ttsWorkspace = contextArena.allocate(
                     requiredFloats * ValueLayout.JAVA_FLOAT.byteSize(),
                     64
                 );
@@ -644,9 +756,16 @@ public final class ArgusContext implements AutoCloseable {
                 );
             }
 
+            if (res < 0) {
+                ArgusNativeException.checkStatus(res, "argus_synthesize_speech");
+            }
+
             return res;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to synthesize speech", t);
+        } finally {
+            lifecycleLock.unlock();
         }
     }
 
@@ -661,12 +780,18 @@ public final class ArgusContext implements AutoCloseable {
      */
     public int getEmbeddings(int seqId, MemorySegment outEmbeddings, int maxFloats) {
         Objects.requireNonNull(outEmbeddings);
-        if (maxFloats <= 0) {
+        ArgusValidation.checkNonNegative(maxFloats, "maxFloats");
+        if (maxFloats == 0) {
             return 0;
         }
+        long requiredBytes = ArgusValidation.multiplyExactBytes(maxFloats, ValueLayout.JAVA_FLOAT.byteSize(), "outEmbeddings");
+        ArgusValidation.checkWritable(outEmbeddings, requiredBytes, "outEmbeddings");
+
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_get_embeddings.invokeExact(ctxPtr, seqId, outEmbeddings, maxFloats);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve embeddings from native context", t);
         }
     }
@@ -679,12 +804,13 @@ public final class ArgusContext implements AutoCloseable {
      * @param nThreadsBatch number of threads for prompt and batch token processing
      */
     public void setNThreads(int nThreads, int nThreadsBatch) {
-        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("Context session has been closed");
-        }
+        ArgusValidation.checkPositive(nThreads, "nThreads");
+        ArgusValidation.checkPositive(nThreadsBatch, "nThreadsBatch");
+        checkNotClosed();
         try {
             ArgusBindings.argus_set_n_threads.invokeExact(ctxPtr, nThreads, nThreadsBatch);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to set thread counts for context", t);
         }
     }
@@ -695,12 +821,11 @@ public final class ArgusContext implements AutoCloseable {
      * @return number of allocated generation threads
      */
     public int getNThreads() {
-        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("Context session has been closed");
-        }
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_get_n_threads.invokeExact(ctxPtr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query thread count for context", t);
         }
     }
@@ -711,12 +836,11 @@ public final class ArgusContext implements AutoCloseable {
      * @return number of allocated batch threads
      */
     public int getNThreadsBatch() {
-        if (ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("Context session has been closed");
-        }
+        checkNotClosed();
         try {
             return (int) ArgusBindings.argus_get_n_threads_batch.invokeExact(ctxPtr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query batch thread count for context", t);
         }
     }
@@ -725,25 +849,50 @@ public final class ArgusContext implements AutoCloseable {
      * Returns the raw memory address representing the unmanaged context structure.
      */
     public MemorySegment getHandle() {
+        checkNotClosed();
         return ctxPtr;
     }
 
+    public boolean isClosed() {
+        return closed.get();
+    }
+
+    private void checkNotClosed() {
+        if (closed.get() || ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
+            throw new IllegalStateException("ArgusContext has been closed");
+        }
+    }
 
     @Override
-    public synchronized void close() {
-        if (ctxPtr != null && !ctxPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_context_free.invokeExact(ctxPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to release native context resources", t);
-            } finally {
-                ctxPtr = MemorySegment.NULL;
-                ttsWorkspace = MemorySegment.NULL;
-                ttsWorkspaceSizeFloats = 0;
-                modelRef.release();
-                if (draftModelRef != null) {
-                    draftModelRef.release();
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        lifecycleLock.lock();
+        try {
+            if (ctxPtr != null && !ctxPtr.equals(MemorySegment.NULL)) {
+                try {
+                    ArgusBindings.argus_context_free.invokeExact(ctxPtr);
+                } catch (Throwable t) {
+                    throw new RuntimeException("Failed to release native context resources", t);
+                } finally {
+                    ctxPtr = MemorySegment.NULL;
+                    ttsWorkspace = MemorySegment.NULL;
+                    ttsWorkspaceSizeFloats = 0;
+                    try {
+                        modelRef.release();
+                    } finally {
+                        if (draftModelRef != null) {
+                            draftModelRef.release();
+                        }
+                    }
                 }
+            }
+        } finally {
+            try {
+                contextArena.close();
+            } finally {
+                lifecycleLock.unlock();
             }
         }
     }

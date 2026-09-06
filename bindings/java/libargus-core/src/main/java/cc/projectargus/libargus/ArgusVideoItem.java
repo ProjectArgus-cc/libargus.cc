@@ -7,14 +7,14 @@ import java.lang.foreign.MemorySegment;
  * Prevents JVM heap allocation churn on the hot iteration path.
  */
 public final class ArgusVideoItem implements AutoCloseable {
-    private final ArgusBitmap bitmap = new ArgusBitmap(MemorySegment.NULL);
+    private ArgusBitmap bitmap;
     private String text;
 
     /**
      * Returns the frame bitmap, or null if this item contains timestamp text.
      */
     public ArgusBitmap bitmap() {
-        return bitmap.getHandle().equals(MemorySegment.NULL) ? null : bitmap;
+        return bitmap;
     }
 
     /**
@@ -30,16 +30,24 @@ public final class ArgusVideoItem implements AutoCloseable {
      */
     void update(MemorySegment newBitmapPtr, String newText) {
         MemorySegment safeBitmapPtr = (newBitmapPtr != null) ? newBitmapPtr : MemorySegment.NULL;
-        if (bitmap.getHandle() != MemorySegment.NULL && !bitmap.getHandle().equals(safeBitmapPtr)) {
-            bitmap.close(); // Release old native resources
+        if (bitmap != null) {
+            if (!bitmap.getHandle().equals(safeBitmapPtr)) {
+                bitmap.close();
+                bitmap = null;
+            }
         }
-        bitmap.setHandle(safeBitmapPtr);
+        if (!safeBitmapPtr.equals(MemorySegment.NULL) && bitmap == null) {
+            bitmap = new ArgusBitmap(safeBitmapPtr);
+        }
         this.text = newText;
     }
 
     @Override
     public synchronized void close() {
-        bitmap.close();
+        if (bitmap != null) {
+            bitmap.close();
+            bitmap = null;
+        }
         text = null;
     }
 }

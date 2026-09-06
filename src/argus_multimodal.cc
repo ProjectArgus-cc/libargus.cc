@@ -12,6 +12,7 @@
 // Internal wrappers
 struct argus_multimodal {
     mtmd_context * ctx;
+    argus_model_t * model_ref;
 };
 
 // Deleted struct argus_bitmap wrapper to eliminate native allocation loop
@@ -27,30 +28,68 @@ struct argus_input_chunks {
 extern "C" {
 
 argus_multimodal_t * argus_multimodal_init(const argus_model_t * model, const argus_multimodal_params_t * params) {
-    if (!model || !params || !params->mmproj_path) {
-        return nullptr;
+    try {
+        clear_last_error();
+        if (!model || !params || !params->mmproj_path) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid model or multimodal parameters");
+            return nullptr;
+        }
+
+        auto * non_const_model = const_cast<argus_model_t *>(model);
+        if (!argus_model_retain(non_const_model)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "failed to retain base model for multimodal context");
+            return nullptr;
+        }
+
+        struct mtmd_context_params mparams = mtmd_context_params_default();
+        mparams.use_gpu = params->use_gpu;
+        mparams.n_threads = (params->cpu_threads > 0) ? params->cpu_threads : 4;
+
+        mtmd_context * mctx = mtmd_init_from_file(params->mmproj_path, model->model, mparams);
+        if (!mctx) {
+            argus_model_release(non_const_model);
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to initialize multimodal context from file");
+            return nullptr;
+        }
+
+        argus_multimodal_t * argus_mctx = nullptr;
+        try {
+            argus_mctx = new argus_multimodal();
+            argus_mctx->ctx = mctx;
+            argus_mctx->model_ref = non_const_model;
+            return argus_mctx;
+        } catch (...) {
+            mtmd_free(mctx);
+            argus_model_release(non_const_model);
+            throw;
+        }
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during multimodal context init");
     }
-
-    struct mtmd_context_params mparams = mtmd_context_params_default();
-    mparams.use_gpu = params->use_gpu;
-    mparams.n_threads = (params->cpu_threads > 0) ? params->cpu_threads : 4;
-
-    mtmd_context * mctx = mtmd_init_from_file(params->mmproj_path, model->model, mparams);
-    if (!mctx) {
-        return nullptr;
-    }
-
-    argus_multimodal_t * argus_mctx = new argus_multimodal();
-    argus_mctx->ctx = mctx;
-    return argus_mctx;
+    return nullptr;
 }
 
 void argus_multimodal_free(argus_multimodal_t * mctx) {
-    if (mctx) {
+    if (!mctx) {
+        return;
+    }
+    try {
+        clear_last_error();
         if (mctx->ctx) {
             mtmd_free(mctx->ctx);
+            mctx->ctx = nullptr;
+        }
+        if (mctx->model_ref) {
+            argus_model_release(mctx->model_ref);
+            mctx->model_ref = nullptr;
         }
         delete mctx;
+    } catch (...) {
+        // Suppress exceptions during destruction
     }
 }
 
@@ -224,6 +263,49 @@ void argus_input_chunks_free(argus_input_chunks_t * chunks) {
     }
 }
 
+int32_t argus_multimodal_tokenize_n(
+    argus_multimodal_t * mctx,
+    argus_input_chunks_t * output,
+    const char * text,
+    size_t text_len,
+    bool add_bos,
+    const argus_bitmap_t ** bitmaps,
+    int32_t n_bitmaps) {
+    try {
+        clear_last_error();
+        if (!mctx || !output || !text || (n_bitmaps > 0 && !bitmaps)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid multimodal tokenize arguments");
+            return -1;
+        }
+
+        mtmd_input_text input_text;
+        input_text.text = text;
+        input_text.text_len = (size_t)text_len;
+        input_text.add_special = add_bos;
+        input_text.parse_special = true;
+
+        std::vector<const mtmd_bitmap *> mtmd_bitmaps(n_bitmaps);
+        for (int32_t i = 0; i < n_bitmaps; ++i) {
+            if (!bitmaps[i]) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null bitmap pointer in array");
+                return -1;
+            }
+            mtmd_bitmaps[i] = reinterpret_cast<const mtmd_bitmap*>(bitmaps[i]);
+        }
+
+        return mtmd_tokenize(mctx->ctx, output->chunks, &input_text, mtmd_bitmaps.data(), (size_t)n_bitmaps);
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+        return -1;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+        return -1;
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during multimodal tokenize");
+        return -1;
+    }
+}
+
 int32_t argus_multimodal_tokenize(
     argus_multimodal_t * mctx,
     argus_input_chunks_t * output,
@@ -231,25 +313,10 @@ int32_t argus_multimodal_tokenize(
     bool add_bos,
     const argus_bitmap_t ** bitmaps,
     int32_t n_bitmaps) {
-    if (!mctx || !output || !text || (n_bitmaps > 0 && !bitmaps)) {
+    if (!text) {
         return -1;
     }
-
-    mtmd_input_text input_text;
-    input_text.text = text;
-    input_text.text_len = strlen(text);
-    input_text.add_special = add_bos;
-    input_text.parse_special = true;
-
-    std::vector<const mtmd_bitmap *> mtmd_bitmaps(n_bitmaps);
-    for (int32_t i = 0; i < n_bitmaps; ++i) {
-        if (!bitmaps[i]) {
-            return -1;
-        }
-        mtmd_bitmaps[i] = reinterpret_cast<const mtmd_bitmap*>(bitmaps[i]);
-    }
-
-    return mtmd_tokenize(mctx->ctx, output->chunks, &input_text, mtmd_bitmaps.data(), (size_t)n_bitmaps);
+    return argus_multimodal_tokenize_n(mctx, output, text, (int32_t)strlen(text), add_bos, bitmaps, n_bitmaps);
 }
 
 int32_t argus_eval_multimodal_chunks(
@@ -261,48 +328,62 @@ int32_t argus_eval_multimodal_chunks(
     int32_t n_batch,
     bool logits_last,
     int32_t * out_new_n_past) {
-    if (!mctx || !ctx || !chunks || !out_new_n_past) {
+    try {
+        clear_last_error();
+        if (!mctx || !ctx || !chunks || !out_new_n_past) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid eval multimodal arguments");
+            return -1;
+        }
+
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range");
+            return -1;
+        }
+
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        // Reconcile and discard any pending text sample prior to multimodal evaluation
+        discard_slot_pending_preserving_rng(ctx, seq_id);
+
+        // Invalidate pending logits before starting multimodal projection evaluation
+        ctx->seq_samplers[seq_id].has_logits = false;
+        ctx->seq_samplers[seq_id].last_logits_pos = -1;
+        if (ctx->last_decoded_seq_id == seq_id) {
+            ctx->last_decoded_seq_id = -1;
+        }
+
+        llama_pos new_n_past_val = n_past;
+
+        int32_t res = mtmd_helper_eval_chunks(
+            mctx->ctx,
+            ctx->ctx,
+            chunks->chunks,
+            n_past,
+            seq_id,
+            n_batch,
+            logits_last,
+            &new_n_past_val
+        );
+
+        *out_new_n_past = (int32_t)new_n_past_val;
+
+        if (res == 0) {
+            ctx->last_decoded_seq_id = seq_id;
+            ctx->seq_samplers[seq_id].has_logits = logits_last;
+            ctx->seq_samplers[seq_id].last_logits_pos = logits_last ? ((int32_t)new_n_past_val - 1) : -1;
+        }
+
+        return res;
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+        return -1;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+        return -1;
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during multimodal chunk eval");
         return -1;
     }
-
-    if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
-        return -1;
-    }
-
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-
-    // Reconcile and discard any pending text sample prior to multimodal evaluation
-    discard_slot_pending_preserving_rng(ctx, seq_id);
-
-    // Invalidate pending logits before starting multimodal projection evaluation
-    ctx->seq_samplers[seq_id].has_logits = false;
-    ctx->seq_samplers[seq_id].last_logits_pos = -1;
-    if (ctx->last_decoded_seq_id == seq_id) {
-        ctx->last_decoded_seq_id = -1;
-    }
-
-    llama_pos new_n_past_val = n_past;
-
-    int32_t res = mtmd_helper_eval_chunks(
-        mctx->ctx,
-        ctx->ctx,
-        chunks->chunks,
-        n_past,
-        seq_id,
-        n_batch,
-        logits_last,
-        &new_n_past_val
-    );
-
-    *out_new_n_past = (int32_t)new_n_past_val;
-
-    if (res == 0) {
-        ctx->last_decoded_seq_id = seq_id;
-        ctx->seq_samplers[seq_id].has_logits = logits_last;
-        ctx->seq_samplers[seq_id].last_logits_pos = logits_last ? ((int32_t)new_n_past_val - 1) : -1;
-    }
-
-    return res;
 }
 
 int32_t argus_multimodal_test_lock_sync(argus_context_t * ctx, int32_t seq_id, int32_t hold_us) {

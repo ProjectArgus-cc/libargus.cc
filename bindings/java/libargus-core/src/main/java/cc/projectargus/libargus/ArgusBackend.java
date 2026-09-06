@@ -11,6 +11,13 @@ import java.util.List;
  * Handles the process-global compute backends (CUDA, CPU, Metal) registry and telemetry.
  */
 public final class ArgusBackend {
+    public static final long FEATURE_CPU_ACCEL = 1L << 0;
+    public static final long FEATURE_CUDA      = 1L << 1;
+    public static final long FEATURE_ROCM      = 1L << 2;
+    public static final long FEATURE_METAL     = 1L << 3;
+    public static final long FEATURE_VULKAN    = 1L << 4;
+    public static final long FEATURE_SYCL      = 1L << 5;
+
     private static boolean initialized = false;
 
     private ArgusBackend() {}
@@ -37,8 +44,47 @@ public final class ArgusBackend {
             initialized = (boolean) ArgusBindings.argus_backend_init.invokeExact(pathSeg);
             return initialized;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_init", t);
         }
+    }
+
+    /**
+     * Queries whether the process-global native compute backend registry is currently initialized.
+     *
+     * @return true if backend is initialized and active, false otherwise
+     */
+    public static boolean isInitialized() {
+        try {
+            return (boolean) ArgusBindings.argus_backend_is_initialized.invokeExact();
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Fatal error running argus_backend_is_initialized", t);
+        }
+    }
+
+    /**
+     * Queries the compile-time feature bitmask representing backends and acceleration built into the native binary.
+     *
+     * @return bitmask combining FEATURE_* flags
+     */
+    public static long getBuildFeatures() {
+        try {
+            return (long) ArgusBindings.argus_build_features.invokeExact();
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Fatal error running argus_build_features", t);
+        }
+    }
+
+    /**
+     * Checks if a specific feature flag is present in the native library build.
+     *
+     * @param featureMask feature flag bitmask (e.g. FEATURE_CPU_ACCEL, FEATURE_CUDA)
+     * @return true if enabled at compile time
+     */
+    public static boolean hasFeature(long featureMask) {
+        return (getBuildFeatures() & featureMask) != 0;
     }
 
     /**
@@ -52,6 +98,7 @@ public final class ArgusBackend {
             ArgusBindings.argus_backend_free.invokeExact();
             initialized = false;
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_free", t);
         }
     }
@@ -63,6 +110,7 @@ public final class ArgusBackend {
         try {
             return (int) ArgusBindings.argus_backend_get_count.invokeExact();
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_get_count", t);
         }
     }
@@ -80,6 +128,7 @@ public final class ArgusBackend {
             }
             return namePtr.reinterpret(Long.MAX_VALUE).getString(0);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_get_name", t);
         }
     }

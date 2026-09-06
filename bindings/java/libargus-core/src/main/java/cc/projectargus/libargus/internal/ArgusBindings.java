@@ -566,4 +566,70 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
+
+    // Error Handling & Diagnostic Status
+    public static final MethodHandle argus_last_error_code = bind("argus_last_error_code",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_last_error_message = bind("argus_last_error_message",
+        FunctionDescriptor.of(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_clear_error = bind("argus_clear_error",
+        FunctionDescriptor.ofVoid()
+    );
+
+    public static final MethodHandle argus_build_features = bind("argus_build_features",
+        FunctionDescriptor.of(ValueLayout.JAVA_LONG)
+    );
+
+    public static final MethodHandle argus_backend_is_initialized = bind("argus_backend_is_initialized",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
+    );
+
+    // Model Retain & Release
+    public static final MethodHandle argus_model_retain = bind("argus_model_retain",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_release = bind("argus_model_release",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    // Abort Flag
+    public static final MethodHandle argus_abort_flag_create = bind("argus_abort_flag_create",
+        FunctionDescriptor.of(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_abort_flag_request = bind("argus_abort_flag_request",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_abort_flag_reset = bind("argus_abort_flag_reset",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_abort_flag_is_requested = bind("argus_abort_flag_is_requested",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_abort_flag_retain = bind("argus_abort_flag_retain",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_abort_flag_release = bind("argus_abort_flag_release",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    // Length-bearing Tokenization
+    public static final MethodHandle argus_tokenize_n = bind("argus_tokenize_n",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_BOOLEAN)
+    );
+
+    public static final MethodHandle argus_multimodal_tokenize_n = bind("argus_multimodal_tokenize_n",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
 }

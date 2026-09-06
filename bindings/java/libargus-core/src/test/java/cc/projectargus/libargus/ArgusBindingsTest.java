@@ -9,6 +9,11 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ArgusBindingsTest {
 
@@ -75,12 +80,17 @@ public class ArgusBindingsTest {
             model.acquire();
             assertEquals(2, model.getRefCount());
 
-            model.close(); // decrements ref count to 1, native model is NOT closed
+            model.release(); // decrements acquired ref count to 1, native model is NOT closed
             assertEquals(1, model.getRefCount());
             assertNotEquals(MemorySegment.NULL, model.getHandle());
 
             model.clearHandleForTesting();
-            model.close(); // decrements to 0, native model IS closed
+            model.close(); // closes the wrapper, decrements to 0
+            assertEquals(0, model.getRefCount());
+            assertEquals(MemorySegment.NULL, model.getHandle());
+
+            // Idempotent double close must not decrement again
+            model.close();
             assertEquals(0, model.getRefCount());
             assertEquals(MemorySegment.NULL, model.getHandle());
         } finally {
@@ -93,19 +103,28 @@ public class ArgusBindingsTest {
         System.out.println("[Java Test] Validating context init exception safety...");
         ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment dummyPtr = arena.allocate(16);
-            ArgusModel model = new ArgusModel(dummyPtr);
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root, "Could not locate project root containing tests/data/tiny.gguf");
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
             assertEquals(1, model.getRefCount());
 
-            ArgusContextConfig config = ArgusContextConfig.createDefault(1024);
+            ArgusContextConfig invalidConfig = new ArgusContextConfig.Builder()
+                .contextLength(-100)
+                .build();
+
             assertThrows(RuntimeException.class, () -> {
-                // This will fail in native init on a dummy model handle
-                ArgusContext.init(arena, model, config);
+                ArgusContext.init(arena, model, invalidConfig);
             });
 
             // The exception handler must have safely cleaned up the acquired reference!
             assertEquals(1, model.getRefCount());
-            model.clearHandleForTesting();
+            model.close();
+            assertEquals(0, model.getRefCount());
         } finally {
             ArgusBackend.free();
         }
@@ -274,13 +293,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.6.5", ArgusBindings.VERSION);
+        assertEquals("1.7.0", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.6.5", nativeVer);
+            assertEquals("1.7.0", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -679,7 +698,7 @@ public class ArgusBindingsTest {
                 MemorySegment brSeg = arena.allocate(ValueLayout.JAVA_INT, branchD.length);
                 for (int i = 0; i < branchD.length; i++) brSeg.setAtIndex(ValueLayout.JAVA_INT, i, branchD[i]);
                 assertEquals(0, context.decodeBatch(brSeg, branchD.length, 2, 0, true));
-                assertEquals(6, context.getSamplerHistoryCount(0));
+                assertEquals(8, context.getSamplerHistoryCount(0));
                 System.out.println("  - Java coordinate-decoupled rollback verified (primed tokens preserved across KV rollback).");
 
                 // 13. Sampler Priming & Lifecycle
@@ -687,7 +706,7 @@ public class ArgusBindingsTest {
                 MemorySegment primeSeg = arena.allocate(ValueLayout.JAVA_INT, primeToks.length);
                 for (int i = 0; i < primeToks.length; i++) primeSeg.setAtIndex(ValueLayout.JAVA_INT, i, primeToks[i]);
                 assertEquals(0, context.primeSampler(0, primeSeg, 3));
-                assertEquals(9, context.getSamplerHistoryCount(0));
+                assertEquals(11, context.getSamplerHistoryCount(0));
                 context.truncateSampler(0, 1);
                 assertEquals(1, context.getSamplerHistoryCount(0));
                 context.resetSampler(0);
@@ -728,6 +747,234 @@ public class ArgusBindingsTest {
                 // Sampling without decoding must fail with -2
                 assertEquals(-2, context.sampleToken(0, sampleCfg), "Sampling without new logits must return -2");
                 System.out.println("  - Java ghost token elimination & canonical discard verified.");
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testBackendFeaturesBitmask() {
+        System.out.println("[Java Test] Validating build features bitmask and backend status...");
+        ArgusBackend.init();
+        try {
+            assertTrue(ArgusBackend.isInitialized(), "Backend must report initialized");
+            long features = ArgusBackend.getBuildFeatures();
+            assertTrue(features != 0, "Build features bitmask must be non-zero");
+            assertTrue(ArgusBackend.hasFeature(ArgusBackend.FEATURE_CPU_ACCEL), 
+                "CPU acceleration must be enabled in standard build");
+            System.out.println("  - Detected build features bitmask: 0x" + Long.toHexString(features));
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testSpatialBoundsValidation() {
+        System.out.println("[Java Test] Validating spatial bounds enforcement via ArgusValidation...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+            ArgusContextConfig config = ArgusContextConfig.createDefault(512);
+
+            try (ArgusContext context = ArgusContext.init(model, config)) {
+                // 1. decodeBatch: token buffer smaller than nTokens * sizeof(int)
+                MemorySegment tooSmallTokens = arena.allocate(ValueLayout.JAVA_INT, 2); // 8 bytes
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.decodeBatch(tooSmallTokens, 10, 0, 0, false); // requires 40 bytes
+                }, "Passing undersized token buffer must throw IllegalArgumentException");
+
+                // 2. decodeBatch: negative position or seqId
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.decodeBatch(tooSmallTokens, 2, -1, 0, false);
+                }, "Negative startPos must throw IllegalArgumentException");
+
+                // 3. getEmbeddings: output buffer too small for requested floats
+                MemorySegment tooSmallEmbeddings = arena.allocate(ValueLayout.JAVA_FLOAT, 5); // 20 bytes
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.getEmbeddings(0, tooSmallEmbeddings, 100); // requires 400 bytes
+                }, "Undersized embeddings buffer must throw IllegalArgumentException");
+
+                // 4. sampleTokenWithBias: negative biasCount
+                MemorySegment dummyBias = arena.allocate(16);
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.sampleTokenWithBias(0, 0.7f, 1.1f, dummyBias, -5);
+                }, "Negative biasCount must throw IllegalArgumentException");
+
+                // 5. sampleTokenWithBias: biasSegment smaller than biasCount * sizeof(argus_logit_bias_t)
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.sampleTokenWithBias(0, 0.7f, 1.1f, dummyBias, 10); // requires 80 bytes
+                }, "Undersized bias buffer must throw IllegalArgumentException");
+
+                // 6. primeSampler: tokensSeg smaller than nTokens * sizeof(int)
+                assertThrows(IllegalArgumentException.class, () -> {
+                    context.primeSampler(0, tooSmallTokens, 20); // requires 80 bytes
+                }, "Undersized prime sampler buffer must throw IllegalArgumentException");
+            } finally {
+                model.close();
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testIdempotentAutoCloseableLifecycle() {
+        System.out.println("[Java Test] Validating idempotent AutoCloseable double-close across all wrappers...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+
+            // 1. ArgusAbortFlag idempotence
+            ArgusAbortFlag abortFlag = new ArgusAbortFlag();
+            assertFalse(abortFlag.isClosed());
+            abortFlag.abort();
+            assertTrue(abortFlag.isAborted());
+            abortFlag.close();
+            assertTrue(abortFlag.isClosed());
+            // Double close must be no-op
+            abortFlag.close();
+            assertTrue(abortFlag.isClosed());
+
+            // 2. ArgusModel & ArgusContext idempotence
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+            ArgusContextConfig config = ArgusContextConfig.createDefault(512);
+            ArgusContext context = ArgusContext.init(model, config);
+
+            assertFalse(context.isClosed());
+            assertFalse(model.isClosed());
+            assertEquals(2, model.getRefCount()); // held by model wrapper + context
+
+            // Close context first
+            context.close();
+            assertTrue(context.isClosed());
+            // Double close context
+            context.close();
+            assertTrue(context.isClosed());
+            // Context operations must throw IllegalStateException after close
+            assertThrows(IllegalStateException.class, () -> context.getNThreads());
+
+            assertEquals(1, model.getRefCount()); // context released its lease
+            assertFalse(model.isClosed());
+
+            // Close model
+            model.close();
+            assertTrue(model.isClosed());
+            assertEquals(0, model.getRefCount());
+            // Double close model
+            model.close();
+            assertTrue(model.isClosed());
+            assertEquals(0, model.getRefCount());
+
+            // 3. ArgusInputChunks idempotence
+            ArgusInputChunks chunks = ArgusInputChunks.init();
+            assertFalse(chunks.isClosed());
+            chunks.close();
+            assertTrue(chunks.isClosed());
+            chunks.close();
+            assertTrue(chunks.isClosed());
+            assertThrows(IllegalStateException.class, () -> chunks.getHandle());
+
+            // 4. ArgusBitmap idempotence
+            MemorySegment rgbData = arena.allocate(3);
+            ArgusBitmap bitmap = ArgusBitmap.fromRgb(1, 1, rgbData);
+            assertFalse(bitmap.isClosed());
+            bitmap.close();
+            assertTrue(bitmap.isClosed());
+            bitmap.close();
+            assertTrue(bitmap.isClosed());
+            assertThrows(IllegalStateException.class, () -> bitmap.getHandle());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testSharedArenaMultiThreadedConcurrency() throws Exception {
+        System.out.println("[Java Test] Validating context shared arena and lifecycleLock across concurrent threads...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+            int numThreads = 4;
+            int iterationsPerThread = 10;
+            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
+                .seqMax(numThreads)
+                .build();
+
+            // Context created on Thread 1 (main) owns a private shared arena (Arena.ofShared())
+            try (ArgusContext context = ArgusContext.init(model, config)) {
+                ExecutorService pool = Executors.newFixedThreadPool(numThreads);
+                CountDownLatch latch = new CountDownLatch(numThreads);
+                AtomicReference<Throwable> errorRef = new AtomicReference<>(null);
+
+                for (int t = 0; t < numThreads; t++) {
+                    final int seqId = t;
+                    pool.submit(() -> {
+                        try {
+                            try (Arena workerArena = Arena.ofConfined()) {
+                                MemorySegment tokenSeg = workerArena.allocate(ValueLayout.JAVA_INT, 2);
+                                tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 0, 1); // BOS
+                                tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 1, 4 + seqId);
+
+                                ArgusSamplerConfig samplerConfig = new ArgusSamplerConfig.Builder()
+                                    .temperature(0.8f)
+                                    .seed(100 + seqId)
+                                    .build();
+
+                                for (int i = 0; i < iterationsPerThread; i++) {
+                                    // Worker threads downcall into context methods from separate threads!
+                                    // With private shared arena (Arena.ofShared()), this MUST NOT throw WrongThreadException!
+                                    synchronized (context) {
+                                        int decodeRes = context.decodeBatch(tokenSeg, 2, 0, seqId, true);
+                                        assertEquals(0, decodeRes);
+
+                                        int sampled = context.sampleToken(seqId, samplerConfig);
+                                        assertTrue(sampled >= 0);
+
+                                        context.clearCacheSlot(seqId, 0, -1);
+                                        context.resetSampler(seqId);
+                                    }
+
+                                    // Concurrent lock-free / thread-safe queries from worker thread
+                                    assertTrue(context.getNThreads() > 0);
+                                    assertNotNull(context.tokenToPiece(1));
+                                }
+                            }
+                        } catch (Throwable t1) {
+                            errorRef.compareAndSet(null, t1);
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+
+                boolean finished = latch.await(15, TimeUnit.SECONDS);
+                pool.shutdown();
+                assertTrue(finished, "Worker threads timed out");
+                if (errorRef.get() != null) {
+                    fail("Worker thread failed with exception", errorRef.get());
+                }
+                System.out.println("  - Successfully executed " + (numThreads * iterationsPerThread) + 
+                    " multi-threaded context decode/sample operations without WrongThreadException or data races.");
+            } finally {
+                model.close();
             }
         } finally {
             ArgusBackend.free();

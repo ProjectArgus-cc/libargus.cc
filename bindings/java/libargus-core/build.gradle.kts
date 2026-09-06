@@ -17,6 +17,10 @@ java {
     }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(22)
+}
+
 sourceSets {
     main {
         resources {

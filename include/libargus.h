@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.6.5
+ * @version 1.7.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -54,6 +54,63 @@ typedef struct argus_context argus_context_t;
  * @brief Opaque handler representing the active Whisper ASR processing runtime.
  */
 typedef struct argus_audio_context argus_audio_context_t;
+
+/**
+ * @brief Opaque reference-counted atomic cancellation object.
+ */
+typedef struct argus_abort_flag argus_abort_flag_t;
+
+// =========================================================================
+// Error Handling & Diagnostic Status
+// =========================================================================
+
+/**
+ * @brief Structured error status codes exposed across the unmanaged C ABI boundary.
+ */
+typedef enum argus_error_code {
+    ARGUS_SUCCESS                = 0,  /**< Operation completed successfully */
+    ARGUS_ERROR_INVALID_ARGUMENT = 1,  /**< Null pointer, out-of-range dimension, or invalid count */
+    ARGUS_ERROR_OUT_OF_MEMORY    = 2,  /**< Native host or device allocation failure */
+    ARGUS_ERROR_BACKEND          = 3,  /**< Device driver or compute backend failure */
+    ARGUS_ERROR_MODEL_LOAD       = 4,  /**< GGUF weight parsing or compatibility error */
+    ARGUS_ERROR_DECODE           = 5,  /**< Compute graph evaluation failure */
+    ARGUS_ERROR_CANCELLED        = 6,  /**< Evaluation was aborted via cancellation handle */
+    ARGUS_ERROR_BUSY             = 7,  /**< Resource is currently locked or cannot be released */
+    ARGUS_ERROR_INTERNAL         = 8   /**< Uncaught native runtime error */
+} argus_error_code_t;
+
+/**
+ * @brief Retrieves the last error code recorded on the calling thread.
+ * @return Thread-local error status code.
+ */
+ARGUS_API argus_error_code_t argus_last_error_code(void);
+
+/**
+ * @brief Retrieves the last error diagnostic message recorded on the calling thread.
+ * @return Null-terminated diagnostic string (thread-local fixed storage).
+ */
+ARGUS_API const char * argus_last_error_message(void);
+
+/**
+ * @brief Clears the last error state recorded on the calling thread.
+ */
+ARGUS_API void argus_clear_error(void);
+
+// =========================================================================
+// Compile-Time Build Capability Bitmasks
+// =========================================================================
+
+#define ARGUS_FEATURE_CPU    (1ULL << 0)  /**< CPU baseline backend enabled */
+#define ARGUS_FEATURE_CUDA   (1ULL << 1)  /**< NVIDIA CUDA acceleration compiled */
+#define ARGUS_FEATURE_HIP    (1ULL << 2)  /**< AMD ROCm/HIP acceleration compiled */
+#define ARGUS_FEATURE_VULKAN (1ULL << 3)  /**< Vulkan compute acceleration compiled */
+#define ARGUS_FEATURE_METAL  (1ULL << 4)  /**< Apple Silicon Metal acceleration compiled */
+
+/**
+ * @brief Retrieves the compiled acceleration features bitmask of the native binary.
+ * @return Bitmask combining ARGUS_FEATURE_* flags.
+ */
+ARGUS_API uint64_t argus_build_features(void);
 
 // =========================================================================
 // Memory-Aligned Configuration & Transaction Layouts
@@ -110,13 +167,13 @@ typedef struct argus_audio_params {
  * @brief Transactional payload metadata representing an evaluation turn batch step.
  */
 typedef struct argus_token_batch {
-    const int32_t * tokens;               /**< Pointer targeting an aligned array of token IDs (8 bytes) */
-    int32_t         n_tokens;             /**< Token count to evaluate (4 bytes) */
-    int32_t         start_pos;            /**< Offsets in KV cache (4 bytes) */
-    int32_t         seq_id;               /**< Target sequence slot tracking ID (4 bytes) */
-    bool            request_logits;       /**< Evaluate output logits on terminal slot (1 byte) */
-    uint8_t         reserved_padding[3];  /**< Alignment padding securing 4-byte boundaries (3 bytes) */
-    const int32_t * abort_flag;           /**< Optional pointer targeting a cancellation flag (8 bytes) */
+    const int32_t      * tokens;               /**< Pointer targeting an aligned array of token IDs (8 bytes) */
+    int32_t              n_tokens;             /**< Token count to evaluate (4 bytes) */
+    int32_t              start_pos;            /**< Offsets in KV cache (4 bytes) */
+    int32_t              seq_id;               /**< Target sequence slot tracking ID (4 bytes) */
+    bool                 request_logits;       /**< Evaluate output logits on terminal slot (1 byte) */
+    uint8_t              reserved_padding[3];  /**< Alignment padding securing 4-byte boundaries (3 bytes) */
+    argus_abort_flag_t * abort_flag;           /**< Optional pointer targeting a native atomic cancellation handle (8 bytes) */
 } argus_token_batch_t;
 
 /**
@@ -180,6 +237,12 @@ ARGUS_API const char * argus_version(void);
 ARGUS_API void argus_backend_free(void);
 
 /**
+ * @brief Checks if process-wide backends have been successfully initialized.
+ * @return true if initialized, false otherwise.
+ */
+ARGUS_API bool argus_backend_is_initialized(void);
+
+/**
  * @brief Gets the total count of registered hardware acceleration backends.
  * @return Total backend count.
  */
@@ -204,7 +267,22 @@ ARGUS_API const char * argus_backend_get_name(int32_t index);
 ARGUS_API argus_model_t * argus_model_load(const argus_model_params_t * params);
 
 /**
- * @brief Frees loaded GGUF model resources.
+ * @brief Retains an active reference to the loaded GGUF model weights.
+ * Thread-safe atomic operation.
+ * @param model Reference model pointer.
+ * @return true if successfully retained, false if model is NULL.
+ */
+ARGUS_API bool argus_model_retain(argus_model_t * model);
+
+/**
+ * @brief Releases a reference to the loaded GGUF model weights.
+ * Deallocates underlying weights when ref count drops to zero.
+ * @param model Reference model pointer.
+ */
+ARGUS_API void argus_model_release(argus_model_t * model);
+
+/**
+ * @brief Frees loaded GGUF model resources (delegates to argus_model_release).
  * @param model Reference model pointer.
  */
 ARGUS_API void argus_model_free(argus_model_t * model);
@@ -254,6 +332,54 @@ ARGUS_API int32_t argus_get_n_threads_batch(argus_context_t * ctx);
 ARGUS_API bool argus_context_has_draft(const argus_context_t * ctx);
 
 // =========================================================================
+// Native Atomic Cancellation Controls
+// =========================================================================
+
+/**
+ * @brief Allocates an unmanaged, reference-counted atomic cancellation object.
+ * Initial state is not requested (false).
+ * @return Active cancellation handle, or NULL on allocation failure.
+ */
+ARGUS_API argus_abort_flag_t * argus_abort_flag_create(void);
+
+/**
+ * @brief Sets the cancellation flag, signaling active compute loops to abort.
+ * Thread-safe atomic operation.
+ * @param flag Cancellation handle.
+ */
+ARGUS_API void argus_abort_flag_request(argus_abort_flag_t * flag);
+
+/**
+ * @brief Resets the cancellation flag back to non-aborted state.
+ * Thread-safe atomic operation.
+ * @param flag Cancellation handle.
+ */
+ARGUS_API void argus_abort_flag_reset(argus_abort_flag_t * flag);
+
+/**
+ * @brief Queries whether the cancellation flag has been requested.
+ * Thread-safe atomic operation.
+ * @param flag Cancellation handle.
+ * @return true if cancellation requested, false otherwise.
+ */
+ARGUS_API bool argus_abort_flag_is_requested(const argus_abort_flag_t * flag);
+
+/**
+ * @brief Retains a reference to the cancellation handle.
+ * Thread-safe atomic operation.
+ * @param flag Cancellation handle.
+ */
+ARGUS_API bool argus_abort_flag_retain(argus_abort_flag_t * flag);
+
+/**
+ * @brief Releases a reference to the cancellation handle.
+ * Deallocates the object when ref count reaches zero.
+ * Thread-safe atomic operation.
+ * @param flag Cancellation handle.
+ */
+ARGUS_API void argus_abort_flag_release(argus_abort_flag_t * flag);
+
+// =========================================================================
 // 3. Core Text Inference & Native Codec Speech Synthesis (TTS)
 // =========================================================================
 
@@ -268,6 +394,20 @@ ARGUS_API bool argus_context_has_draft(const argus_context_t * ctx);
  * @return The absolute number of parsed tokens stored inside the buffer, or negative on failure.
  */
 ARGUS_API int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t * out_tokens, int32_t max_tokens, bool add_bos);
+
+/**
+ * @brief Parses and converts a character string with explicit byte length into an array of token IDs.
+ * Bypasses strlen() scanning to eliminate unbounded reads on off-heap memory segments.
+ * This is a read-only concurrent operation on the model vocabulary.
+ * @param model Reference model containing the vocabulary mapping.
+ * @param text Absolute address pointing to the UTF-8 input string.
+ * @param text_len Byte length of the input text string.
+ * @param out_tokens Destination buffer memory segment to receive integer token IDs.
+ * @param max_tokens Allocation ceiling size limit of the provided output segment.
+ * @param add_bos Prepend the model's explicit Beginning-Of-Sentence token metadata.
+ * @return The absolute number of parsed tokens stored inside the buffer, or negative on failure.
+ */
+ARGUS_API int32_t argus_tokenize_n(const argus_model_t * model, const char * text, size_t text_len, int32_t * out_tokens, int32_t max_tokens, bool add_bos);
 
 /**
  * @brief Converts a standalone single token primitive back into raw text bytes.
@@ -864,6 +1004,26 @@ ARGUS_API int32_t argus_multimodal_tokenize(
     argus_multimodal_t * mctx,
     argus_input_chunks_t * output,
     const char * text,
+    bool add_bos,
+    const argus_bitmap_t ** bitmaps,
+    int32_t n_bitmaps);
+
+/**
+ * @brief Tokenizes the text prompt and media bitmaps with explicit text byte length into unified sequential chunks.
+ * @param mctx Active multimodal projector context.
+ * @param output Destination chunks container pointer.
+ * @param text The input prompt text.
+ * @param text_len Byte length of the prompt text.
+ * @param add_bos Prepend the model's Beginning-Of-Sentence token.
+ * @param bitmaps Array of media bitmaps to replace markers in order.
+ * @param n_bitmaps Count of bitmaps in the array.
+ * @return 0 on success, non-zero on tokenization/preprocessing failure.
+ */
+ARGUS_API int32_t argus_multimodal_tokenize_n(
+    argus_multimodal_t * mctx,
+    argus_input_chunks_t * output,
+    const char * text,
+    size_t text_len,
     bool add_bos,
     const argus_bitmap_t ** bitmaps,
     int32_t n_bitmaps);
