@@ -69,30 +69,29 @@ public class ArgusBindingsTest {
     }
 
     @Test
-    public void testModelRefCountProtection() {
-        System.out.println("[Java Test] Validating model reference counting...");
+    public void testModelLifecycleAndLeaseProtection() {
+        System.out.println("[Java Test] Validating model lifecycle and handle leasing...");
         ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment dummyPtr = arena.allocate(16);
             ArgusModel model = new ArgusModel(dummyPtr);
-            assertEquals(1, model.getRefCount());
-
-            model.acquire();
-            assertEquals(2, model.getRefCount());
-
-            model.release(); // decrements acquired ref count to 1, native model is NOT closed
-            assertEquals(1, model.getRefCount());
+            assertFalse(model.isClosed());
             assertNotEquals(MemorySegment.NULL, model.getHandle());
 
-            model.clearHandleForTesting();
-            model.close(); // closes the wrapper, decrements to 0
-            assertEquals(0, model.getRefCount());
-            assertEquals(MemorySegment.NULL, model.getHandle());
+            // Acquire read lease
+            MemorySegment lease = model.acquireReadLease();
+            assertEquals(dummyPtr.address(), lease.address());
+            model.releaseReadLease();
 
-            // Idempotent double close must not decrement again
+            model.clearHandleForTesting();
+            model.close(); // closes wrapper
+            assertTrue(model.isClosed());
+            assertThrows(IllegalStateException.class, model::getHandle);
+            assertThrows(IllegalStateException.class, model::acquireReadLease);
+
+            // Idempotent double close must not throw
             model.close();
-            assertEquals(0, model.getRefCount());
-            assertEquals(MemorySegment.NULL, model.getHandle());
+            assertTrue(model.isClosed());
         } finally {
             ArgusBackend.free();
         }
@@ -111,7 +110,7 @@ public class ArgusBindingsTest {
             java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
 
             ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
-            assertEquals(1, model.getRefCount());
+            assertFalse(model.isClosed());
 
             ArgusContextConfig invalidConfig = new ArgusContextConfig.Builder()
                 .contextLength(-100)
@@ -121,10 +120,10 @@ public class ArgusBindingsTest {
                 ArgusContext.init(arena, model, invalidConfig);
             });
 
-            // The exception handler must have safely cleaned up the acquired reference!
-            assertEquals(1, model.getRefCount());
+            // The exception handler must leave the model valid and open
+            assertFalse(model.isClosed());
             model.close();
-            assertEquals(0, model.getRefCount());
+            assertTrue(model.isClosed());
         } finally {
             ArgusBackend.free();
         }
@@ -293,13 +292,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.7.0", ArgusBindings.VERSION);
+        assertEquals("1.7.1", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.7.0", nativeVer);
+            assertEquals("1.7.1", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -854,7 +853,6 @@ public class ArgusBindingsTest {
 
             assertFalse(context.isClosed());
             assertFalse(model.isClosed());
-            assertEquals(2, model.getRefCount()); // held by model wrapper + context
 
             // Close context first
             context.close();
@@ -865,17 +863,16 @@ public class ArgusBindingsTest {
             // Context operations must throw IllegalStateException after close
             assertThrows(IllegalStateException.class, () -> context.getNThreads());
 
-            assertEquals(1, model.getRefCount()); // context released its lease
+            // Context closure does not close the model!
             assertFalse(model.isClosed());
 
             // Close model
             model.close();
             assertTrue(model.isClosed());
-            assertEquals(0, model.getRefCount());
             // Double close model
             model.close();
             assertTrue(model.isClosed());
-            assertEquals(0, model.getRefCount());
+            assertThrows(IllegalStateException.class, () -> model.getHandle());
 
             // 3. ArgusInputChunks idempotence
             ArgusInputChunks chunks = ArgusInputChunks.init();
@@ -939,8 +936,9 @@ public class ArgusBindingsTest {
                                     .build();
 
                                 for (int i = 0; i < iterationsPerThread; i++) {
-                                    // Worker threads downcall into context methods from separate threads!
-                                    // With private shared arena (Arena.ofShared()), this MUST NOT throw WrongThreadException!
+                                    // Worker threads downcall into context methods from separate threads.
+                                    // Single-context logits evaluation (decode -> sample) requires transactional serialization,
+                                    // while shared unmanaged memory layout access (Arena.ofShared()) runs without WrongThreadException.
                                     synchronized (context) {
                                         int decodeRes = context.decodeBatch(tokenSeg, 2, 0, seqId, true);
                                         assertEquals(0, decodeRes);
@@ -952,7 +950,7 @@ public class ArgusBindingsTest {
                                         context.resetSampler(seqId);
                                     }
 
-                                    // Concurrent lock-free / thread-safe queries from worker thread
+                                    // Concurrent lock-free / thread-safe queries from worker thread without locks
                                     assertTrue(context.getNThreads() > 0);
                                     assertNotNull(context.tokenToPiece(1));
                                 }
@@ -976,6 +974,147 @@ public class ArgusBindingsTest {
             } finally {
                 model.close();
             }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testFeatureBitAlignment() {
+        System.out.println("[Java Test] Validating ArgusBackend feature bit alignments...");
+        assertEquals(1L << 0, ArgusBackend.FEATURE_CPU);
+        assertEquals(1L << 1, ArgusBackend.FEATURE_CUDA);
+        assertEquals(1L << 2, ArgusBackend.FEATURE_ROCM);
+        assertEquals(1L << 3, ArgusBackend.FEATURE_VULKAN);
+        assertEquals(1L << 4, ArgusBackend.FEATURE_METAL);
+
+        // Introspect active binary's compiled feature flags
+        long buildFeatures = ArgusBackend.getBuildFeatures();
+        assertTrue((buildFeatures & ArgusBackend.FEATURE_CPU) != 0, "CPU feature flag must always be present");
+    }
+
+    @Test
+    public void testNativeDiagnosticExtraction() {
+        System.out.println("[Java Test] Validating C ABI diagnostic extraction...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            // Attempt to load non-existent model to trigger C ABI error recording
+            RuntimeException ex = assertThrows(RuntimeException.class, () -> {
+                ArgusModel.load(arena, Paths.get("non-existent-path-libargus-diagnostic.gguf"), 0, false);
+            });
+            assertNotNull(ex.getMessage());
+            System.out.println("  - Extracted native error: " + ex.getMessage());
+            assertTrue(ex.getMessage().contains("non-existent-path-libargus-diagnostic.gguf") ||
+                       ex.getMessage().contains("failed to open") ||
+                       ex.getMessage().contains("returned NULL"));
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testDeterministicHandleLeaseOperationVsCloseRace() throws Exception {
+        System.out.println("[Java Test] Validating deterministic handle lease vs close concurrency gate...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+
+            CountDownLatch leaseAcquired = new CountDownLatch(1);
+            CountDownLatch closeInitiated = new CountDownLatch(1);
+            CountDownLatch closeCompleted = new CountDownLatch(1);
+            AtomicReference<Throwable> threadError = new AtomicReference<>(null);
+
+            // Thread 1 acquires a read lease and holds it
+            Thread holderThread = new Thread(() -> {
+                try {
+                    MemorySegment h = model.acquireReadLease();
+                    leaseAcquired.countDown();
+                    // Wait for thread 2 to initiate close
+                    assertTrue(closeInitiated.await(5, TimeUnit.SECONDS));
+                    // While lease is held, model must NOT be marked closed
+                    assertFalse(model.isClosed());
+                    // Hold the lease for 100ms to ensure close thread is actually blocked in write lock
+                    Thread.sleep(100);
+                    model.releaseReadLease();
+                } catch (Throwable t) {
+                    threadError.compareAndSet(null, t);
+                }
+            });
+
+            // Thread 2 calls close()
+            Thread closerThread = new Thread(() -> {
+                try {
+                    assertTrue(leaseAcquired.await(5, TimeUnit.SECONDS));
+                    closeInitiated.countDown();
+                    // This close() call must block until Thread 1 calls releaseReadLease()!
+                    model.close();
+                    closeCompleted.countDown();
+                } catch (Throwable t) {
+                    threadError.compareAndSet(null, t);
+                }
+            });
+
+            holderThread.start();
+            closerThread.start();
+
+            boolean finished = closeCompleted.await(5, TimeUnit.SECONDS);
+            holderThread.join(2000);
+            closerThread.join(2000);
+
+            assertTrue(finished, "Close call did not complete in expected window");
+            if (threadError.get() != null) {
+                fail("Concurrency lease test encountered exception", threadError.get());
+            }
+
+            assertTrue(model.isClosed());
+            assertThrows(IllegalStateException.class, model::acquireReadLease);
+            assertThrows(IllegalStateException.class, model::getHandle);
+            System.out.println("  - Deterministic handle lease vs close verified without race or memory leak.");
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testCompositeResourceLeasing() {
+        System.out.println("[Java Test] Validating composite resource leasing...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+            ArgusContextConfig config = ArgusContextConfig.createDefault(512);
+            ArgusContext context = ArgusContext.init(model, config);
+
+            // Test abort flag leasing during decode
+            ArgusAbortFlag abortFlag = new ArgusAbortFlag();
+            MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+            tokensSeg.setAtIndex(ValueLayout.JAVA_INT, 0, 1);
+            
+            int res = context.decodeBatch(tokensSeg, 1, 0, 0, false, abortFlag);
+            assertEquals(0, res);
+
+            // Close abort flag
+            abortFlag.close();
+            assertTrue(abortFlag.isClosed());
+
+            // Passing closed abort flag must fail safely with IllegalStateException
+            assertThrows(IllegalStateException.class, () -> {
+                context.decodeBatch(tokensSeg, 1, 1, 0, false, abortFlag);
+            });
+
+            context.close();
+            model.close();
         } finally {
             ArgusBackend.free();
         }

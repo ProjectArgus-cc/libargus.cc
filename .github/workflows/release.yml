@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. 1.7.0)'
+        description: 'Release Version (e.g. 1.7.1)'
         required: true
-        default: '1.7.0'
+        default: '1.7.1'
 
 permissions:
   contents: write
@@ -39,8 +39,8 @@ jobs:
             cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
           - platform: linux-x86_64
             target: rocm
-            os: ubuntu-latest
-            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
+            os: ubuntu-22.04
+            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"
           - platform: linux-x86_64
             target: vulkan
             os: ubuntu-latest
@@ -68,11 +68,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up System Dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'rocm'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc libshaderc-dev nvidia-cuda-toolkit
+
+      - name: Set up ROCm and HIP Toolchain (Linux ROCm)
+        if: runner.os == 'Linux' && matrix.target == 'rocm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wget gnupg2 build-essential cmake ninja-build
+          wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm-keyring.gpg
+          echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm-keyring.gpg] https://repo.radeon.com/rocm/apt/6.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
+          echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            rocm-dev hip-dev hipblas-dev rocblas-dev
+          echo "ROCM_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "HIP_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "/opt/rocm/bin" >> $GITHUB_PATH
+          echo "/opt/rocm/llvm/bin" >> $GITHUB_PATH
 
 
       - name: Set up MSVC Developer Environment
@@ -213,7 +229,16 @@ jobs:
               echo "::error::$jar_file does NOT contain embedded native library under natives/!" >&2
               exit 1
             fi
+
+            if [ "$subproject" = "libargus-native-linux-rocm" ]; then
+              echo "Introspecting ROCm binary capabilities for $subproject..."
+              unzip -p "$jar_file" natives/linux-amd64/rocm/libargus.so | strings | grep -iE "hip|rocm" | head -n 5 || {
+                echo "::error::ROCm native library does not contain ROCm/HIP symbols!" >&2
+                exit 1
+              }
+            fi
           done
+          ./gradlew verifyPackagedClassifiers
           echo "All native classifier jars verified successfully with embedded binary payloads."
 
       - name: Publish to GitHub Packages Maven Registry

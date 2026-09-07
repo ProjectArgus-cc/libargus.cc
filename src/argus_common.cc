@@ -80,6 +80,17 @@ const char * argus_last_error_message(void) {
     return tl_last_error.message;
 }
 
+int32_t argus_last_error_message_copy(char * out, int32_t capacity) {
+    if (!out || capacity <= 0) {
+        return -1;
+    }
+    size_t len = std::strlen(tl_last_error.message);
+    size_t to_copy = (len < (size_t)(capacity - 1)) ? len : (size_t)(capacity - 1);
+    std::memcpy(out, tl_last_error.message, to_copy);
+    out[to_copy] = '\0';
+    return (int32_t)len;
+}
+
 void argus_clear_error(void) {
     clear_last_error();
 }

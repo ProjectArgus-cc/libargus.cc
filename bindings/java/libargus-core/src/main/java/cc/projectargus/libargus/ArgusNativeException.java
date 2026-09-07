@@ -1,6 +1,7 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 
 /**
@@ -39,13 +40,20 @@ public class ArgusNativeException extends RuntimeException {
             String msg = "Unknown native failure";
             try {
                 code = (int) ArgusBindings.argus_last_error_code.invokeExact();
-                MemorySegment msgSeg = (MemorySegment) ArgusBindings.argus_last_error_message.invokeExact();
-                if (msgSeg != null && !msgSeg.equals(MemorySegment.NULL)) {
-                    msg = msgSeg.getString(0);
+                try (Arena localArena = Arena.ofConfined()) {
+                    MemorySegment buf = localArena.allocate(512);
+                    int len = (int) ArgusBindings.argus_last_error_message_copy.invokeExact(buf, 512);
+                    if (len > 0) {
+                        msg = buf.getString(0);
+                    }
                 }
-                ArgusBindings.argus_clear_error.invokeExact();
             } catch (Throwable t) {
                 // Ignore downcall introspection errors
+            } finally {
+                try {
+                    ArgusBindings.argus_clear_error.invokeExact();
+                } catch (Throwable ignored) {
+                }
             }
             throw new ArgusNativeException(code, operation + " failed with status " + status + ": " + msg);
         }

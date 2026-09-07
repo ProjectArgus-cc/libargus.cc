@@ -94,173 +94,206 @@ void argus_multimodal_free(argus_multimodal_t * mctx) {
 }
 
 bool argus_multimodal_support_vision(const argus_multimodal_t * mctx) {
-    return mctx ? mtmd_support_vision(mctx->ctx) : false;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_multimodal_support_vision", [&]() -> bool {
+        return mctx && mctx->ctx ? mtmd_support_vision(mctx->ctx) : false;
+    });
 }
 
 bool argus_multimodal_support_audio(const argus_multimodal_t * mctx) {
-    return mctx ? mtmd_support_audio(mctx->ctx) : false;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_multimodal_support_audio", [&]() -> bool {
+        return mctx && mctx->ctx ? mtmd_support_audio(mctx->ctx) : false;
+    });
 }
 
 bool argus_multimodal_support_video(const argus_multimodal_t * mctx) {
-    return mctx ? mtmd_helper_support_video(mctx->ctx) : false;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_multimodal_support_video", [&]() -> bool {
+        return mctx && mctx->ctx ? mtmd_helper_support_video(mctx->ctx) : false;
+    });
 }
 
 int32_t argus_multimodal_get_audio_sample_rate(const argus_multimodal_t * mctx) {
-    return mctx ? (int32_t)mtmd_get_audio_sample_rate(mctx->ctx) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_multimodal_get_audio_sample_rate", [&]() -> int32_t {
+        return mctx && mctx->ctx ? (int32_t)mtmd_get_audio_sample_rate(mctx->ctx) : -1;
+    });
 }
 
 argus_bitmap_t * argus_bitmap_from_rgb(uint32_t width, uint32_t height, const uint8_t * rgb_data) {
-    if (!rgb_data) {
-        return nullptr;
-    }
-
-    return reinterpret_cast<argus_bitmap_t*>(mtmd_bitmap_init(width, height, rgb_data));
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_bitmap_t *)nullptr, "argus_bitmap_from_rgb", [&]() -> argus_bitmap_t * {
+        if (!rgb_data) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "rgb_data is NULL");
+            return nullptr;
+        }
+        return reinterpret_cast<argus_bitmap_t*>(mtmd_bitmap_init(width, height, rgb_data));
+    });
 }
 
 argus_bitmap_t * argus_bitmap_from_pcm(const float * pcm_data, int32_t n_samples) {
-    if (!pcm_data || n_samples <= 0) {
-        return nullptr;
-    }
-
-    return reinterpret_cast<argus_bitmap_t*>(mtmd_bitmap_init_from_audio((size_t)n_samples, pcm_data));
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_bitmap_t *)nullptr, "argus_bitmap_from_pcm", [&]() -> argus_bitmap_t * {
+        if (!pcm_data || n_samples <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid pcm_data or n_samples");
+            return nullptr;
+        }
+        return reinterpret_cast<argus_bitmap_t*>(mtmd_bitmap_init_from_audio((size_t)n_samples, pcm_data));
+    });
 }
 
 argus_bitmap_t * argus_bitmap_load_file(argus_multimodal_t * mctx, const char * path, bool placeholder) {
-    if (!mctx || !path) {
-        return nullptr;
-    }
-
-    struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_file(mctx->ctx, path, placeholder);
-    if (wrapper.video_ctx) {
-        mtmd_helper_video_free(wrapper.video_ctx);
-        if (wrapper.bitmap) {
-            mtmd_bitmap_free(wrapper.bitmap);
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_bitmap_t *)nullptr, "argus_bitmap_load_file", [&]() -> argus_bitmap_t * {
+        if (!mctx || !mctx->ctx || !path) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid mctx or file path");
+            return nullptr;
         }
-        return nullptr;
-    }
 
-    return reinterpret_cast<argus_bitmap_t*>(wrapper.bitmap);
+        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_file(mctx->ctx, path, placeholder);
+        if (wrapper.video_ctx) {
+            mtmd_helper_video_free(wrapper.video_ctx);
+            if (wrapper.bitmap) {
+                mtmd_bitmap_free(wrapper.bitmap);
+            }
+            return nullptr;
+        }
+
+        return reinterpret_cast<argus_bitmap_t*>(wrapper.bitmap);
+    });
 }
 
 argus_bitmap_t * argus_bitmap_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, bool placeholder) {
-    if (!mctx || !buffer || size <= 0) {
-        return nullptr;
-    }
-
-    struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(mctx->ctx, buffer, (size_t)size, placeholder);
-    if (wrapper.video_ctx) {
-        mtmd_helper_video_free(wrapper.video_ctx);
-        if (wrapper.bitmap) {
-            mtmd_bitmap_free(wrapper.bitmap);
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_bitmap_t *)nullptr, "argus_bitmap_load_buffer", [&]() -> argus_bitmap_t * {
+        if (!mctx || !mctx->ctx || !buffer || size <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid mctx or buffer parameters");
+            return nullptr;
         }
-        return nullptr;
-    }
 
-    return reinterpret_cast<argus_bitmap_t*>(wrapper.bitmap);
+        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(mctx->ctx, buffer, (size_t)size, placeholder);
+        if (wrapper.video_ctx) {
+            mtmd_helper_video_free(wrapper.video_ctx);
+            if (wrapper.bitmap) {
+                mtmd_bitmap_free(wrapper.bitmap);
+            }
+            return nullptr;
+        }
+
+        return reinterpret_cast<argus_bitmap_t*>(wrapper.bitmap);
+    });
 }
 
 void argus_bitmap_free(argus_bitmap_t * bitmap) {
-    if (bitmap) {
-        mtmd_bitmap_free(reinterpret_cast<mtmd_bitmap*>(bitmap));
-    }
+    argus_guard_void("argus_bitmap_free", [&]() {
+        if (bitmap) {
+            mtmd_bitmap_free(reinterpret_cast<mtmd_bitmap*>(bitmap));
+        }
+    });
 }
 
 argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * path, float fps_target, int64_t timestamp_interval_ms) {
-    if (!mctx || !path) {
-        return nullptr;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_video_t *)nullptr, "argus_video_load_file", [&]() -> argus_video_t * {
+        if (!mctx || !mctx->ctx || !path) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid mctx or file path");
+            return nullptr;
+        }
 
-    struct mtmd_helper_video_init_params params = mtmd_helper_video_init_params_default();
-    params.fps_target = fps_target;
-    params.timestamp_interval_ms = timestamp_interval_ms;
+        struct mtmd_helper_video_init_params params = mtmd_helper_video_init_params_default();
+        params.fps_target = fps_target;
+        params.timestamp_interval_ms = timestamp_interval_ms;
 
-    mtmd_helper_video * video = mtmd_helper_video_init(mctx->ctx, path, params);
-    if (!video) {
-        return nullptr;
-    }
+        mtmd_helper_video * video = mtmd_helper_video_init(mctx->ctx, path, params);
+        if (!video) {
+            return nullptr;
+        }
 
-    argus_video_t * v = new argus_video();
-    v->video = video;
-    return v;
+        argus_video_t * v = new argus_video();
+        v->video = video;
+        return v;
+    });
 }
 
 argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t * buffer, int32_t size, float fps_target, int64_t timestamp_interval_ms) {
-    if (!mctx || !buffer || size <= 0) {
-        return nullptr;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_video_t *)nullptr, "argus_video_load_buffer", [&]() -> argus_video_t * {
+        if (!mctx || !mctx->ctx || !buffer || size <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid mctx or buffer");
+            return nullptr;
+        }
 
-    struct mtmd_helper_video_init_params params = mtmd_helper_video_init_params_default();
-    params.fps_target = fps_target;
-    params.timestamp_interval_ms = timestamp_interval_ms;
+        struct mtmd_helper_video_init_params params = mtmd_helper_video_init_params_default();
+        params.fps_target = fps_target;
+        params.timestamp_interval_ms = timestamp_interval_ms;
 
-    mtmd_helper_video * video = mtmd_helper_video_init_from_buf(mctx->ctx, buffer, (size_t)size, params);
-    if (!video) {
-        return nullptr;
-    }
+        mtmd_helper_video * video = mtmd_helper_video_init_from_buf(mctx->ctx, buffer, (size_t)size, params);
+        if (!video) {
+            return nullptr;
+        }
 
-    argus_video_t * v = new argus_video();
-    v->video = video;
-    return v;
+        argus_video_t * v = new argus_video();
+        v->video = video;
+        return v;
+    });
 }
 
 void argus_video_free(argus_video_t * video) {
-    if (video) {
-        if (video->video) {
-            mtmd_helper_video_free(video->video);
+    argus_guard_void("argus_video_free", [&]() {
+        if (video) {
+            if (video->video) {
+                mtmd_helper_video_free(video->video);
+            }
+            delete video;
         }
-        delete video;
-    }
+    });
 }
 
 int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitmap, char * out_text, int32_t max_chars) {
-    if (!video || !out_bitmap || !out_text || max_chars <= 0) {
-        return -2;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, -2, "argus_video_read_next", [&]() -> int32_t {
+        if (!video || !video->video || !out_bitmap || !out_text || max_chars <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid video arguments");
+            return -2;
+        }
 
-    mtmd_bitmap * mtmd_b = nullptr;
-    char * mtmd_t = nullptr;
+        mtmd_bitmap * mtmd_b = nullptr;
+        char * mtmd_t = nullptr;
 
-    int32_t res = mtmd_helper_video_read_next(video->video, &mtmd_b, &mtmd_t);
-    if (res == 0) {
-        if (mtmd_b) {
-            *out_bitmap = reinterpret_cast<argus_bitmap_t*>(mtmd_b);
-            out_text[0] = '\0';
-        } else if (mtmd_t) {
-            *out_bitmap = nullptr;
-            strncpy(out_text, mtmd_t, max_chars - 1);
-            out_text[max_chars - 1] = '\0';
-            // Verification: Checked tools/mtmd/mtmd-helper.cpp; mtmd_helper_video_read_next 
-            // uses standard strdup() for out_text. Calling standard free() here is correct.
-            free(mtmd_t);
+        int32_t res = mtmd_helper_video_read_next(video->video, &mtmd_b, &mtmd_t);
+        if (res == 0) {
+            if (mtmd_b) {
+                *out_bitmap = reinterpret_cast<argus_bitmap_t*>(mtmd_b);
+                out_text[0] = '\0';
+            } else if (mtmd_t) {
+                *out_bitmap = nullptr;
+                strncpy(out_text, mtmd_t, max_chars - 1);
+                out_text[max_chars - 1] = '\0';
+                free(mtmd_t);
+            } else {
+                *out_bitmap = nullptr;
+                out_text[0] = '\0';
+            }
         } else {
             *out_bitmap = nullptr;
             out_text[0] = '\0';
         }
-    } else {
-        *out_bitmap = nullptr;
-        out_text[0] = '\0';
-    }
-    return res;
+        return res;
+    });
 }
 
 argus_input_chunks_t * argus_input_chunks_init(void) {
-    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
-    if (!chunks) {
-        return nullptr;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, (argus_input_chunks_t *)nullptr, "argus_input_chunks_init", [&]() -> argus_input_chunks_t * {
+        mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+        if (!chunks) {
+            return nullptr;
+        }
 
-    argus_input_chunks_t * argus_chunks = new argus_input_chunks();
-    argus_chunks->chunks = chunks;
-    return argus_chunks;
+        argus_input_chunks_t * argus_chunks = new argus_input_chunks();
+        argus_chunks->chunks = chunks;
+        return argus_chunks;
+    });
 }
 
 void argus_input_chunks_free(argus_input_chunks_t * chunks) {
-    if (chunks) {
-        if (chunks->chunks) {
-            mtmd_input_chunks_free(chunks->chunks);
+    argus_guard_void("argus_input_chunks_free", [&]() {
+        if (chunks) {
+            if (chunks->chunks) {
+                mtmd_input_chunks_free(chunks->chunks);
+            }
+            delete chunks;
         }
-        delete chunks;
-    }
+    });
 }
 
 int32_t argus_multimodal_tokenize_n(

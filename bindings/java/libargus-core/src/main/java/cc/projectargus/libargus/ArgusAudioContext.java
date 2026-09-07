@@ -2,24 +2,36 @@ package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusLayouts;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Represents an active Whisper ASR transcribing session.
- * Implements AutoCloseable to ensure native resources are safely released.
+ * Extends {@link ArgusNativeResource} for safe native leasing and idempotent lifecycle deallocation.
  */
-public final class ArgusAudioContext implements AutoCloseable {
-    private MemorySegment ctxPtr;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+public final class ArgusAudioContext extends ArgusNativeResource {
 
     private ArgusAudioContext(MemorySegment ctxPtr) {
-        this.ctxPtr = Objects.requireNonNull(ctxPtr);
+        super(ctxPtr);
+    }
+
+    @Override
+    protected String resourceName() {
+        return "ArgusAudioContext";
+    }
+
+    @Override
+    protected void releaseNative(MemorySegment oldHandle) {
+        try {
+            ArgusBindings.argus_audio_free.invokeExact(oldHandle);
+        } catch (Throwable t) {
+            // Suppress destruction exceptions
+        }
     }
 
     /**
@@ -82,12 +94,12 @@ public final class ArgusAudioContext implements AutoCloseable {
         long requiredBytes = ArgusValidation.multiplyExactBytes(sampleCount, ValueLayout.JAVA_FLOAT.byteSize(), "pcmSeg");
         ArgusValidation.checkReadable(pcmSeg, requiredBytes, "pcmSeg");
 
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try (Arena local = Arena.ofConfined()) {
             MemorySegment textSeg = local.allocate(ValueLayout.JAVA_BYTE, maxChars);
 
             int result = (int) ArgusBindings.argus_transcribe_audio.invokeExact(
-                ctxPtr,
+                h,
                 pcmSeg,
                 sampleCount,
                 textSeg,
@@ -102,6 +114,8 @@ public final class ArgusAudioContext implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to run audio transcribing", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -112,12 +126,14 @@ public final class ArgusAudioContext implements AutoCloseable {
      */
     public void setNThreads(int nThreads) {
         ArgusValidation.checkPositive(nThreads, "nThreads");
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try {
-            ArgusBindings.argus_audio_set_n_threads.invokeExact(ctxPtr, nThreads);
+            ArgusBindings.argus_audio_set_n_threads.invokeExact(h, nThreads);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to set thread count for audio context", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -127,46 +143,14 @@ public final class ArgusAudioContext implements AutoCloseable {
      * @return number of allocated acoustic calculation threads
      */
     public int getNThreads() {
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_audio_get_n_threads.invokeExact(ctxPtr);
+            return (int) ArgusBindings.argus_audio_get_n_threads.invokeExact(h);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query thread count for audio context", t);
-        }
-    }
-
-    /**
-     * Returns the raw memory address representing the unmanaged context structure.
-     */
-    public MemorySegment getHandle() {
-        checkNotClosed();
-        return ctxPtr;
-    }
-
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    private void checkNotClosed() {
-        if (closed.get() || ctxPtr == null || ctxPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("Audio context session has been closed");
-        }
-    }
-
-    @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) {
-            return;
-        }
-        if (ctxPtr != null && !ctxPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_audio_free.invokeExact(ctxPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to release native audio context resources", t);
-            } finally {
-                ctxPtr = MemorySegment.NULL;
-            }
+        } finally {
+            releaseReadLease();
         }
     }
 }

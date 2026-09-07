@@ -1,30 +1,47 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import java.lang.foreign.MemorySegment;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * A thread-safe native reference-counted atomic cancellation object (argus_abort_flag_t)
+ * A thread-safe native atomic cancellation object (argus_abort_flag_t)
  * to signal early termination to long-running native prefill and decode loops.
- * Implements AutoCloseable with idempotent release.
+ * Extends {@link ArgusNativeResource} for safe native leasing and idempotent lifecycle deallocation.
  */
-public final class ArgusAbortFlag implements AutoCloseable {
-    private final MemorySegment handle;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+public final class ArgusAbortFlag extends ArgusNativeResource {
 
     /**
-     * Initializes a new native reference-counted atomic abort flag.
+     * Initializes a new native atomic abort flag.
      */
     public ArgusAbortFlag() {
+        super(createNativeHandle());
+    }
+
+    private static MemorySegment createNativeHandle() {
         try {
-            this.handle = (MemorySegment) ArgusBindings.argus_abort_flag_create.invokeExact();
-            if (this.handle == null || this.handle.equals(MemorySegment.NULL)) {
+            MemorySegment h = (MemorySegment) ArgusBindings.argus_abort_flag_create.invokeExact();
+            if (h == null || h.equals(MemorySegment.NULL)) {
                 throw new ArgusNativeException(2, "Failed to allocate native argus_abort_flag_t");
             }
+            return h;
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Native abort flag instantiation failed", t);
+        }
+    }
+
+    @Override
+    protected String resourceName() {
+        return "ArgusAbortFlag";
+    }
+
+    @Override
+    protected void releaseNative(MemorySegment oldHandle) {
+        try {
+            ArgusBindings.argus_abort_flag_release.invokeExact(oldHandle);
+        } catch (Throwable t) {
+            // Suppress destruction exceptions
         }
     }
 
@@ -32,11 +49,14 @@ public final class ArgusAbortFlag implements AutoCloseable {
      * Signals cancellation to any active or subsequent native execution loops.
      */
     public void abort() {
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try {
-            ArgusBindings.argus_abort_flag_request.invokeExact(handle);
+            ArgusBindings.argus_abort_flag_request.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to signal native abort flag", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -44,11 +64,14 @@ public final class ArgusAbortFlag implements AutoCloseable {
      * Resets the cancellation flag back to false.
      */
     public void reset() {
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try {
-            ArgusBindings.argus_abort_flag_reset.invokeExact(handle);
+            ArgusBindings.argus_abort_flag_reset.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to reset native abort flag", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -56,40 +79,14 @@ public final class ArgusAbortFlag implements AutoCloseable {
      * Checks if cancellation has been requested.
      */
     public boolean isAborted() {
-        checkNotClosed();
+        MemorySegment h = acquireReadLease();
         try {
-            return (boolean) ArgusBindings.argus_abort_flag_is_requested.invokeExact(handle);
+            return (boolean) ArgusBindings.argus_abort_flag_is_requested.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query native abort flag status", t);
-        }
-    }
-
-    /**
-     * Retrieves the underlying unmanaged memory segment handle.
-     */
-    public MemorySegment getHandle() {
-        checkNotClosed();
-        return handle;
-    }
-
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    private void checkNotClosed() {
-        if (closed.get()) {
-            throw new IllegalStateException("ArgusAbortFlag has already been closed");
-        }
-    }
-
-    @Override
-    public void close() {
-        if (closed.compareAndSet(false, true)) {
-            try {
-                ArgusBindings.argus_abort_flag_release.invokeExact(handle);
-            } catch (Throwable t) {
-                // Suppress destruction errors
-            }
+        } finally {
+            releaseReadLease();
         }
     }
 }

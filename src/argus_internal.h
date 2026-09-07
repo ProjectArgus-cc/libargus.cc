@@ -6,6 +6,8 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <exception>
+#include <new>
 
 struct argus_model {
     std::atomic<uint32_t>          refs{1};
@@ -21,6 +23,36 @@ struct argus_abort_flag {
 // Thread-local diagnostic state helpers
 void set_last_error(argus_error_code_t code, const char * msg);
 void clear_last_error();
+
+// C++17 Zero-overhead noexcept exception barrier templates
+template <typename F, typename R>
+inline R argus_guard(argus_error_code_t category, R failure_val, const char * op, F && fn) noexcept {
+    try {
+        clear_last_error();
+        return fn();
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(category, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, op ? op : "unknown exception");
+    }
+    return failure_val;
+}
+
+template <typename F>
+inline void argus_guard_void(const char * op, F && fn) noexcept {
+    try {
+        clear_last_error();
+        fn();
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, op ? op : "unknown exception");
+    }
+}
 
 // Backend active resource tracking
 void argus_backend_resource_inc();

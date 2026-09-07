@@ -1,23 +1,35 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Iterates over video stream frames using unmanaged FFmpeg decoders.
- * Implements AutoCloseable for safe resource deallocation in unmanaged space.
+ * Extends {@link ArgusNativeResource} for safe native leasing and idempotent lifecycle deallocation.
  */
-public final class ArgusVideo implements AutoCloseable {
-    private MemorySegment videoPtr;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+public final class ArgusVideo extends ArgusNativeResource {
 
     private ArgusVideo(MemorySegment videoPtr) {
-        this.videoPtr = Objects.requireNonNull(videoPtr);
+        super(videoPtr);
+    }
+
+    @Override
+    protected String resourceName() {
+        return "ArgusVideo";
+    }
+
+    @Override
+    protected void releaseNative(MemorySegment oldHandle) {
+        try {
+            ArgusBindings.argus_video_free.invokeExact(oldHandle);
+        } catch (Throwable t) {
+            // Suppress destruction exceptions
+        }
     }
 
     /**
@@ -28,10 +40,11 @@ public final class ArgusVideo implements AutoCloseable {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(filePath);
 
-        MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
+        MemorySegment mctxH = mctx.acquireReadLease();
         try {
+            MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_video_load_file.invokeExact(
-                mctx.getHandle(),
+                mctxH,
                 pathSeg,
                 fpsTarget,
                 timestampIntervalMs
@@ -43,6 +56,8 @@ public final class ArgusVideo implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from file: " + filePath, t);
+        } finally {
+            mctx.releaseReadLease();
         }
     }
 
@@ -54,10 +69,11 @@ public final class ArgusVideo implements AutoCloseable {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(buffer);
 
-        MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
+        MemorySegment mctxH = mctx.acquireReadLease();
         try {
+            MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_video_load_buffer.invokeExact(
-                mctx.getHandle(),
+                mctxH,
                 bufferSeg,
                 buffer.length,
                 fpsTarget,
@@ -70,6 +86,8 @@ public final class ArgusVideo implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from memory buffer", t);
+        } finally {
+            mctx.releaseReadLease();
         }
     }
 
@@ -87,12 +105,12 @@ public final class ArgusVideo implements AutoCloseable {
      */
     @Deprecated
     public VideoItem readNext() {
-        checkNotClosed();
+        MemorySegment videoH = acquireReadLease();
         try (Arena local = Arena.ofConfined()) {
             MemorySegment outBitmapSeg = local.allocate(ValueLayout.ADDRESS);
             MemorySegment outTextSeg = local.allocate(256);
 
-            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoPtr, outBitmapSeg, outTextSeg, 256);
+            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoH, outBitmapSeg, outTextSeg, 256);
             if (res == 0) {
                 MemorySegment bitmapHandle = outBitmapSeg.get(ValueLayout.ADDRESS, 0);
                 String text = outTextSeg.getString(0);
@@ -115,6 +133,8 @@ public final class ArgusVideo implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to read next item from video stream", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -127,12 +147,14 @@ public final class ArgusVideo implements AutoCloseable {
      */
     public boolean readNext(ArgusVideoItem item) {
         Objects.requireNonNull(item);
-        checkNotClosed();
-        try (Arena local = Arena.ofConfined()) {
-            MemorySegment outBitmapSeg = local.allocate(ValueLayout.ADDRESS);
-            MemorySegment outTextSeg = local.allocate(256);
+        MemorySegment videoH = acquireReadLease();
+        try {
+            MemorySegment outBitmapSeg = item.outBitmapSeg();
+            MemorySegment outTextSeg = item.outTextSeg();
+            outBitmapSeg.set(ValueLayout.ADDRESS, 0, MemorySegment.NULL);
+            outTextSeg.set(ValueLayout.JAVA_BYTE, 0, (byte) 0);
 
-            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoPtr, outBitmapSeg, outTextSeg, 256);
+            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoH, outBitmapSeg, outTextSeg, 256);
             if (res == 0) {
                 MemorySegment bitmapHandle = outBitmapSeg.get(ValueLayout.ADDRESS, 0);
                 String text = outTextSeg.getString(0);
@@ -142,6 +164,7 @@ public final class ArgusVideo implements AutoCloseable {
                 item.update(bitmapHandle, text);
                 return true;
             } else if (res == -1) {
+                item.update(null, null);
                 return false; // EOF
             } else {
                 ArgusNativeException.checkStatus(res, "argus_video_read_next");
@@ -150,37 +173,8 @@ public final class ArgusVideo implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to read next item from video stream", t);
-        }
-    }
-
-    public MemorySegment getHandle() {
-        checkNotClosed();
-        return videoPtr;
-    }
-
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    private void checkNotClosed() {
-        if (closed.get() || videoPtr == null || videoPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("ArgusVideo session has been closed");
-        }
-    }
-
-    @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) {
-            return;
-        }
-        if (videoPtr != null && !videoPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_video_free.invokeExact(videoPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to release native video resources", t);
-            } finally {
-                videoPtr = MemorySegment.NULL;
-            }
+        } finally {
+            releaseReadLease();
         }
     }
 }

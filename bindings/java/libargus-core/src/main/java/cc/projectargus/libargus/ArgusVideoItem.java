@@ -1,14 +1,27 @@
 package cc.projectargus.libargus;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 
 /**
  * Reusable, mutable carrier yielding items from a video stream.
  * Prevents JVM heap allocation churn on the hot iteration path.
  */
 public final class ArgusVideoItem implements AutoCloseable {
+    private final Arena arena = Arena.ofShared();
+    private final MemorySegment outBitmapSeg = arena.allocate(ValueLayout.ADDRESS);
+    private final MemorySegment outTextSeg = arena.allocate(256);
     private ArgusBitmap bitmap;
     private String text;
+
+    MemorySegment outBitmapSeg() {
+        return outBitmapSeg;
+    }
+
+    MemorySegment outTextSeg() {
+        return outTextSeg;
+    }
 
     /**
      * Returns the frame bitmap, or null if this item contains timestamp text.
@@ -31,7 +44,7 @@ public final class ArgusVideoItem implements AutoCloseable {
     void update(MemorySegment newBitmapPtr, String newText) {
         MemorySegment safeBitmapPtr = (newBitmapPtr != null) ? newBitmapPtr : MemorySegment.NULL;
         if (bitmap != null) {
-            if (!bitmap.getHandle().equals(safeBitmapPtr)) {
+            if (bitmap.isClosed() || !bitmap.getHandle().equals(safeBitmapPtr)) {
                 bitmap.close();
                 bitmap = null;
             }
@@ -49,5 +62,6 @@ public final class ArgusVideoItem implements AutoCloseable {
             bitmap = null;
         }
         text = null;
+        arena.close();
     }
 }

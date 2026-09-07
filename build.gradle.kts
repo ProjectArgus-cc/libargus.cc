@@ -3,9 +3,11 @@ plugins {
     id("com.gradleup.nmcp.aggregation") version "1.6.1"
 }
 
-// Build-time controls for hardware acceleration (e.g. CUDA, Metal)
+// Build-time controls for hardware acceleration (e.g. CUDA, Metal, ROCm/HIP, Vulkan)
 val useCuda = project.findProperty("cuda")?.toString()?.lowercase().let { it == "true" || it == "on" }
 val useMetal = project.findProperty("metal")?.toString()?.lowercase().let { it == "true" || it == "on" }
+val useHip = (project.findProperty("hip") ?: project.findProperty("rocm"))?.toString()?.lowercase().let { it == "true" || it == "on" }
+val useVulkan = project.findProperty("vulkan")?.toString()?.lowercase().let { it == "true" || it == "on" }
 
 val libName = when {
     System.getProperty("os.name").lowercase().contains("windows") -> "argus.dll"
@@ -25,7 +27,9 @@ tasks.register<Exec>("configureCMake") {
         "cmake", "-B", "build", 
         "-DCMAKE_BUILD_TYPE=Release", 
         "-DGGML_CUDA=${if (useCuda) "ON" else "OFF"}",
-        "-DGGML_METAL=${if (useMetal) "ON" else "OFF"}"
+        "-DGGML_METAL=${if (useMetal) "ON" else "OFF"}",
+        "-DGGML_HIP=${if (useHip) "ON" else "OFF"}",
+        "-DGGML_VULKAN=${if (useVulkan) "ON" else "OFF"}"
     )
 }
 
@@ -161,5 +165,51 @@ dependencies {
     }
 }
 
+tasks.register("verifyPackagedClassifiers") {
+    group = "verification"
+    description = "Verifies that all packaged native classifier JARs contain non-empty binaries under natives/"
+    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "assemble" } })
 
-
+    doLast {
+        val requireAll = (project.findProperty("requireAllNatives") ?: System.getenv("CI"))?.toString()?.lowercase().let { it == "true" || it == "1" }
+        val nativeProjects = subprojects.filter { it.name.startsWith("libargus-native-") }
+        var verifiedCount = 0
+        for (subproject in nativeProjects) {
+            val libsDir = subproject.layout.buildDirectory.dir("libs").get().asFile
+            val jarFile = libsDir.resolve("${subproject.name}-${subproject.version}.jar")
+            if (!jarFile.exists()) {
+                if (requireAll) {
+                    error("Missing required JAR for native subproject: ${subproject.name} (${jarFile.name})")
+                }
+                continue
+            }
+            var foundNative = false
+            java.util.zip.ZipFile(jarFile).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.name.startsWith("natives/") && !entry.isDirectory) {
+                        foundNative = true
+                        if (entry.size <= 0) {
+                            error("Corrupt native library in ${jarFile.name}: ${entry.name} has size 0")
+                        }
+                    }
+                }
+            }
+            if (!foundNative) {
+                if (requireAll) {
+                    error("Packaged classifier JAR ${jarFile.name} contains no native binaries under natives/")
+                } else {
+                    logger.warn("Packaged classifier JAR ${jarFile.name} has no native binaries (skipping in local dev build without requireAllNatives)")
+                }
+            } else {
+                verifiedCount++
+                logger.lifecycle("Verified native payload in ${jarFile.name}")
+            }
+        }
+        if (requireAll && verifiedCount == 0) {
+            error("No native classifier JARs could be verified in CI environment!")
+        }
+        logger.lifecycle("Successfully verified $verifiedCount packaged classifier JAR(s).")
+    }
+}

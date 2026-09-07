@@ -2,6 +2,7 @@ package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusLayouts;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
@@ -9,89 +10,33 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Wraps loaded GGUF model weights in unmanaged memory with native reference counting.
- * Implements AutoCloseable to ensure resources are cleaned up safely and idempotently.
+ * Wraps loaded GGUF model weights in unmanaged memory.
+ * Extends {@link ArgusNativeResource} for thread-safe handle leasing and idempotent lifecycle management.
  */
-public final class ArgusModel implements AutoCloseable {
-    private MemorySegment modelPtr;
-    private final AtomicInteger refCount = new AtomicInteger(1);
-    private final AtomicBoolean closed = new AtomicBoolean(false);
-    private final AtomicInteger activeOperations = new AtomicInteger(0);
+public final class ArgusModel extends ArgusNativeResource {
 
     ArgusModel(MemorySegment modelPtr) {
-        this.modelPtr = Objects.requireNonNull(modelPtr);
+        super(modelPtr);
     }
 
-    void acquire() {
-        int current;
-        do {
-            current = refCount.get();
-            if (current <= 0 || closed.get()) {
-                throw new IllegalStateException("Cannot acquire reference; ArgusModel has already been closed");
-            }
-        } while (!refCount.compareAndSet(current, current + 1));
+    @Override
+    protected String resourceName() {
+        return "ArgusModel";
+    }
 
-        if (!modelPtr.equals(MemorySegment.NULL)) {
-            try {
-                boolean ok = (boolean) ArgusBindings.argus_model_retain.invokeExact(modelPtr);
-                if (!ok) {
-                    refCount.decrementAndGet();
-                    throw new IllegalStateException("Failed to retain native model handle");
-                }
-            } catch (Throwable t) {
-                refCount.decrementAndGet();
-                if (t instanceof RuntimeException re) throw re;
-                throw new RuntimeException("Failed to retain native model handle", t);
-            }
+    @Override
+    protected void releaseNative(MemorySegment oldHandle) {
+        try {
+            ArgusBindings.argus_model_release.invokeExact(oldHandle);
+        } catch (Throwable t) {
+            // Suppress destruction exceptions
         }
-    }
-
-    void release() {
-        int remaining = refCount.decrementAndGet();
-        if (remaining >= 0) {
-            if (!modelPtr.equals(MemorySegment.NULL)) {
-                try {
-                    ArgusBindings.argus_model_release.invokeExact(modelPtr);
-                } catch (Throwable t) {
-                    // Suppress destruction exceptions
-                }
-            }
-            if (remaining == 0) {
-                modelPtr = MemorySegment.NULL;
-            }
-        }
-    }
-
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    int getRefCount() {
-        return refCount.get();
     }
 
     void clearHandleForTesting() {
-        this.modelPtr = MemorySegment.NULL;
-    }
-
-    private MemorySegment acquireReadLease() {
-        if (closed.get()) {
-            throw new IllegalStateException("ArgusModel has already been closed");
-        }
-        activeOperations.incrementAndGet();
-        if (closed.get() || modelPtr.equals(MemorySegment.NULL)) {
-            activeOperations.decrementAndGet();
-            throw new IllegalStateException("ArgusModel has already been closed");
-        }
-        return modelPtr;
-    }
-
-    private void releaseReadLease() {
-        activeOperations.decrementAndGet();
+        this.handle = MemorySegment.NULL;
     }
 
     /**
@@ -134,6 +79,7 @@ public final class ArgusModel implements AutoCloseable {
             }
             return new ArgusModel(modelPtr);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to execute native load for " + modelPath, t);
         }
     }
@@ -142,10 +88,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the Beginning-Of-Sentence (BOS) token ID.
      */
     public int vocabBos() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_vocab_bos.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_vocab_bos.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve BOS token", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -153,10 +103,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the End-Of-Sentence (EOS) token ID.
      */
     public int vocabEos() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_vocab_eos.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_vocab_eos.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve EOS token", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -164,10 +118,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the End-Of-Turn (EOT) token ID.
      */
     public int vocabEot() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_vocab_eot.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_vocab_eot.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve EOT token", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -175,10 +133,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the Padding (PAD) token ID.
      */
     public int vocabPad() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_vocab_pad.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_vocab_pad.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve PAD token", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -186,10 +148,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the total vocabulary token size count.
      */
     public int vocabNTokens() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_vocab_n_tokens.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_vocab_n_tokens.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve vocabulary size", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -197,10 +163,14 @@ public final class ArgusModel implements AutoCloseable {
      * Checks if the given token ID is an End-Of-Generation (EOG) token.
      */
     public boolean vocabIsEog(int token) {
+        MemorySegment h = acquireReadLease();
         try {
-            return (boolean) ArgusBindings.argus_vocab_is_eog.invokeExact(modelPtr, token);
+            return (boolean) ArgusBindings.argus_vocab_is_eog.invokeExact(h, token);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to check EOG token: " + token, t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -216,10 +186,44 @@ public final class ArgusModel implements AutoCloseable {
     public int getMetadataValue(MemorySegment keySegment, MemorySegment valueBuffer, int bufferSize) {
         Objects.requireNonNull(keySegment);
         Objects.requireNonNull(valueBuffer);
+        ArgusValidation.checkPositive(bufferSize, "bufferSize");
+        ArgusValidation.checkWritable(valueBuffer, bufferSize, "valueBuffer");
+        long keyLen = 0;
+        if (keySegment.byteSize() > 0) {
+            while (keyLen < keySegment.byteSize() && keySegment.get(ValueLayout.JAVA_BYTE, keyLen) != 0) {
+                keyLen++;
+            }
+        }
+        return getMetadataValue(keySegment, keyLen, valueBuffer, bufferSize);
+    }
+
+    /**
+     * Extracts model GGUF metadata string values by key name with explicit length.
+     * Uses caller-provided buffers for absolute zero-allocation lookup.
+     *
+     * @param keySegment  off-heap address containing UTF-8 key string
+     * @param keyLen      exact length in bytes of the key string
+     * @param valueBuffer destination off-heap character array segment
+     * @param bufferSize  maximum capacity limit of target buffer segment
+     * @return character length successfully written, or negative on failure.
+     */
+    public int getMetadataValue(MemorySegment keySegment, long keyLen, MemorySegment valueBuffer, int bufferSize) {
+        Objects.requireNonNull(keySegment);
+        Objects.requireNonNull(valueBuffer);
+        ArgusValidation.checkPositive(bufferSize, "bufferSize");
+        ArgusValidation.checkWritable(valueBuffer, bufferSize, "valueBuffer");
+        ArgusValidation.checkNonNegative(keyLen, "keyLen");
+        if (keyLen > 0) {
+            ArgusValidation.checkReadable(keySegment, keyLen, "keySegment");
+        }
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySegment, valueBuffer, bufferSize);
+            return (int) ArgusBindings.argus_model_meta_val_str_n.invokeExact(h, keySegment, keyLen, valueBuffer, bufferSize);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve metadata string", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -231,17 +235,23 @@ public final class ArgusModel implements AutoCloseable {
      */
     public String getMetadataValue(String key) {
         Objects.requireNonNull(key);
+        MemorySegment h = acquireReadLease();
         try (Arena localArena = Arena.ofConfined()) {
-            MemorySegment keySeg = localArena.allocateFrom(key);
+            byte[] keyBytes = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            MemorySegment keySeg = localArena.allocate(keyBytes.length + 1);
+            MemorySegment.copy(MemorySegment.ofArray(keyBytes), 0, keySeg, 0, keyBytes.length);
+            keySeg.set(ValueLayout.JAVA_BYTE, keyBytes.length, (byte) 0);
+            long keyLen = keyBytes.length;
+
             int initialSize = 512;
             MemorySegment valSeg = localArena.allocate(initialSize);
-            int len = (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySeg, valSeg, initialSize);
+            int len = (int) ArgusBindings.argus_model_meta_val_str_n.invokeExact(h, keySeg, keyLen, valSeg, initialSize);
             if (len < 0) {
                 return null;
             }
             if (len >= initialSize) {
                 MemorySegment largerSeg = localArena.allocate(len + 1);
-                len = (int) ArgusBindings.argus_model_meta_val_str.invokeExact(modelPtr, keySeg, largerSeg, len + 1);
+                len = (int) ArgusBindings.argus_model_meta_val_str_n.invokeExact(h, keySeg, keyLen, largerSeg, len + 1);
                 if (len < 0) {
                     return null;
                 }
@@ -249,7 +259,10 @@ public final class ArgusModel implements AutoCloseable {
             }
             return valSeg.getString(0);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve metadata string for key: " + key, t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -260,8 +273,9 @@ public final class ArgusModel implements AutoCloseable {
      */
     public java.util.Map<String, String> getMetadataMap() {
         java.util.Map<String, String> map = new java.util.LinkedHashMap<>();
+        MemorySegment h = acquireReadLease();
         try {
-            int count = (int) ArgusBindings.argus_model_meta_count.invokeExact(modelPtr);
+            int count = (int) ArgusBindings.argus_model_meta_count.invokeExact(h);
             if (count < 0) {
                 return map;
             }
@@ -270,18 +284,18 @@ public final class ArgusModel implements AutoCloseable {
                 MemorySegment keyBuffer = localArena.allocate(bufferSize);
                 MemorySegment valBuffer = localArena.allocate(bufferSize);
                 for (int i = 0; i < count; i++) {
-                    int keyLen = (int) ArgusBindings.argus_model_meta_key_by_index.invokeExact(modelPtr, i, keyBuffer, bufferSize);
-                    int valLen = (int) ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(modelPtr, i, valBuffer, bufferSize);
+                    int keyLen = (int) ArgusBindings.argus_model_meta_key_by_index.invokeExact(h, i, keyBuffer, bufferSize);
+                    int valLen = (int) ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(h, i, valBuffer, bufferSize);
                     
                     MemorySegment keySeg = keyBuffer;
                     if (keyLen >= bufferSize) {
                         keySeg = localArena.allocate(keyLen + 1);
-                        ArgusBindings.argus_model_meta_key_by_index.invokeExact(modelPtr, i, keySeg, keyLen + 1);
+                        ArgusBindings.argus_model_meta_key_by_index.invokeExact(h, i, keySeg, keyLen + 1);
                     }
                     MemorySegment valSeg = valBuffer;
                     if (valLen >= bufferSize) {
                         valSeg = localArena.allocate(valLen + 1);
-                        ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(modelPtr, i, valSeg, valLen + 1);
+                        ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(h, i, valSeg, valLen + 1);
                     }
                     
                     if (keyLen >= 0 && valLen >= 0) {
@@ -290,7 +304,10 @@ public final class ArgusModel implements AutoCloseable {
                 }
             }
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve model metadata map", t);
+        } finally {
+            releaseReadLease();
         }
         return map;
     }
@@ -299,10 +316,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's embedding dimension.
      */
     public int nEmbd() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_embd.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_embd.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve embedding dimension", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -310,10 +331,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's training context length limit.
      */
     public int nCtxTrain() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_ctx_train.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_ctx_train.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve training context limit", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -321,10 +346,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's transformer layer count.
      */
     public int nLayer() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_layer.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_layer.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve layer count", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -332,10 +361,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's attention query head count.
      */
     public int nHead() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_head.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_head.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve query head count", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -343,10 +376,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's attention key-value head count.
      */
     public int nHeadKv() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_head_kv.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_head_kv.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve key-value head count", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -354,10 +391,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the model's total parameter count.
      */
     public long nParams() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (long) ArgusBindings.argus_model_n_params.invokeExact(modelPtr);
+            return (long) ArgusBindings.argus_model_n_params.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve parameter count", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -365,10 +406,14 @@ public final class ArgusModel implements AutoCloseable {
      * Checks if the model architecture contains an encoder stack or non-causal topology.
      */
     public boolean hasEncoder() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (boolean) ArgusBindings.argus_model_has_encoder.invokeExact(modelPtr);
+            return (boolean) ArgusBindings.argus_model_has_encoder.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model encoder topology", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -376,10 +421,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the rotary position embedding dimensions per token (4 for M-RoPE, 1 for standard 1D-RoPE).
      */
     public int nPosPerEmbd() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (int) ArgusBindings.argus_model_n_pos_per_embd.invokeExact(modelPtr);
+            return (int) ArgusBindings.argus_model_n_pos_per_embd.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model n_pos_per_embd", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -387,10 +436,14 @@ public final class ArgusModel implements AutoCloseable {
      * Checks whether the loaded model uses Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE).
      */
     public boolean isMRoPE() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (boolean) ArgusBindings.argus_model_is_mrope.invokeExact(modelPtr);
+            return (boolean) ArgusBindings.argus_model_is_mrope.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model is_mrope", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -398,10 +451,14 @@ public final class ArgusModel implements AutoCloseable {
      * Returns the total memory size of model weights in bytes.
      */
     public long modelSize() {
+        MemorySegment h = acquireReadLease();
         try {
-            return (long) ArgusBindings.argus_model_size.invokeExact(modelPtr);
+            return (long) ArgusBindings.argus_model_size.invokeExact(h);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model size", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -409,13 +466,17 @@ public final class ArgusModel implements AutoCloseable {
      * Returns a human-readable string describing the model architecture.
      */
     public String desc() {
+        MemorySegment h = acquireReadLease();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment buf = arena.allocate(128);
-            int len = (int) ArgusBindings.argus_model_desc.invokeExact(modelPtr, buf, 128);
+            int len = (int) ArgusBindings.argus_model_desc.invokeExact(h, buf, 128);
             if (len < 0) return "";
             return buf.getString(0);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model description", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -423,10 +484,14 @@ public final class ArgusModel implements AutoCloseable {
      * Calculates the KV cache memory footprint in bytes per token for the entire layer stack.
      */
     public long kvBytesPerToken(int typeK, int typeV) {
+        MemorySegment h = acquireReadLease();
         try {
-            return (long) ArgusBindings.argus_model_kv_bytes_per_token.invokeExact(modelPtr, typeK, typeV);
+            return (long) ArgusBindings.argus_model_kv_bytes_per_token.invokeExact(h, typeK, typeV);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to calculate KV bytes per token", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -434,10 +499,14 @@ public final class ArgusModel implements AutoCloseable {
      * Estimates total memory requirement (Weights + KV Cache) for a target context length.
      */
     public long estimateVramBytes(int contextLength, int typeK, int typeV) {
+        MemorySegment h = acquireReadLease();
         try {
-            return (long) ArgusBindings.argus_model_estimate_vram_bytes.invokeExact(modelPtr, contextLength, typeK, typeV);
+            return (long) ArgusBindings.argus_model_estimate_vram_bytes.invokeExact(h, contextLength, typeK, typeV);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to estimate VRAM bytes", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -448,6 +517,7 @@ public final class ArgusModel implements AutoCloseable {
         try {
             return (long) ArgusBindings.argus_quant_type_size.invokeExact(type);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query GGML quantization type size", t);
         }
     }
@@ -459,6 +529,7 @@ public final class ArgusModel implements AutoCloseable {
         try {
             return (int) ArgusBindings.argus_quant_block_size.invokeExact(type);
         } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query GGML quantization block size", t);
         }
     }
@@ -480,10 +551,10 @@ public final class ArgusModel implements AutoCloseable {
         long maxTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
         long textLen = textSeg.byteSize();
 
-        MemorySegment handle = acquireReadLease();
+        MemorySegment h = acquireReadLease();
         try {
             int res = (int) ArgusBindings.argus_tokenize_n.invokeExact(
-                handle,
+                h,
                 textSeg,
                 textLen,
                 outTokensSeg,
@@ -499,20 +570,6 @@ public final class ArgusModel implements AutoCloseable {
             throw new RuntimeException("Failed to tokenize input text", t);
         } finally {
             releaseReadLease();
-        }
-    }
-
-    /**
-     * Returns the raw memory address representing the unmanaged model structure.
-     */
-    public MemorySegment getHandle() {
-        return modelPtr;
-    }
-
-    @Override
-    public void close() {
-        if (closed.compareAndSet(false, true)) {
-            release();
         }
     }
 }

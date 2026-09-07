@@ -81,35 +81,27 @@ void argus_audio_free(argus_audio_context_t * ctx) {
 }
 
 void argus_audio_set_n_threads(argus_audio_context_t * ctx, int32_t n_threads) {
-    if (!ctx) {
-        return;
-    }
-    try {
-        clear_last_error();
+    argus_guard_void("argus_audio_set_n_threads", [&]() {
+        if (!ctx) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(ctx->mtx);
         ctx->cpu_threads = (n_threads > 0) ? n_threads : 1;
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "exception in argus_audio_set_n_threads");
-    }
+    });
 }
 
 int32_t argus_audio_get_n_threads(argus_audio_context_t * ctx) {
-    if (!ctx) {
-        return -1;
-    }
-    try {
-        clear_last_error();
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_audio_get_n_threads", [&]() -> int32_t {
+        if (!ctx) {
+            return -1;
+        }
         std::lock_guard<std::mutex> lock(ctx->mtx);
         return ctx->cpu_threads;
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "exception in argus_audio_get_n_threads");
-        return -1;
-    }
+    });
 }
 
 int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_data, int32_t sample_count, char * out_text, int32_t max_chars) {
-    try {
-        clear_last_error();
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_transcribe_audio", [&]() -> int32_t {
         if (!ctx || !pcm_data || sample_count <= 0 || !out_text || max_chars <= 0) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid transcribe parameters");
             return -1;
@@ -178,16 +170,7 @@ int32_t argus_transcribe_audio(argus_audio_context_t * ctx, const float * pcm_da
         }
 
         return total_written_chars;
-    } catch (const std::bad_alloc & e) {
-        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
-        return -1;
-    } catch (const std::exception & e) {
-        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
-        return -1;
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during audio transcription");
-        return -1;
-    }
+    });
 }
 
 } // extern "C"

@@ -12,10 +12,11 @@ import java.util.List;
  */
 public final class ArgusBackend {
     public static final long FEATURE_CPU_ACCEL = 1L << 0;
+    public static final long FEATURE_CPU       = FEATURE_CPU_ACCEL;
     public static final long FEATURE_CUDA      = 1L << 1;
     public static final long FEATURE_ROCM      = 1L << 2;
-    public static final long FEATURE_METAL     = 1L << 3;
-    public static final long FEATURE_VULKAN    = 1L << 4;
+    public static final long FEATURE_VULKAN    = 1L << 3;
+    public static final long FEATURE_METAL     = 1L << 4;
     public static final long FEATURE_SYCL      = 1L << 5;
 
     private static boolean initialized = false;
@@ -126,7 +127,7 @@ public final class ArgusBackend {
             if (namePtr.equals(MemorySegment.NULL)) {
                 return "UNKNOWN";
             }
-            return namePtr.reinterpret(Long.MAX_VALUE).getString(0);
+            return namePtr.reinterpret(256).getString(0);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_get_name", t);

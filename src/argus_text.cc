@@ -436,71 +436,71 @@ void argus_context_free(argus_context_t * ctx) {
 
 
 void argus_set_n_threads(argus_context_t * ctx, int32_t n_threads, int32_t n_threads_batch) {
-    if (!ctx) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-    if (ctx->ctx) {
-        llama_set_n_threads(ctx->ctx, n_threads, n_threads_batch);
-    }
-    if (ctx->draft_ctx) {
-        llama_set_n_threads(ctx->draft_ctx, n_threads, n_threads_batch);
-    }
-    if (ctx->vocoder_ctx) {
-        llama_set_n_threads(ctx->vocoder_ctx, n_threads, n_threads_batch);
-    }
+    argus_guard_void("argus_set_n_threads", [&]() {
+        if (!ctx) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        if (ctx->ctx) {
+            llama_set_n_threads(ctx->ctx, n_threads, n_threads_batch);
+        }
+        if (ctx->draft_ctx) {
+            llama_set_n_threads(ctx->draft_ctx, n_threads, n_threads_batch);
+        }
+        if (ctx->vocoder_ctx) {
+            llama_set_n_threads(ctx->vocoder_ctx, n_threads, n_threads_batch);
+        }
+    });
 }
 
 int32_t argus_get_n_threads(argus_context_t * ctx) {
-    if (!ctx) {
-        return -1;
-    }
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-    if (!ctx->ctx) {
-        return -1;
-    }
-    return llama_n_threads(ctx->ctx);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_get_n_threads", [&]() -> int32_t {
+        if (!ctx) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        if (!ctx->ctx) {
+            return -1;
+        }
+        return llama_n_threads(ctx->ctx);
+    });
 }
 
 int32_t argus_get_n_threads_batch(argus_context_t * ctx) {
-    if (!ctx) {
-        return -1;
-    }
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-    if (!ctx->ctx) {
-        return -1;
-    }
-    return llama_n_threads_batch(ctx->ctx);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_get_n_threads_batch", [&]() -> int32_t {
+        if (!ctx) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        if (!ctx->ctx) {
+            return -1;
+        }
+        return llama_n_threads_batch(ctx->ctx);
+    });
 }
 
 bool argus_context_has_draft(const argus_context_t * ctx) {
-    if (!ctx) {
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
-    return ctx->draft_ctx != nullptr;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_context_has_draft", [&]() -> bool {
+        if (!ctx) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        return ctx->draft_ctx != nullptr;
+    });
 }
-
 
 // =========================================================================
 // Tokenizer (Lock-Free, Read-Only Model Vocabulary Operations)
 // =========================================================================
 
 int32_t argus_tokenize_n(const argus_model_t * model, const char * text, size_t text_len, int32_t * out_tokens, int32_t max_tokens, bool add_bos) {
-    try {
-        clear_last_error();
-        if (!model || !model->vocab || !text || !out_tokens || max_tokens <= 0) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_tokenize_n", [&]() -> int32_t {
+        if (!model || !model->vocab || !text || !out_tokens || max_tokens <= 0 || text_len > (size_t)INT32_MAX) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_tokenize_n");
             return -1;
         }
-
         return llama_tokenize(model->vocab, text, (int32_t)text_len, out_tokens, max_tokens, add_bos, true);
-    } catch (const std::exception & e) {
-        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during tokenization");
-    }
-    return -1;
+    });
 }
 
 int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t * out_tokens, int32_t max_tokens, bool add_bos) {
@@ -512,118 +512,171 @@ int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t *
 }
 
 int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size) {
-    if (!model || !model->vocab || !out_buf || buf_size <= 0 || token < 0) {
-        return -1;
-    }
-
-    return llama_token_to_piece(model->vocab, token, out_buf, buf_size, 0, true);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_token_to_piece", [&]() -> int32_t {
+        if (!model || !model->vocab || !out_buf || buf_size <= 0 || token < 0) {
+            return -1;
+        }
+        return llama_token_to_piece(model->vocab, token, out_buf, buf_size, 0, true);
+    });
 }
 
 int32_t argus_vocab_bos(const argus_model_t * model) {
-    return model && model->vocab ? (int32_t)llama_vocab_bos(model->vocab) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_vocab_bos", [&]() -> int32_t {
+        return model && model->vocab ? (int32_t)llama_vocab_bos(model->vocab) : -1;
+    });
 }
 
 int32_t argus_vocab_eos(const argus_model_t * model) {
-    return model && model->vocab ? (int32_t)llama_vocab_eos(model->vocab) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_vocab_eos", [&]() -> int32_t {
+        return model && model->vocab ? (int32_t)llama_vocab_eos(model->vocab) : -1;
+    });
 }
 
 int32_t argus_vocab_eot(const argus_model_t * model) {
-    return model && model->vocab ? (int32_t)llama_vocab_eot(model->vocab) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_vocab_eot", [&]() -> int32_t {
+        return model && model->vocab ? (int32_t)llama_vocab_eot(model->vocab) : -1;
+    });
 }
 
 int32_t argus_vocab_pad(const argus_model_t * model) {
-    return model && model->vocab ? (int32_t)llama_vocab_pad(model->vocab) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_vocab_pad", [&]() -> int32_t {
+        return model && model->vocab ? (int32_t)llama_vocab_pad(model->vocab) : -1;
+    });
 }
 
 int32_t argus_vocab_n_tokens(const argus_model_t * model) {
-    return model && model->vocab ? (int32_t)llama_vocab_n_tokens(model->vocab) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_vocab_n_tokens", [&]() -> int32_t {
+        return model && model->vocab ? (int32_t)llama_vocab_n_tokens(model->vocab) : -1;
+    });
 }
 
 bool argus_vocab_is_eog(const argus_model_t * model, int32_t token) {
-    return (model && model->vocab && token >= 0) ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_vocab_is_eog", [&]() -> bool {
+        return (model && model->vocab && token >= 0) ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
+    });
+}
+
+int32_t argus_model_meta_val_str_n(const argus_model_t * model, const char * key, size_t key_len, char * buf, int32_t buf_size) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_val_str_n", [&]() -> int32_t {
+        if (!model || !model->model || !key || !buf || buf_size <= 0 || key_len == 0 || key_len > (size_t)INT32_MAX) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_model_meta_val_str_n");
+            return -1;
+        }
+        std::string key_str(key, key_len);
+        return llama_model_meta_val_str(model->model, key_str.c_str(), buf, (size_t)buf_size);
+    });
 }
 
 int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size) {
-    if (!model || !model->model || !key || !buf || buf_size <= 0) {
+    if (!key) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "key is NULL");
         return -1;
     }
-    return llama_model_meta_val_str(model->model, key, buf, (size_t)buf_size);
+    return argus_model_meta_val_str_n(model, key, std::strlen(key), buf, buf_size);
 }
 
 int32_t argus_model_meta_count(const argus_model_t * model) {
-    if (!model || !model->model) {
-        return -1;
-    }
-    return llama_model_meta_count(model->model);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_count", [&]() -> int32_t {
+        if (!model || !model->model) {
+            return -1;
+        }
+        return llama_model_meta_count(model->model);
+    });
 }
 
 int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
-    if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
-        return -1;
-    }
-    return llama_model_meta_key_by_index(model->model, index, buf, (size_t)buf_size);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_key_by_index", [&]() -> int32_t {
+        if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+            return -1;
+        }
+        return llama_model_meta_key_by_index(model->model, index, buf, (size_t)buf_size);
+    });
 }
 
 int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
-    if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
-        return -1;
-    }
-    return llama_model_meta_val_str_by_index(model->model, index, buf, (size_t)buf_size);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_val_str_by_index", [&]() -> int32_t {
+        if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+            return -1;
+        }
+        return llama_model_meta_val_str_by_index(model->model, index, buf, (size_t)buf_size);
+    });
 }
 
 int32_t argus_model_n_embd(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_embd(model->model) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_embd", [&]() -> int32_t {
+        return model && model->model ? llama_model_n_embd(model->model) : -1;
+    });
 }
 
 int32_t argus_model_n_ctx_train(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_ctx_train(model->model) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_ctx_train", [&]() -> int32_t {
+        return model && model->model ? llama_model_n_ctx_train(model->model) : -1;
+    });
 }
 
 int32_t argus_model_n_layer(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_layer(model->model) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_layer", [&]() -> int32_t {
+        return model && model->model ? llama_model_n_layer(model->model) : -1;
+    });
 }
 
 int32_t argus_model_n_head(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_head(model->model) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_head", [&]() -> int32_t {
+        return model && model->model ? llama_model_n_head(model->model) : -1;
+    });
 }
 
 int32_t argus_model_n_head_kv(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_head_kv(model->model) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_head_kv", [&]() -> int32_t {
+        return model && model->model ? llama_model_n_head_kv(model->model) : -1;
+    });
 }
 
 uint64_t argus_model_n_params(const argus_model_t * model) {
-    return model && model->model ? llama_model_n_params(model->model) : 0;
+    return argus_guard(ARGUS_ERROR_INTERNAL, 0ULL, "argus_model_n_params", [&]() -> uint64_t {
+        return model && model->model ? llama_model_n_params(model->model) : 0ULL;
+    });
 }
 
 bool argus_model_has_encoder(const argus_model_t * model) {
-    return model && model->model ? llama_model_has_encoder(model->model) : false;
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_model_has_encoder", [&]() -> bool {
+        return model && model->model ? llama_model_has_encoder(model->model) : false;
+    });
 }
 
 int32_t argus_model_n_pos_per_embd(const argus_model_t * model) {
-    if (!model || !model->model) {
-        return -1;
-    }
-    enum llama_rope_type rtype = llama_model_rope_type(model->model);
-    return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE) ? 4 : 1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_pos_per_embd", [&]() -> int32_t {
+        if (!model || !model->model) {
+            return -1;
+        }
+        enum llama_rope_type rtype = llama_model_rope_type(model->model);
+        return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE) ? 4 : 1;
+    });
 }
 
 bool argus_model_is_mrope(const argus_model_t * model) {
-    if (!model || !model->model) {
-        return false;
-    }
-    enum llama_rope_type rtype = llama_model_rope_type(model->model);
-    return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE);
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_model_is_mrope", [&]() -> bool {
+        if (!model || !model->model) {
+            return false;
+        }
+        enum llama_rope_type rtype = llama_model_rope_type(model->model);
+        return (rtype == LLAMA_ROPE_TYPE_MROPE || rtype == LLAMA_ROPE_TYPE_IMROPE);
+    });
 }
 
 uint64_t argus_model_size(const argus_model_t * model) {
-    return model && model->model ? llama_model_size(model->model) : 0;
+    return argus_guard(ARGUS_ERROR_INTERNAL, 0ULL, "argus_model_size", [&]() -> uint64_t {
+        return model && model->model ? llama_model_size(model->model) : 0ULL;
+    });
 }
 
 int32_t argus_model_desc(const argus_model_t * model, char * buf, int32_t buf_size) {
-    if (!model || !model->model || !buf || buf_size <= 0) {
-        return -1;
-    }
-    return llama_model_desc(model->model, buf, (size_t)buf_size);
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_desc", [&]() -> int32_t {
+        if (!model || !model->model || !buf || buf_size <= 0) {
+            return -1;
+        }
+        return llama_model_desc(model->model, buf, (size_t)buf_size);
+    });
 }
 
 static enum ggml_type to_ggml_type(int32_t type) {
@@ -637,59 +690,67 @@ static enum ggml_type to_ggml_type(int32_t type) {
 }
 
 size_t argus_quant_type_size(int32_t type) {
-    if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
-        return 0;
-    }
-    enum ggml_type gtype = to_ggml_type(type);
-    return ggml_type_size(gtype);
+    return argus_guard(ARGUS_ERROR_INTERNAL, 0ULL, "argus_quant_type_size", [&]() -> size_t {
+        if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
+            return 0;
+        }
+        enum ggml_type gtype = to_ggml_type(type);
+        return ggml_type_size(gtype);
+    });
 }
 
 int32_t argus_quant_block_size(int32_t type) {
-    if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
-        return 0;
-    }
-    enum ggml_type gtype = to_ggml_type(type);
-    return (int32_t)ggml_blck_size(gtype);
+    return argus_guard(ARGUS_ERROR_INTERNAL, 0, "argus_quant_block_size", [&]() -> int32_t {
+        if (type < 0 || (type >= GGML_TYPE_COUNT && type != ARGUS_KV_TYPE_F16)) {
+            return 0;
+        }
+        enum ggml_type gtype = to_ggml_type(type);
+        return (int32_t)ggml_blck_size(gtype);
+    });
 }
 
 int64_t argus_model_kv_bytes_per_token(const argus_model_t * model, int32_t type_k, int32_t type_v) {
-    if (!model || !model->model) {
-        return -1;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1LL, "argus_model_kv_bytes_per_token", [&]() -> int64_t {
+        if (!model || !model->model) {
+            return -1;
+        }
 
-    int32_t n_layer = argus_model_n_layer(model);
-    int32_t n_head = argus_model_n_head(model);
-    int32_t n_head_kv = argus_model_n_head_kv(model);
-    int32_t n_embd = argus_model_n_embd(model);
+        int32_t n_layer = argus_model_n_layer(model);
+        int32_t n_head = argus_model_n_head(model);
+        int32_t n_head_kv = argus_model_n_head_kv(model);
+        int32_t n_embd = argus_model_n_embd(model);
 
-    if (n_layer <= 0 || n_head <= 0 || n_head_kv <= 0 || n_embd <= 0) {
-        return -1;
-    }
+        if (n_layer <= 0 || n_head <= 0 || n_head_kv <= 0 || n_embd <= 0) {
+            return -1;
+        }
 
-    enum ggml_type gk = to_ggml_type(type_k);
-    enum ggml_type gv = to_ggml_type(type_v);
+        enum ggml_type gk = to_ggml_type(type_k);
+        enum ggml_type gv = to_ggml_type(type_v);
 
-    int32_t head_dim = n_embd / n_head;
+        int32_t head_dim = n_embd / n_head;
 
-    double bytes_per_elem_k = (double)ggml_type_size(gk) / (double)ggml_blck_size(gk);
-    double bytes_per_elem_v = (double)ggml_type_size(gv) / (double)ggml_blck_size(gv);
+        double bytes_per_elem_k = (double)ggml_type_size(gk) / (double)ggml_blck_size(gk);
+        double bytes_per_elem_v = (double)ggml_type_size(gv) / (double)ggml_blck_size(gv);
 
-    double kv_bytes_per_token_per_layer = n_head_kv * head_dim * (bytes_per_elem_k + bytes_per_elem_v);
-    return static_cast<int64_t>(n_layer * kv_bytes_per_token_per_layer);
+        double kv_bytes_per_token_per_layer = n_head_kv * head_dim * (bytes_per_elem_k + bytes_per_elem_v);
+        return static_cast<int64_t>(n_layer * kv_bytes_per_token_per_layer);
+    });
 }
 
 int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t context_length, int32_t type_k, int32_t type_v) {
-    if (!model || !model->model || context_length < 0) {
-        return -1;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1LL, "argus_model_estimate_vram_bytes", [&]() -> int64_t {
+        if (!model || !model->model || context_length < 0) {
+            return -1;
+        }
 
-    int64_t kv_per_token = argus_model_kv_bytes_per_token(model, type_k, type_v);
-    if (kv_per_token < 0) {
-        return -1;
-    }
+        int64_t kv_per_token = argus_model_kv_bytes_per_token(model, type_k, type_v);
+        if (kv_per_token < 0) {
+            return -1;
+        }
 
-    uint64_t model_bytes = argus_model_size(model);
-    return static_cast<int64_t>(model_bytes) + (kv_per_token * static_cast<int64_t>(context_length));
+        uint64_t model_bytes = argus_model_size(model);
+        return static_cast<int64_t>(model_bytes) + (kv_per_token * static_cast<int64_t>(context_length));
+    });
 }
 
 // =========================================================================
@@ -1537,42 +1598,47 @@ void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
 }
 
 int32_t argus_kv_cache_seq_pos_max(const argus_context_t * ctx, int32_t seq_id) {
-    if (!ctx || !ctx->ctx) {
-        return -1;
-    }
-
-    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
-    llama_memory_t mem = llama_get_memory(ctx->ctx);
-    return mem ? (int32_t)llama_memory_seq_pos_max(mem, seq_id) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_kv_cache_seq_pos_max", [&]() -> int32_t {
+        if (!ctx || !ctx->ctx) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        return mem ? (int32_t)llama_memory_seq_pos_max(mem, seq_id) : -1;
+    });
 }
 
 int32_t argus_kv_cache_seq_pos_min(const argus_context_t * ctx, int32_t seq_id) {
-    if (!ctx || !ctx->ctx) {
-        return -1;
-    }
-
-    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
-    llama_memory_t mem = llama_get_memory(ctx->ctx);
-    return mem ? (int32_t)llama_memory_seq_pos_min(mem, seq_id) : -1;
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_kv_cache_seq_pos_min", [&]() -> int32_t {
+        if (!ctx || !ctx->ctx) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        return mem ? (int32_t)llama_memory_seq_pos_min(mem, seq_id) : -1;
+    });
 }
 
 // =========================================================================
-// TTS: Speech Synthesis Placeholder
+// TTS: Speech Synthesis
 // =========================================================================
 
-int32_t argus_synthesize_speech(
+int32_t argus_synthesize_speech_n(
     argus_context_t * ctx,
     const argus_model_t * wavtokenizer_model,
     const char * text,
+    size_t text_len,
     int32_t voice_seed,
     float * out_pcm,
     int32_t max_samples,
     float * workspace,
     int64_t workspace_size_floats) {
 
-    if (!ctx || !wavtokenizer_model || !text || !out_pcm || max_samples <= 0) {
-        return -1;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_synthesize_speech_n", [&]() -> int32_t {
+        if (!ctx || !wavtokenizer_model || !text || text_len == 0 || text_len > (size_t)INT32_MAX || !out_pcm || max_samples <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_synthesize_speech_n");
+            return -1;
+        }
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
     (void)voice_seed;
@@ -1625,7 +1691,8 @@ int32_t argus_synthesize_speech(
     tokenize_to_vector(vocab, audio_text, prompt_inp, false);
 
     // tokenize input text
-    std::string prompt_clean = process_text_for_outetts(text);
+    std::string text_str(text, text_len);
+    std::string prompt_clean = process_text_for_outetts(text_str);
     tokenize_to_vector(vocab, prompt_clean, prompt_inp, false);
 
     tokenize_to_vector(vocab, "<|text_end|>\n", prompt_inp, false);
@@ -1865,6 +1932,24 @@ int32_t argus_synthesize_speech(
     }
 
     return count_to_write;
+    });
+}
+
+int32_t argus_synthesize_speech(
+    argus_context_t * ctx,
+    const argus_model_t * wavtokenizer_model,
+    const char * text,
+    int32_t voice_seed,
+    float * out_pcm,
+    int32_t max_samples,
+    float * workspace,
+    int64_t workspace_size_floats) {
+    if (!text) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "text pointer is NULL");
+        return -1;
+    }
+    return argus_synthesize_speech_n(
+        ctx, wavtokenizer_model, text, std::strlen(text), voice_seed, out_pcm, max_samples, workspace, workspace_size_floats);
 }
 
 } // extern "C"

@@ -215,12 +215,17 @@ public final class ArgusBindings {
 
     private ArgusBindings() {}
 
-    private static MethodHandle bind(String name, FunctionDescriptor desc) {
+    private static MethodHandle bind(String name, FunctionDescriptor desc, Linker.Option... options) {
         return LINKER.downcallHandle(
             LOOKUP.find(name)
                   .orElseThrow(() -> new NoSuchMethodError("Failed to resolve native symbol: " + name)),
-            desc
+            desc,
+            options
         );
+    }
+
+    private static MethodHandle bindCritical(String name, FunctionDescriptor desc) {
+        return bind(name, desc, Linker.Option.critical(false));
     }
 
     // Lifecycle
@@ -236,7 +241,7 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid()
     );
 
-    public static final MethodHandle argus_backend_get_count = bind("argus_backend_get_count",
+    public static final MethodHandle argus_backend_get_count = bindCritical("argus_backend_get_count",
         FunctionDescriptor.of(ValueLayout.JAVA_INT)
     );
 
@@ -289,33 +294,38 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
-    public static final MethodHandle argus_vocab_bos = bind("argus_vocab_bos",
+    public static final MethodHandle argus_vocab_bos = bindCritical("argus_vocab_bos",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_eos = bind("argus_vocab_eos",
+    public static final MethodHandle argus_vocab_eos = bindCritical("argus_vocab_eos",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_eot = bind("argus_vocab_eot",
+    public static final MethodHandle argus_vocab_eot = bindCritical("argus_vocab_eot",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_pad = bind("argus_vocab_pad",
+    public static final MethodHandle argus_vocab_pad = bindCritical("argus_vocab_pad",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_n_tokens = bind("argus_vocab_n_tokens",
+    public static final MethodHandle argus_vocab_n_tokens = bindCritical("argus_vocab_n_tokens",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_is_eog = bind("argus_vocab_is_eog",
+    public static final MethodHandle argus_vocab_is_eog = bindCritical("argus_vocab_is_eog",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_model_meta_val_str = bind("argus_model_meta_val_str",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, 
             ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_model_meta_val_str_n = bind("argus_model_meta_val_str_n",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_model_meta_count = bind("argus_model_meta_count",
@@ -466,6 +476,12 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
 
+    public static final MethodHandle argus_synthesize_speech_n = bind("argus_synthesize_speech_n",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+    );
+
     // Whisper Audio (STT)
     public static final MethodHandle argus_audio_init = bind("argus_audio_init",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -568,7 +584,7 @@ public final class ArgusBindings {
     );
 
     // Error Handling & Diagnostic Status
-    public static final MethodHandle argus_last_error_code = bind("argus_last_error_code",
+    public static final MethodHandle argus_last_error_code = bindCritical("argus_last_error_code",
         FunctionDescriptor.of(ValueLayout.JAVA_INT)
     );
 
@@ -576,15 +592,19 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_clear_error = bind("argus_clear_error",
+    public static final MethodHandle argus_last_error_message_copy = bindCritical("argus_last_error_message_copy",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_clear_error = bindCritical("argus_clear_error",
         FunctionDescriptor.ofVoid()
     );
 
-    public static final MethodHandle argus_build_features = bind("argus_build_features",
+    public static final MethodHandle argus_build_features = bindCritical("argus_build_features",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG)
     );
 
-    public static final MethodHandle argus_backend_is_initialized = bind("argus_backend_is_initialized",
+    public static final MethodHandle argus_backend_is_initialized = bindCritical("argus_backend_is_initialized",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
     );
 
@@ -610,7 +630,7 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_abort_flag_is_requested = bind("argus_abort_flag_is_requested",
+    public static final MethodHandle argus_abort_flag_is_requested = bindCritical("argus_abort_flag_is_requested",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 

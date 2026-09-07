@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.7.0
+ * @version 1.7.1
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -90,6 +90,14 @@ ARGUS_API argus_error_code_t argus_last_error_code(void);
  * @return Null-terminated diagnostic string (thread-local fixed storage).
  */
 ARGUS_API const char * argus_last_error_message(void);
+
+/**
+ * @brief Copies the last error diagnostic message into caller-provided bounded memory.
+ * @param out Destination character buffer
+ * @param capacity Maximum byte capacity of destination buffer
+ * @return Number of characters copied excluding terminator, or -1 on invalid argument.
+ */
+ARGUS_API int32_t argus_last_error_message_copy(char * out, int32_t capacity);
 
 /**
  * @brief Clears the last error state recorded on the calling thread.
@@ -474,6 +482,17 @@ ARGUS_API bool argus_vocab_is_eog(const argus_model_t * model, int32_t token);
 ARGUS_API int32_t argus_model_meta_val_str(const argus_model_t * model, const char * key, char * buf, int32_t buf_size);
 
 /**
+ * @brief Extracts model GGUF metadata string values by length-bearing key name.
+ * @param model Reference model containing the metadata.
+ * @param key Pointer to UTF-8 key string.
+ * @param key_len Exact byte length of the key string.
+ * @param buf Output character buffer to populate.
+ * @param buf_size Character size capacity limits of the provided target output buffer.
+ * @return String character length written, or negative on failure.
+ */
+ARGUS_API int32_t argus_model_meta_val_str_n(const argus_model_t * model, const char * key, size_t key_len, char * buf, int32_t buf_size);
+
+/**
  * @brief Retrieves the total count of metadata entries in the GGUF model.
  * @param model Reference model containing the metadata.
  * @return The total number of key-value pairs, or negative on failure.
@@ -795,6 +814,23 @@ ARGUS_API int32_t argus_kv_cache_seq_pos_min(const argus_context_t * ctx, int32_
  * @return Absolute element sample count written directly to the memory address.
  */
 ARGUS_API int32_t argus_synthesize_speech(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, int32_t voice_seed, float * out_pcm, int32_t max_samples, float * workspace, int64_t workspace_size_floats);
+
+/**
+ * @brief Evaluates and normalizes raw text input with explicit byte length into an audio wave segment.
+ * Generates speech natively via unified unmanaged Speech-LLM multi-codecs.
+ * This is a synchronized context operation.
+ * @param ctx Reference execution context containing loaded OuteTTS model states.
+ * @param wavtokenizer_model Reference model containing the WavTokenizer vocoder.
+ * @param text Conversational stream string to read aloud.
+ * @param text_len Exact byte length of the input text.
+ * @param voice_seed Integer layout seed determining vocal timbre and speaker baseline.
+ * @param out_pcm Flat floating-point buffer array segment to hold normalized sample data.
+ * @param max_samples Sizing ceiling constraints of the destination floating-point data buffer segment.
+ * @param workspace Optional off-heap SIMD workspace scratch buffer.
+ * @param workspace_size_floats Size of workspace buffer in floats.
+ * @return Absolute element sample count written directly to the memory address.
+ */
+ARGUS_API int32_t argus_synthesize_speech_n(argus_context_t * ctx, const argus_model_t * wavtokenizer_model, const char * text, size_t text_len, int32_t voice_seed, float * out_pcm, int32_t max_samples, float * workspace, int64_t workspace_size_floats);
 
 // =========================================================================
 // 4. Audio Stream Transcription Subsystem (ASR / STT)

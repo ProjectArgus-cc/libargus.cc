@@ -1,29 +1,36 @@
 package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import cc.projectargus.libargus.internal.ArgusValidation;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Wraps raw/parsed media content in native memory.
- * Implements AutoCloseable for safe resource deallocation in unmanaged space.
+ * Extends {@link ArgusNativeResource} for safe native handle leasing and idempotent lifecycle deallocation.
  */
-public final class ArgusBitmap implements AutoCloseable {
-    private MemorySegment bitmapPtr;
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+public final class ArgusBitmap extends ArgusNativeResource {
 
     ArgusBitmap(MemorySegment bitmapPtr) {
-        this.bitmapPtr = Objects.requireNonNull(bitmapPtr);
+        super(bitmapPtr);
     }
 
-    void setHandle(MemorySegment handle) {
-        checkNotClosed();
-        this.bitmapPtr = Objects.requireNonNull(handle);
+    @Override
+    protected String resourceName() {
+        return "ArgusBitmap";
+    }
+
+    @Override
+    protected void releaseNative(MemorySegment oldHandle) {
+        try {
+            ArgusBindings.argus_bitmap_free.invokeExact(oldHandle);
+        } catch (Throwable t) {
+            // Suppress destruction exceptions
+        }
     }
 
     /**
@@ -78,10 +85,11 @@ public final class ArgusBitmap implements AutoCloseable {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(filePath);
 
-        MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
+        MemorySegment mctxH = mctx.acquireReadLease();
         try {
+            MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_load_file.invokeExact(
-                mctx.getHandle(),
+                mctxH,
                 pathSeg,
                 placeholder
             );
@@ -92,6 +100,8 @@ public final class ArgusBitmap implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from file: " + filePath, t);
+        } finally {
+            mctx.releaseReadLease();
         }
     }
 
@@ -103,10 +113,11 @@ public final class ArgusBitmap implements AutoCloseable {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(buffer);
 
-        MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
+        MemorySegment mctxH = mctx.acquireReadLease();
         try {
+            MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_load_buffer.invokeExact(
-                mctx.getHandle(),
+                mctxH,
                 bufferSeg,
                 buffer.length,
                 placeholder
@@ -118,37 +129,8 @@ public final class ArgusBitmap implements AutoCloseable {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from memory buffer", t);
-        }
-    }
-
-    public MemorySegment getHandle() {
-        checkNotClosed();
-        return bitmapPtr;
-    }
-
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    private void checkNotClosed() {
-        if (closed.get() || bitmapPtr == null || bitmapPtr.equals(MemorySegment.NULL)) {
-            throw new IllegalStateException("ArgusBitmap has been closed");
-        }
-    }
-
-    @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) {
-            return;
-        }
-        if (bitmapPtr != null && !bitmapPtr.equals(MemorySegment.NULL)) {
-            try {
-                ArgusBindings.argus_bitmap_free.invokeExact(bitmapPtr);
-            } catch (Throwable t) {
-                throw new RuntimeException("Failed to release native bitmap resources", t);
-            } finally {
-                bitmapPtr = MemorySegment.NULL;
-            }
+        } finally {
+            mctx.releaseReadLease();
         }
     }
 }

@@ -8,15 +8,15 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.0 Release — Enforceable Native Ownership, Panama FFM Concurrency Safety, Validated Memory Boundaries & C ABI Exception Containment**
+> **v1.7.1 Release — Native Handle Leasing, Panama Critical Downcalls, Genuine ROCm/HIP Verification & Bounded C ABI Diagnostics**
 > 
-> * **Enforceable Native Model & Backend Ownership:** Direct atomic reference counting (`argus_model_retain` / `argus_model_release`) coupled with context-level model retention, and deferred backend teardown (`g_backend_active_resources`) ensuring memory safety during out-of-order JVM shutdown.
-> * **Panama FFM Concurrency Safety:** Internal context-owned `Arena.ofShared()` eliminates `WrongThreadException` across multi-threaded downcalls, serialized by reentrant lifecycle locks. All Java wrappers implement idempotent, thread-safe `AutoCloseable` lifecycle guards.
+> * **Thread-Safe Native Handle Leasing:** Implementation of `ArgusNativeResource` with `ReentrantReadWriteLock` across all 8 native wrappers (`ArgusModel`, `ArgusContext`, `ArgusMultimodalContext`, `ArgusBitmap`, `ArgusVideo`, `ArgusInputChunks`, `ArgusAbortFlag`, `ArgusAudioContext`). Ensures concurrent downcalls hold shared read leases while `close()` acquires an exclusive write lease, preventing use-after-free and race conditions during concurrent shutdown. Decouples Java model handle lifecycles from native reference counting.
+> * **Panama Critical Downcalls:** Applied `Linker.Option.critical(false)` to high-frequency, non-blocking leaf operations (`argus_version`, `argus_last_error_code`, `argus_model_vocab_*`, `argus_model_quant_*`, `argus_abort_flag_*`, `argus_sampler_has_pending`), eliminating JNI/Panama safepoint and frame setup overhead on hot paths.
+> * **Genuine ROCm/HIP CI & Verification:** Full ROCm/HIP native compilation pipeline integration (`-DGGML_HIP=ON` / `-Phip=true`), accompanied by the automated `verifyPackagedClassifiers` Gradle verification task asserting platform artifact integrity and preventing zero-byte native binaries.
+> * **Bounded Buffer C ABI Diagnostics & Copy-Out:** Length-bearing diagnostic query (`argus_last_error_message_copy`) and bounded copy-out APIs (`argus_synthesize_speech_n`, `argus_model_meta_val_str_n`), eliminating unbounded off-heap scans and buffer overrun vulnerabilities.
+> * **Zero-Allocation Video Frame Carrier:** Reusable `ArgusVideoItem` with preallocated off-heap scratch segments, avoiding heap thrash and allocations during continuous video frame iteration.
 > * **Spatial Bounds & Overflow-Safe Validation:** Strict validation (`ArgusValidation`) across readable/writable memory segments and arithmetic operations; length-bearing tokenization APIs (`argus_tokenize_n`, `argus_multimodal_tokenize_n`) eliminate null-terminator hazards.
-> * **C ABI Exception Containment & Structured Diagnostics:** Comprehensive `try/catch` boundaries at all exported native entry points with thread-local diagnostic storage (`argus_last_error_code`, `argus_last_error_message`), seamlessly translated into `ArgusNativeException` in Java.
-> * **Reference-Counted Cancellation:** Upgraded `argus_abort_flag_t` and `ArgusAbortFlag` replace raw integer pointers with an atomic, reference-counted native cancellation object with RAII retention throughout decode.
-> * **Sampler State Closure on Rollback:** Automatic commit of replacement tokens to history during KV-cache rollbacks, maintaining sampler and KV cache symmetry.
-> * **Verified Build Capabilities & JDK 22 Target:** Runtime introspection bitmask (`argus_build_features()`, `ArgusBackend.getBuildFeatures()`) detecting CPU, CUDA, HIP, Vulkan, and Metal capabilities, with bytecode strictly targeting JDK 22 (`options.release.set(22)`).
+> * **Process-Global Backend Singularity & Exception Containment:** Process-wide backend registry with deferred teardown (`g_backend_active_resources`) ensuring safety during JVM exit, backed by comprehensive `try/catch` exception barriers across all native entry points.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -35,14 +35,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.0</version>
+        <version>1.7.1</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.0</version>
+        <version>1.7.1</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -52,10 +52,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.0")
+    implementation("cc.projectargus:libargus-core:1.7.1")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.1")
 }
 ```
 
@@ -79,13 +79,16 @@ dependencies {
 ## Core Architectural Pillars
 
 *   **Process-Global Backend Singularity:** Eliminates VRAM fragmentation and multi-context driver race conditions by orchestrating a singular, shared initialization pathway (`ggml_backend_load_all()`) across text, audio, speech, and multimodal subsystems.
+*   **Thread-Safe Native Handle Leasing:** Wraps unmanaged pointers in `ArgusNativeResource` backed by `ReentrantReadWriteLock`. Concurrent downcalls acquire shared read leases (`lease()`, `leaseSegment()`) during Panama FFM invocations while `close()` acquires an exclusive write lease to invalidate handles, deterministically preventing use-after-free, concurrent closure races, and decoupling Java wrapper lifecycles from native reference counting.
+*   **Project Panama Critical Downcalls:** Leverages `Linker.Option.critical(false)` on pure, non-blocking C ABI leaf operations (`argus_version`, `argus_last_error_code`, `argus_model_vocab_*`, `argus_model_quant_*`, `argus_abort_flag_*`, `argus_sampler_has_pending`). Eliminates thread transition safepoints and JNI/Panama frame setup costs on high-frequency hot paths.
 *   **Enforceable Native Model Ownership & Deferred Teardown:** Direct atomic reference counting (`argus_model_retain` / `argus_model_release`) coupled with context-level model retention, and deferred backend teardown (`g_backend_active_resources`) ensuring memory safety during out-of-order JVM shutdown.
 *   **Panama FFM Shared Arena Concurrency Safety:** Employs an internal, context-owned `Arena.ofShared()` protected by reentrant lifecycle locks. Multi-threaded worker pools can concurrently dispatch downcalls on shared contexts without tripping `WrongThreadException`.
 *   **C ABI Exception Containment & Structured Diagnostics:** Comprehensive `try/catch` barriers enclose every exported native function, capturing runtime errors into zero-allocation thread-local diagnostics (`argus_last_error_code`, `argus_last_error_message`), mapped cleanly into `ArgusNativeException` on the Java side.
+*   **Bounded Buffer C ABI Diagnostics & Copy-Out:** Eliminates unbounded off-heap pointer traversals and buffer overrun hazards with explicit length-bearing diagnostic retrieval (`argus_last_error_message_copy`) and bounded string and audio exports (`argus_synthesize_speech_n`, `argus_model_meta_val_str_n`).
 *   **Spatial Memory Boundary Enforcement:** Validates `MemorySegment` boundaries and offsets prior to native downcalls via `ArgusValidation`, eliminating segmentation faults caused by undersized buffers or miscalculated byte offsets.
 *   **Decoupled Weights & Execution:** Separates model weight loading (`argus_model_t`) from evaluation context memory states (`argus_context_t`), allowing model reuse across multiple concurrent sessions.
 *   **Bleeding-Edge Multimodal Projectors:** Integrates the new `libmtmd` C++ engine to ingest raw bitmaps, audio PCM arrays, and video files/streams. Tokenizes prompts and media into a unified chunk sequence, executes projection on the GPU, and automatically configures M-RoPE position grids and non-causal attention matrices.
-*   **Unmanaged Video Iteration Pipe:** Decodes and streams video files frame-by-frame using internal FFmpeg subprocess pipes, yielding raw RGB frames or localized timestamp text chunks (e.g., `[12m34s]`) at a specified target frame rate.
+*   **Unmanaged Video Iteration Pipe & Scratch Carrier:** Decodes and streams video files frame-by-frame using internal FFmpeg subprocess pipes into reusable `ArgusVideoItem` carriers with preallocated off-heap scratch segments, yielding raw RGB frames or localized timestamp text chunks (e.g., `[12m34s]`) at zero GC overhead.
 *   **Pointers-Only FFM Alignment:** Replaces pass-by-value and volatile C++ polymorphic boundaries with strictly aligned, flat C functions accepting pointers. Structure padding is manually packed to prevent compilers from injecting alignment gaps (exact 56-byte `argus_sampler_params_t`).
 *   **Absolute Zero-Copy Memory Boundaries:** Eliminates JVM heap primitive arrays (`int[]`, `float[]`) across hot paths. Integrates Project Panama `MemorySegment` parameters directly, allowing token tapes, audio waves, and video frames to generate speech and text with zero GC footprint.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
@@ -119,7 +122,7 @@ libargus/
 └── bindings/java/libargus-core/ # Idiomatic Project Panama FFM binding module
     └── src/main/java/cc/projectargus/libargus/
         ├── ArgusBackend.java          # Global device telemetry, build feature flags & backend lifecycle
-        ├── ArgusModel.java            # Ref-counted unmanaged GGUF weights manager (AutoCloseable)
+        ├── ArgusModel.java            # Leased unmanaged GGUF weights manager (AutoCloseable)
         ├── ArgusContext.java          # Shared-arena text evaluation context session (AutoCloseable)
         ├── ArgusContextConfig.java    # Text context generation parameters
         ├── ArgusSamplerConfig.java    # Extended sampling configuration parameters
@@ -127,13 +130,14 @@ libargus/
         ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
         ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer (AutoCloseable)
         ├── ArgusVideo.java            # Frame iterator for video files or buffer pipes (AutoCloseable)
-        ├── ArgusVideoItem.java        # Reusable frame/timestamp container for video processing
+        ├── ArgusVideoItem.java        # Reusable frame/timestamp carrier with preallocated off-heap scratch
         ├── ArgusInputChunks.java      # Tokenized multimodal prompt chunks container (AutoCloseable)
         ├── ArgusAbortFlag.java        # Native reference-counted atomic cancellation flag (AutoCloseable)
         ├── ArgusNativeException.java  # Thread-local native error exception wrapper
         └── internal/
             ├── ArgusLayouts.java      # Panama C-to-Java struct layout definitions
-            ├── ArgusBindings.java     # Dynamic shared library method handle loader
+            ├── ArgusBindings.java     # Dynamic shared library method handle loader & critical downcalls
+            ├── ArgusNativeResource.java# Read/write lock lease manager protecting native pointers across downcalls
             └── ArgusValidation.java   # MemorySegment bounds and spatial proof validator
 ```
 
@@ -148,11 +152,25 @@ libargus/
 To compile the highly optimized shared binary target (`libargus.so` or `argus.dll`), execute the target generation commands from the root directory:
 
 ```bash
-# Generate the optimized unmanaged compute graph project (enabling CUDA acceleration)
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
-
-# Compile the final unified system binary
+# 1. Standard CPU Target
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j $(nproc)
+
+# 2. NVIDIA CUDA Acceleration
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake --build build --config Release -j $(nproc)
+
+# 3. AMD ROCm / HIP Acceleration
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON
+cmake --build build --config Release -j $(nproc)
+
+# 4. Cross-Platform Vulkan Acceleration
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON
+cmake --build build --config Release -j $(nproc)
+
+# Or compile CMake directly via Gradle with hardware accelerator flags:
+./gradlew compileCMake -Phip=true
+./gradlew compileCMake -Pvulkan=true
 ```
 
 ---
@@ -441,6 +459,8 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | Subsystem / Contract | Invariant / Behavior | Native C ABI / Panama FFM |
 |---|---|---|
 | **Continuation Commit** | Pending sample state machine. Normal continuation commits tokens directly to history without chain reset, replay, or RNG interruption. | `argus_decode_batch()`, `argus_sampler_has_pending()` |
+| **Native Handle Leasing** | Read-write lock lease architecture prevents use-after-free and races between concurrent downcalls and `close()`. Decouples Java model handles from native refcounts. | `ArgusNativeResource`, `lease()`, `leaseSegment()` |
+| **Panama Critical Downcalls** | Pure non-blocking C ABI leaf calls are bound with `Linker.Option.critical(false)`, eliminating JVM safepoint and frame setup overhead on hot paths. | `Linker.Option.critical(false)`, leaf methods in `ArgusBindings` |
 | **Rollback History Closure** | When `is_kv_rollback == true`, successfully decoded replacement tokens are committed to history and accepted into sampler chains. | `argus_rollback_to_kv_seq()` commits replacement history |
 | **Logits Ownership** | Single-consumption model. Returns `-2` if target sequence was not evaluated last, if logits were already sampled, or if state was mutated. | `argus_sample_token_ext()` returns `-2` |
 | **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned. | `argus_sampler_prime()`, `argus_decode_batch()` |
@@ -449,6 +469,7 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **Monotonic RNG Continuity** | Dynamic hyperparameter tuning, partial KV rollbacks, and truncations clone the active distribution sampler RNG state without restarting to draw #0. | `llama_sampler_clone()` on reconfigure/rollback |
 | **Multimodal Synchronization**| Per-context mutex serialization across chunk evaluation, eliminating races against concurrent text decode, sampling, and KV mutation. | `argus_eval_multimodal_chunks()` holds `ctx->mtx` |
 | **C ABI Exception Barrier** | All native exports are wrapped in `try/catch` barriers; native errors are captured in thread-local storage and mapped to `ArgusNativeException`. | `argus_last_error_code()`, `ArgusNativeException` |
+| **Bounded Diagnostics & Copy-Out** | Diagnostic retrieval and export APIs write into caller-bounded buffers with explicit length limits, preventing buffer overruns. | `argus_last_error_message_copy()`, `argus_synthesize_speech_n()` |
 | **Spatial Bounds Validation** | Preflight validation checks non-null addresses, buffer capacities, and overflow-safe sizing prior to native downcalls. | `ArgusValidation` |
 | **Penalty History Replay** | Rebuilding filter chains on reconfiguration or rollback zero-allocation replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
 | **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
@@ -531,6 +552,9 @@ Validate unmanaged tensor boundary compliance and multi-model processing thread 
 
 # Run JUnit / Panama FFM integration tests
 ./gradlew test
+
+# Verify all packaged native runtime classifier artifacts
+./gradlew verifyPackagedClassifiers
 ```
 
 ---

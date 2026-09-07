@@ -33,7 +33,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.0") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.1") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();

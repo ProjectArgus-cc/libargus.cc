@@ -87,4 +87,38 @@ public final class ArgusValidation {
             throw new IllegalArgumentException(paramName + " must be non-negative: " + value);
         }
     }
+
+    /**
+     * Asserts that a value fits within a signed 32-bit integer range [0, Integer.MAX_VALUE].
+     */
+    public static int checkIntBounds(long value, String paramName) {
+        if (value < 0 || value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(String.format(
+                "%s exceeds 32-bit integer boundary: %d (max allowed: %d)",
+                paramName, value, Integer.MAX_VALUE
+            ));
+        }
+        return (int) value;
+    }
+
+    /**
+     * Asserts that a segment has positive length and contains a NUL terminator within its bounds.
+     */
+    public static void checkNullTerminated(MemorySegment segment, String paramName) {
+        Objects.requireNonNull(segment, paramName + " must not be null");
+        long size = segment.byteSize();
+        if (size <= 0) {
+            throw new IllegalArgumentException(paramName + " must have positive capacity and be null-terminated");
+        }
+        boolean found = false;
+        for (long i = 0; i < size; i++) {
+            if (segment.get(java.lang.foreign.ValueLayout.JAVA_BYTE, i) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw new IllegalArgumentException(paramName + " does not contain null terminator within its bounds");
+        }
+    }
 }
