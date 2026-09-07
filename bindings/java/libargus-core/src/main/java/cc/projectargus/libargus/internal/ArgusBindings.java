@@ -71,6 +71,8 @@ public final class ArgusBindings {
                         File buildDir = new File(currentDir, "build");
                         File localLibInLib = new File(new File(buildDir, "lib"), libName);
                         File localLibInBin = new File(new File(buildDir, "bin"), libName);
+                        File localLibInLibRel = new File(new File(new File(buildDir, "lib"), "Release"), libName);
+                        File localLibInBinRel = new File(new File(new File(buildDir, "bin"), "Release"), libName);
                         File localLib = new File(buildDir, libName);
 
                         File targetLib = null;
@@ -78,6 +80,10 @@ public final class ArgusBindings {
                             targetLib = localLibInLib;
                         } else if (localLibInBin.exists()) {
                             targetLib = localLibInBin;
+                        } else if (localLibInLibRel.exists()) {
+                            targetLib = localLibInLibRel;
+                        } else if (localLibInBinRel.exists()) {
+                            targetLib = localLibInBinRel;
                         } else if (localLib.exists()) {
                             targetLib = localLib;
                         }
@@ -224,7 +230,19 @@ public final class ArgusBindings {
         );
     }
 
-    private static MethodHandle bindCritical(String name, FunctionDescriptor desc) {
+    public static final java.util.Set<String> CRITICAL_ALLOWLIST = java.util.Collections.unmodifiableSet(
+        new java.util.HashSet<>(java.util.Arrays.asList(
+            "argus_build_features",
+            "argus_abort_flag_is_requested",
+            "argus_last_error_code",
+            "argus_clear_error"
+        ))
+    );
+
+    public static MethodHandle bindCritical(String name, FunctionDescriptor desc) {
+        if (!CRITICAL_ALLOWLIST.contains(name)) {
+            throw new SecurityException("Symbol '" + name + "' is not permitted in Panama critical allowlist!");
+        }
         return bind(name, desc, Linker.Option.critical(false));
     }
 
@@ -241,7 +259,7 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid()
     );
 
-    public static final MethodHandle argus_backend_get_count = bindCritical("argus_backend_get_count",
+    public static final MethodHandle argus_backend_get_count = bind("argus_backend_get_count",
         FunctionDescriptor.of(ValueLayout.JAVA_INT)
     );
 
@@ -265,6 +283,10 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_context_free = bind("argus_context_free",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_context_get_model = bind("argus_context_get_model",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
 
     public static final MethodHandle argus_set_n_threads = bind("argus_set_n_threads",
@@ -294,27 +316,27 @@ public final class ArgusBindings {
             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
-    public static final MethodHandle argus_vocab_bos = bindCritical("argus_vocab_bos",
+    public static final MethodHandle argus_vocab_bos = bind("argus_vocab_bos",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_eos = bindCritical("argus_vocab_eos",
+    public static final MethodHandle argus_vocab_eos = bind("argus_vocab_eos",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_eot = bindCritical("argus_vocab_eot",
+    public static final MethodHandle argus_vocab_eot = bind("argus_vocab_eot",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_pad = bindCritical("argus_vocab_pad",
+    public static final MethodHandle argus_vocab_pad = bind("argus_vocab_pad",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_n_tokens = bindCritical("argus_vocab_n_tokens",
+    public static final MethodHandle argus_vocab_n_tokens = bind("argus_vocab_n_tokens",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_vocab_is_eog = bindCritical("argus_vocab_is_eog",
+    public static final MethodHandle argus_vocab_is_eog = bind("argus_vocab_is_eog",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
@@ -592,7 +614,7 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.ADDRESS)
     );
 
-    public static final MethodHandle argus_last_error_message_copy = bindCritical("argus_last_error_message_copy",
+    public static final MethodHandle argus_last_error_message_copy = bind("argus_last_error_message_copy",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
@@ -604,7 +626,7 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_LONG)
     );
 
-    public static final MethodHandle argus_backend_is_initialized = bindCritical("argus_backend_is_initialized",
+    public static final MethodHandle argus_backend_is_initialized = bind("argus_backend_is_initialized",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN)
     );
 

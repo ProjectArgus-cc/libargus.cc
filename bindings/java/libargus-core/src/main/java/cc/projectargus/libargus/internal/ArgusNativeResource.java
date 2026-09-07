@@ -19,6 +19,78 @@ public abstract class ArgusNativeResource implements AutoCloseable {
     }
 
     /**
+     * Scoped RAII token guaranteeing that the underlying native resource
+     * remains leased and valid until {@link #close()} is called.
+     */
+    public final class Lease implements AutoCloseable {
+        private final MemorySegment leasedHandle;
+        private boolean released = false;
+
+        private Lease(MemorySegment leasedHandle) {
+            this.leasedHandle = leasedHandle;
+        }
+
+        /**
+         * Access the valid, leased native handle.
+         *
+         * @return valid native MemorySegment
+         * @throws IllegalStateException if this lease has already been closed
+         */
+        public MemorySegment handle() {
+            if (released) {
+                throw new IllegalStateException("Lease for " + resourceName() + " has already been closed");
+            }
+            return leasedHandle;
+        }
+
+        @Override
+        public void close() {
+            if (!released) {
+                released = true;
+                releaseReadLease();
+            }
+        }
+    }
+
+    /**
+     * Acquires a scoped read lease on this native resource.
+     * Prevents concurrent {@link #close()} until the returned {@link Lease} is closed.
+     *
+     * @return an active AutoCloseable {@link Lease}
+     * @throws IllegalStateException if the resource is closed
+     */
+    public Lease lease() {
+        return new Lease(acquireReadLease());
+    }
+
+    /**
+     * Functional callback action executing over a leased native handle.
+     */
+    @FunctionalInterface
+    public interface ResourceAction<R, E extends Throwable> {
+        R execute(MemorySegment handle) throws E;
+    }
+
+    /**
+     * Executes the given action under a shared read lease, guaranteeing balanced acquisition and release.
+     *
+     * @param action callback to invoke with leased handle
+     * @param <R> return type
+     * @param <E> exception type
+     * @return result of the action
+     * @throws E if action throws
+     * @throws IllegalStateException if resource is closed
+     */
+    public <R, E extends Throwable> R withHandle(ResourceAction<R, E> action) throws E {
+        MemorySegment h = acquireReadLease();
+        try {
+            return action.execute(h);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
      * Acquires a shared read lease on this native resource.
      * Prevents concurrent closing while native operations execute off-heap.
      * Must be paired with {@link #releaseReadLease()} in a finally block.
@@ -26,7 +98,7 @@ public abstract class ArgusNativeResource implements AutoCloseable {
      * @return the valid native handle segment
      * @throws IllegalStateException if the resource is closed or the handle is NULL
      */
-    public MemorySegment acquireReadLease() {
+    protected MemorySegment acquireReadLease() {
         lifecycleLock.readLock().lock();
         if (closed || handle == null) {
             lifecycleLock.readLock().unlock();
@@ -38,7 +110,7 @@ public abstract class ArgusNativeResource implements AutoCloseable {
     /**
      * Releases a previously acquired shared read lease.
      */
-    public void releaseReadLease() {
+    protected void releaseReadLease() {
         lifecycleLock.readLock().unlock();
     }
 
@@ -50,16 +122,33 @@ public abstract class ArgusNativeResource implements AutoCloseable {
     }
 
     /**
-     * Accessor for the underlying native memory address.
+     * Accessor for the unmanaged native memory address without acquiring a lease.
+     * <p>
+     * <b>WARNING:</b> This returns an unleased borrowed pointer that is NOT protected
+     * against concurrent closure or use-after-free. If another thread calls {@link #close()},
+     * this memory address may be deallocated immediately. Use {@link #lease()} or standard
+     * high-level methods instead.
      *
-     * @return the memory segment handle
+     * @return the raw native memory segment handle
      * @throws IllegalStateException if this resource is closed
      */
-    public MemorySegment getHandle() {
+    public MemorySegment unsafeBorrowedHandle() {
         if (closed || handle == null) {
             throw new IllegalStateException(resourceName() + " is already closed");
         }
         return handle;
+    }
+
+    /**
+     * Deprecated accessor for unmanaged native memory address.
+     *
+     * @deprecated Use {@link #lease()} or {@link #unsafeBorrowedHandle()} instead.
+     * @return the memory segment handle
+     * @throws IllegalStateException if this resource is closed
+     */
+    @Deprecated
+    public MemorySegment getHandle() {
+        return unsafeBorrowedHandle();
     }
 
     /**

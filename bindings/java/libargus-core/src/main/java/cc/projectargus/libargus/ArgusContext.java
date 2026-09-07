@@ -89,13 +89,13 @@ public final class ArgusContext extends ArgusNativeResource {
         Objects.requireNonNull(config);
 
         Arena privateArena = Arena.ofShared();
-        MemorySegment modelH = model.acquireReadLease();
-        try {
-            MemorySegment draftModelHandle = MemorySegment.NULL;
+        try (var modelLease = model.lease()) {
+            ArgusNativeResource.Lease draftLease = null;
             if (config.draftModel() != null) {
-                draftModelHandle = config.draftModel().acquireReadLease();
+                draftLease = config.draftModel().lease();
             }
             try {
+                MemorySegment draftModelHandle = (draftLease != null) ? draftLease.handle() : MemorySegment.NULL;
                 Arena paramArena = (arena != null) ? arena : privateArena;
                 MemorySegment paramsSeg = paramArena.allocate(ArgusLayouts.CONTEXT_PARAMS);
 
@@ -144,27 +144,36 @@ public final class ArgusContext extends ArgusNativeResource {
                     config.kvUnified()
                 );
 
-                MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(modelH, paramsSeg);
+                MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_context_init.invokeExact(modelLease.handle(), paramsSeg);
                 if (ctxPtr.equals(MemorySegment.NULL)) {
-                    ArgusNativeException.checkStatus(-1, "argus_context_init");
+                    ArgusNativeException.throwLastError("argus_context_init");
                 }
-                return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena);
+                try {
+                    return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena);
+                } catch (Throwable t) {
+                    try {
+                        ArgusBindings.argus_context_free.invokeExact(ctxPtr);
+                    } catch (Throwable suppressed) {
+                        t.addSuppressed(suppressed);
+                    }
+                    throw t;
+                }
             } finally {
-                if (config.draftModel() != null) {
-                    config.draftModel().releaseReadLease();
+                if (draftLease != null) {
+                    draftLease.close();
                 }
             }
         } catch (Throwable t) {
             privateArena.close();
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to initialize native context", t);
-        } finally {
-            model.releaseReadLease();
         }
     }
 
     /**
      * Converts raw text into vocabulary token IDs.
+     * Operates on the execution context's retained model reference, allowing this method
+     * to continue functioning even if the original Java ArgusModel wrapper has been closed.
      * This operation is lock-free and read-only.
      */
     public int tokenize(MemorySegment textSeg, MemorySegment outTokensSeg, boolean addBos) {
@@ -174,9 +183,16 @@ public final class ArgusContext extends ArgusNativeResource {
         ArgusValidation.checkWritable(outTokensSeg, ValueLayout.JAVA_INT.byteSize(), "outTokensSeg");
         long maxTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
         long textLen = textSeg.byteSize();
+        if (textLen > 0 && textSeg.get(ValueLayout.JAVA_BYTE, textLen - 1) == 0) {
+            textLen--;
+        }
 
-        MemorySegment modelH = modelRef.acquireReadLease();
+        MemorySegment ctxH = acquireReadLease();
         try {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
             int res = (int) ArgusBindings.argus_tokenize_n.invokeExact(
                 modelH,
                 textSeg,
@@ -193,17 +209,23 @@ public final class ArgusContext extends ArgusNativeResource {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to tokenize input text", t);
         } finally {
-            modelRef.releaseReadLease();
+            releaseReadLease();
         }
     }
 
     /**
      * Converts a single token ID to its text representation (piece).
+     * Operates on the execution context's retained model reference, allowing this method
+     * to continue functioning even if the original Java ArgusModel wrapper has been closed.
      * This operation is lock-free and read-only.
      */
     public String tokenToPiece(int token) {
-        MemorySegment modelH = modelRef.acquireReadLease();
+        MemorySegment ctxH = acquireReadLease();
         try (Arena local = Arena.ofConfined()) {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
             int bufSize = 256;
             MemorySegment bufSeg = local.allocate(bufSize);
 
@@ -226,7 +248,7 @@ public final class ArgusContext extends ArgusNativeResource {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to convert token " + token + " to piece", t);
         } finally {
-            modelRef.releaseReadLease();
+            releaseReadLease();
         }
     }
 
@@ -258,17 +280,12 @@ public final class ArgusContext extends ArgusNativeResource {
      * @return 0 on success, -2 if aborted, non-zero on failure
      */
     public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits, ArgusAbortFlag abortFlag) {
-        MemorySegment abortFlagSeg = MemorySegment.NULL;
         if (abortFlag != null) {
-            abortFlagSeg = abortFlag.acquireReadLease();
-        }
-        try {
-            return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, abortFlagSeg);
-        } finally {
-            if (abortFlag != null) {
-                abortFlag.releaseReadLease();
+            try (var lease = abortFlag.lease()) {
+                return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, lease.handle());
             }
         }
+        return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, MemorySegment.NULL);
     }
 
     /**
@@ -356,32 +373,26 @@ public final class ArgusContext extends ArgusNativeResource {
 
         MemorySegment ctxH = acquireReadLease();
         try {
-            MemorySegment mctxH = mctx.acquireReadLease();
-            try {
-                MemorySegment chunksH = chunks.acquireReadLease();
-                try (Arena local = Arena.ofConfined()) {
-                    MemorySegment outNewNPast = local.allocate(ValueLayout.JAVA_INT);
-                    int res = (int) ArgusBindings.argus_eval_multimodal_chunks.invokeExact(
-                        mctxH,
-                        ctxH,
-                        chunksH,
-                        nPast,
-                        seqId,
-                        nBatch,
-                        logitsLast,
-                        outNewNPast
-                    );
+            try (var mctxLease = mctx.lease();
+                 var chunksLease = chunks.lease();
+                 Arena local = Arena.ofConfined()) {
+                MemorySegment outNewNPast = local.allocate(ValueLayout.JAVA_INT);
+                int res = (int) ArgusBindings.argus_eval_multimodal_chunks.invokeExact(
+                    mctxLease.handle(),
+                    ctxH,
+                    chunksLease.handle(),
+                    nPast,
+                    seqId,
+                    nBatch,
+                    logitsLast,
+                    outNewNPast
+                );
 
-                    if (res != 0) {
-                        ArgusNativeException.checkStatus(res, "argus_eval_multimodal_chunks");
-                    }
-
-                    return outNewNPast.get(ValueLayout.JAVA_INT, 0);
-                } finally {
-                    chunks.releaseReadLease();
+                if (res != 0) {
+                    ArgusNativeException.checkStatus(res, "argus_eval_multimodal_chunks");
                 }
-            } finally {
-                mctx.releaseReadLease();
+
+                return outNewNPast.get(ValueLayout.JAVA_INT, 0);
             }
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
@@ -782,11 +793,9 @@ public final class ArgusContext extends ArgusNativeResource {
 
         MemorySegment ctxH = acquireReadLease();
         try {
-            MemorySegment wavModelHandle = MemorySegment.NULL;
-            if (wavtokenizerModel != null) {
-                wavModelHandle = wavtokenizerModel.acquireReadLease();
-            }
+            ArgusNativeResource.Lease wavLease = (wavtokenizerModel != null) ? wavtokenizerModel.lease() : null;
             try {
+                MemorySegment wavModelHandle = (wavLease != null) ? wavLease.handle() : MemorySegment.NULL;
                 ttsLock.lock();
                 try {
                     long textLen = textSeg.byteSize();
@@ -834,8 +843,8 @@ public final class ArgusContext extends ArgusNativeResource {
                     ttsLock.unlock();
                 }
             } finally {
-                if (wavtokenizerModel != null) {
-                    wavtokenizerModel.releaseReadLease();
+                if (wavLease != null) {
+                    wavLease.close();
                 }
             }
         } catch (Throwable t) {

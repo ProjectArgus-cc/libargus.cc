@@ -66,7 +66,7 @@ public final class ArgusAudioContext extends ArgusNativeResource {
         try {
             MemorySegment ctxPtr = (MemorySegment) ArgusBindings.argus_audio_init.invokeExact(paramsSeg);
             if (ctxPtr.equals(MemorySegment.NULL)) {
-                ArgusNativeException.checkStatus(-1, "argus_audio_init");
+                ArgusNativeException.throwLastError("argus_audio_init for " + whisperModelPath);
             }
             return new ArgusAudioContext(ctxPtr);
         } catch (Throwable t) {

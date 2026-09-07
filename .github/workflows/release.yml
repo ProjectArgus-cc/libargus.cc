@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. 1.7.1)'
+        description: 'Release Version (e.g. 1.7.2)'
         required: true
-        default: '1.7.1'
+        default: '1.7.2'
 
 permissions:
   contents: write
@@ -40,7 +40,7 @@ jobs:
           - platform: linux-x86_64
             target: rocm
             os: ubuntu-22.04
-            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"
+            cmake_flags: '-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_HIP=ON "-DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"'
           - platform: linux-x86_64
             target: vulkan
             os: ubuntu-latest
@@ -113,12 +113,23 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON ${{ matrix.cmake_flags }}
+          eval "args=( ${{ matrix.cmake_flags }} )"
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON "${args[@]}"
 
 
       - name: Compile Native Binary
         run: |
           cmake --build build --config Release -j 4
+
+      - name: Verify Compiled Features
+        run: |
+          if [ -f build/bin/test_libargus ]; then
+            ./build/bin/test_libargus --expect-features ${{ matrix.target }}
+          elif [ -f build/bin/Release/test_libargus.exe ]; then
+            ./build/bin/Release/test_libargus.exe --expect-features ${{ matrix.target }}
+          elif [ -f build/bin/test_libargus.exe ]; then
+            ./build/bin/test_libargus.exe --expect-features ${{ matrix.target }}
+          fi
 
       - name: Stage Native Binary
         run: |
@@ -268,6 +279,14 @@ jobs:
 
 
 
+      - name: Generate Checksums Manifest
+        run: |
+          set -euo pipefail
+          echo "Generating SHA-256 checksums manifest..."
+          find bindings/java/ -name "*.jar" -exec sha256sum {} + > checksums.txt
+          find native-binaries/ -type f -exec sha256sum {} + >> checksums.txt
+          cat checksums.txt
+
       - name: Create GitHub Tagged Release
         uses: softprops/action-gh-release@v2
         with:
@@ -275,6 +294,7 @@ jobs:
             bindings/java/libargus-core/build/libs/*.jar
             bindings/java/libargus-native-*/build/libs/*.jar
             native-binaries/**/*
+            checksums.txt
           draft: false
           prerelease: false
           generate_release_notes: true

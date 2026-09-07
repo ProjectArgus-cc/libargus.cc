@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusNativeResource;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -78,16 +79,26 @@ public class ArgusBindingsTest {
             assertFalse(model.isClosed());
             assertNotEquals(MemorySegment.NULL, model.getHandle());
 
-            // Acquire read lease
-            MemorySegment lease = model.acquireReadLease();
-            assertEquals(dummyPtr.address(), lease.address());
-            model.releaseReadLease();
+            // Acquire read lease via AutoCloseable lease()
+            try (ArgusNativeResource.Lease lease = model.lease()) {
+                assertEquals(dummyPtr.address(), lease.handle().address());
+                assertFalse(model.isClosed());
+            }
+
+            // Test functional withHandle accessor
+            long addr = model.withHandle(MemorySegment::address);
+            assertEquals(dummyPtr.address(), addr);
+
+            // Test unsafeBorrowedHandle
+            assertEquals(dummyPtr.address(), model.unsafeBorrowedHandle().address());
 
             model.clearHandleForTesting();
             model.close(); // closes wrapper
             assertTrue(model.isClosed());
             assertThrows(IllegalStateException.class, model::getHandle);
-            assertThrows(IllegalStateException.class, model::acquireReadLease);
+            assertThrows(IllegalStateException.class, model::lease);
+            assertThrows(IllegalStateException.class, () -> model.withHandle(h -> h));
+            assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
 
             // Idempotent double close must not throw
             model.close();
@@ -292,13 +303,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.7.1", ArgusBindings.VERSION);
+        assertEquals("1.7.2", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.7.1", nativeVer);
+            assertEquals("1.7.2", nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -1033,15 +1044,16 @@ public class ArgusBindingsTest {
             // Thread 1 acquires a read lease and holds it
             Thread holderThread = new Thread(() -> {
                 try {
-                    MemorySegment h = model.acquireReadLease();
-                    leaseAcquired.countDown();
-                    // Wait for thread 2 to initiate close
-                    assertTrue(closeInitiated.await(5, TimeUnit.SECONDS));
-                    // While lease is held, model must NOT be marked closed
-                    assertFalse(model.isClosed());
-                    // Hold the lease for 100ms to ensure close thread is actually blocked in write lock
-                    Thread.sleep(100);
-                    model.releaseReadLease();
+                    try (ArgusNativeResource.Lease lease = model.lease()) {
+                        assertNotNull(lease.handle());
+                        leaseAcquired.countDown();
+                        // Wait for thread 2 to initiate close
+                        assertTrue(closeInitiated.await(5, TimeUnit.SECONDS));
+                        // While lease is held, model must NOT be marked closed
+                        assertFalse(model.isClosed());
+                        // Hold the lease for 100ms to ensure close thread is actually blocked in write lock
+                        Thread.sleep(100);
+                    }
                 } catch (Throwable t) {
                     threadError.compareAndSet(null, t);
                 }
@@ -1052,7 +1064,7 @@ public class ArgusBindingsTest {
                 try {
                     assertTrue(leaseAcquired.await(5, TimeUnit.SECONDS));
                     closeInitiated.countDown();
-                    // This close() call must block until Thread 1 calls releaseReadLease()!
+                    // This close() call must block until Thread 1 releases the lease!
                     model.close();
                     closeCompleted.countDown();
                 } catch (Throwable t) {
@@ -1073,8 +1085,9 @@ public class ArgusBindingsTest {
             }
 
             assertTrue(model.isClosed());
-            assertThrows(IllegalStateException.class, model::acquireReadLease);
+            assertThrows(IllegalStateException.class, model::lease);
             assertThrows(IllegalStateException.class, model::getHandle);
+            assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
             System.out.println("  - Deterministic handle lease vs close verified without race or memory leak.");
         } finally {
             ArgusBackend.free();
@@ -1115,6 +1128,201 @@ public class ArgusBindingsTest {
 
             context.close();
             model.close();
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testPanamaCriticalDowncallAllowlist() {
+        System.out.println("[Java Test] Validating Panama critical downcall allowlist constraints...");
+        assertNotNull(ArgusBindings.CRITICAL_ALLOWLIST);
+        assertEquals(4, ArgusBindings.CRITICAL_ALLOWLIST.size());
+        assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_build_features"));
+        assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_abort_flag_is_requested"));
+        assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_last_error_code"));
+        assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_clear_error"));
+
+        // Verify that critical downcall on a non-allowlisted symbol fails fast via SecurityException
+        assertThrows(SecurityException.class, () -> {
+            ArgusBindings.bindCritical("argus_backend_get_count", java.lang.foreign.FunctionDescriptor.of(ValueLayout.JAVA_INT));
+        });
+    }
+
+    @Test
+    public void testIndependentContextLifetime() {
+        System.out.println("[Java Test] Validating independent context lifetime after model close...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+            assertFalse(model.isClosed());
+
+            ArgusContextConfig config = ArgusContextConfig.createDefault(512);
+            ArgusContext context = ArgusContext.init(model, config);
+            assertFalse(context.isClosed());
+
+            // Close the Java ArgusModel wrapper
+            // Native context retains model reference, so context operations must remain functional
+            model.close();
+            assertTrue(model.isClosed());
+
+            // 1. Token to piece using context's model reference
+            String piece = context.tokenToPiece(1);
+            assertNotNull(piece, "Token to piece must succeed using context's model reference");
+            assertEquals("<s>", piece);
+
+            // 2. Decode batch using context
+            MemorySegment tokenSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+            tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 0, 1);
+            int decodeStatus = context.decodeBatch(tokenSeg, 1, 0, 0, true, (ArgusAbortFlag) null);
+            assertEquals(0, decodeStatus, "Decode batch must succeed with closed model wrapper");
+
+            // 3. Sample token
+            int sampledToken = context.sampleToken(0, 0.8f, 1.1f);
+            assertTrue(sampledToken >= 0, "Sample token must return valid token id");
+
+            // 4. Token to piece on sampled token
+            String sampledPiece = context.tokenToPiece(sampledToken);
+            assertNotNull(sampledPiece);
+
+            // 5. Tokenize downcall routing test: verify context routes downcall to native model reference
+            MemorySegment textSeg = arena.allocateFrom("abc");
+            MemorySegment outTokensSeg = arena.allocate(ValueLayout.JAVA_INT, 16);
+            assertThrows(ArgusNativeException.class, () -> {
+                context.tokenize(textSeg, outTokensSeg, false);
+            });
+
+            // 5. Close context
+            context.close();
+            assertTrue(context.isClosed());
+
+            // Idempotent double close
+            context.close();
+            assertTrue(context.isClosed());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testTransactionalContextConstructionFailure() {
+        System.out.println("[Java Test] Validating transactional context construction cleanup on failure...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path root = java.nio.file.Paths.get("").toAbsolutePath();
+            while (root != null && !java.nio.file.Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            java.nio.file.Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+
+            ArgusContextConfig invalidConfig = new ArgusContextConfig.Builder()
+                .contextLength(-1)
+                .build();
+
+            assertThrows(ArgusNativeException.class, () -> {
+                ArgusContext.init(arena, model, invalidConfig);
+            });
+
+            // Model remains usable after failed context construction
+            assertFalse(model.isClosed());
+            model.close();
+            assertTrue(model.isClosed());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testStructuredDiagnosticsOnLoadFailure() {
+        System.out.println("[Java Test] Validating structured diagnostics on model load failure...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            java.nio.file.Path nonExistent = java.nio.file.Paths.get("does_not_exist_model.gguf");
+
+            ArgusNativeException ex = assertThrows(ArgusNativeException.class, () -> {
+                ArgusModel.load(arena, nonExistent, 0, false);
+            });
+
+            assertNotEquals(0, ex.getErrorCode(), "Native error code must be non-zero on load failure");
+            assertNotNull(ex.getMessage());
+            assertTrue(ex.getMessage().contains("argus_model_load"), "Message should contain operation name");
+
+            // Verify thread-local error state was cleared by throwLastError
+            try {
+                int clearedCode = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                assertEquals(0, clearedCode, "argus_clear_error must have reset the error code");
+            } catch (Throwable t) {
+                fail("Failed to query argus_last_error_code: " + t.getMessage());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testArgusVideoItemIdempotenceAndConcurrency() {
+        System.out.println("[Java Test] Validating ArgusVideoItem idempotence and concurrency protection...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            ArgusVideoItem item = new ArgusVideoItem();
+            assertFalse(item.isClosed());
+
+            // Normal update
+            item.update(MemorySegment.NULL, "initial text");
+            assertEquals("initial text", item.text());
+            assertNull(item.bitmap());
+
+            // Idempotent close
+            item.close();
+            assertTrue(item.isClosed());
+            item.close(); // second close must be safe no-op
+            assertTrue(item.isClosed());
+
+            // Post-close calls must throw IllegalStateException
+            assertThrows(IllegalStateException.class, () -> item.update(MemorySegment.NULL, "after close"));
+            assertThrows(IllegalStateException.class, item::bitmap);
+            assertThrows(IllegalStateException.class, item::text);
+
+            // Concurrency validation with active item
+            ArgusVideoItem concurrentItem = new ArgusVideoItem();
+            ExecutorService exec = Executors.newFixedThreadPool(4);
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>(null);
+
+            for (int i = 0; i < 4; i++) {
+                final int threadIdx = i;
+                exec.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int j = 0; j < 50; j++) {
+                            concurrentItem.update(MemorySegment.NULL, "thread-" + threadIdx + "-val-" + j);
+                            String t = concurrentItem.text();
+                            assertNotNull(t);
+                        }
+                    } catch (Throwable t) {
+                        failure.compareAndSet(null, t);
+                    }
+                });
+            }
+
+            latch.countDown();
+            exec.shutdown();
+            assertTrue(exec.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), "Concurrent access to ArgusVideoItem produced an unexpected error");
+
+            concurrentItem.close();
+            assertTrue(concurrentItem.isClosed());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("Interrupted during concurrency test");
         } finally {
             ArgusBackend.free();
         }

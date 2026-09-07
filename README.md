@@ -8,15 +8,15 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.1 Release — Native Handle Leasing, Panama Critical Downcalls, Genuine ROCm/HIP Verification & Bounded C ABI Diagnostics**
+> **v1.7.2 Release — Independent Context Policy, Safe Handle Leasing API, FFM Critical Allowlist & Hardened Multi-Platform Verification**
 > 
-> * **Thread-Safe Native Handle Leasing:** Implementation of `ArgusNativeResource` with `ReentrantReadWriteLock` across all 8 native wrappers (`ArgusModel`, `ArgusContext`, `ArgusMultimodalContext`, `ArgusBitmap`, `ArgusVideo`, `ArgusInputChunks`, `ArgusAbortFlag`, `ArgusAudioContext`). Ensures concurrent downcalls hold shared read leases while `close()` acquires an exclusive write lease, preventing use-after-free and race conditions during concurrent shutdown. Decouples Java model handle lifecycles from native reference counting.
-> * **Panama Critical Downcalls:** Applied `Linker.Option.critical(false)` to high-frequency, non-blocking leaf operations (`argus_version`, `argus_last_error_code`, `argus_model_vocab_*`, `argus_model_quant_*`, `argus_abort_flag_*`, `argus_sampler_has_pending`), eliminating JNI/Panama safepoint and frame setup overhead on hot paths.
-> * **Genuine ROCm/HIP CI & Verification:** Full ROCm/HIP native compilation pipeline integration (`-DGGML_HIP=ON` / `-Phip=true`), accompanied by the automated `verifyPackagedClassifiers` Gradle verification task asserting platform artifact integrity and preventing zero-byte native binaries.
-> * **Bounded Buffer C ABI Diagnostics & Copy-Out:** Length-bearing diagnostic query (`argus_last_error_message_copy`) and bounded copy-out APIs (`argus_synthesize_speech_n`, `argus_model_meta_val_str_n`), eliminating unbounded off-heap scans and buffer overrun vulnerabilities.
-> * **Zero-Allocation Video Frame Carrier:** Reusable `ArgusVideoItem` with preallocated off-heap scratch segments, avoiding heap thrash and allocations during continuous video frame iteration.
-> * **Spatial Bounds & Overflow-Safe Validation:** Strict validation (`ArgusValidation`) across readable/writable memory segments and arithmetic operations; length-bearing tokenization APIs (`argus_tokenize_n`, `argus_multimodal_tokenize_n`) eliminate null-terminator hazards.
-> * **Process-Global Backend Singularity & Exception Containment:** Process-wide backend registry with deferred teardown (`g_backend_active_resources`) ensuring safety during JVM exit, backed by comprehensive `try/catch` exception barriers across all native entry points.
+> * **Independent Context Policy (`argus_context_get_model`):** Decoupled `ArgusContext` lifecycle from `ArgusModel`. The native context holds an internal reference to `argus_model_t`, and Java context methods query the model via `argus_context_get_model` under context read lease. Closing `ArgusModel` will not invalidate active evaluation contexts.
+> * **Safe Handle Leasing API (`ArgusNativeResource.lease()`):** Demoted raw `acquireReadLease()` / `releaseReadLease()` to protected to prevent lease leaks. Introduced AutoCloseable `try (var lease = resource.lease())`, functional `withHandle(Function)`, and marked raw segment access as `@Deprecated unsafeBorrowedHandle()`.
+> * **Panama Critical Downcall Allowlist:** Enforced a strict architectural allowlist (`CRITICAL_ALLOWLIST`) limiting JDK 22 `Linker.Option.critical(false)` strictly to 4 atomic, non-blocking C leaf symbols (`argus_build_features`, `argus_abort_flag_is_requested`, `argus_last_error_code`, `argus_clear_error`). All blocking, allocation-bearing, or mutex-guarded symbols are safely dispatched as standard downcalls.
+> * **Transactional Context Construction & Structured Diagnostics:** Atomic initialization guarantees that Java constructor failures immediately free allocated off-heap resources via `argus_context_free()`, while `throwLastError` captures structured error codes and messages before resetting thread-local diagnostic buffers.
+> * **ArgusVideoItem Lifecycle Synchronization & Idempotence:** Enforced `ReentrantReadWriteLock` across `ArgusVideoItem`, guarding off-heap updates and reads against concurrent tear-downs with deterministic idempotent double-close.
+> * **ROCm/HIP Shell Safety & Cross-Platform Feature Verification:** Quoted `AMDGPU_TARGETS` flags to prevent Bash semicolon splitting errors, and introduced `--expect-features <target>` in both C++ and Java test pipelines across Linux, Windows, and macOS.
+> * **Build Toolchain & Java 22 Pinning:** Set Java toolchain and compilation targets strictly to Java 22 bytecode, fully eliminating CI toolchain download regressions while enabling Java 22+ and Java 25 JVM execution with full FFM runtime benefits.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -35,14 +35,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.1</version>
+        <version>1.7.2</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.1</version>
+        <version>1.7.2</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -52,10 +52,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.1")
+    implementation("cc.projectargus:libargus-core:1.7.2")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.2")
 }
 ```
 
@@ -79,9 +79,9 @@ dependencies {
 ## Core Architectural Pillars
 
 *   **Process-Global Backend Singularity:** Eliminates VRAM fragmentation and multi-context driver race conditions by orchestrating a singular, shared initialization pathway (`ggml_backend_load_all()`) across text, audio, speech, and multimodal subsystems.
-*   **Thread-Safe Native Handle Leasing:** Wraps unmanaged pointers in `ArgusNativeResource` backed by `ReentrantReadWriteLock`. Concurrent downcalls acquire shared read leases (`lease()`, `leaseSegment()`) during Panama FFM invocations while `close()` acquires an exclusive write lease to invalidate handles, deterministically preventing use-after-free, concurrent closure races, and decoupling Java wrapper lifecycles from native reference counting.
-*   **Project Panama Critical Downcalls:** Leverages `Linker.Option.critical(false)` on pure, non-blocking C ABI leaf operations (`argus_version`, `argus_last_error_code`, `argus_model_vocab_*`, `argus_model_quant_*`, `argus_abort_flag_*`, `argus_sampler_has_pending`). Eliminates thread transition safepoints and JNI/Panama frame setup costs on high-frequency hot paths.
-*   **Enforceable Native Model Ownership & Deferred Teardown:** Direct atomic reference counting (`argus_model_retain` / `argus_model_release`) coupled with context-level model retention, and deferred backend teardown (`g_backend_active_resources`) ensuring memory safety during out-of-order JVM shutdown.
+*   **Thread-Safe Native Handle Leasing:** Wraps unmanaged pointers in `ArgusNativeResource` backed by `ReentrantReadWriteLock`. Downcalls acquire shared read leases via try-with-resources `try (var lease = res.lease())` or functional `withHandle(Function)` during Panama FFM invocations while `close()` acquires an exclusive write lease to invalidate handles, deterministically preventing use-after-free, concurrent closure races, and accidental lease leaks.
+*   **Project Panama Critical Downcalls & Architectural Allowlist:** Strictly restricts `Linker.Option.critical(false)` via `CRITICAL_ALLOWLIST` to 4 pure, atomic, non-blocking C ABI leaf operations (`argus_build_features`, `argus_abort_flag_is_requested`, `argus_last_error_code`, `argus_clear_error`). All other operations use standard downcalls, eliminating JNI/Panama safepoint costs on hot leaves without risking JVM hang or heap deadlocks.
+*   **Independent Context Policy & Enforceable Native Model Ownership:** Context memory states (`argus_context_t`) retain their underlying `argus_model_t` reference via `argus_model_retain` / `argus_model_release`. Java `ArgusContext` queries model handles via `argus_context_get_model` under context read lease, allowing contexts to remain fully operational even if the initial Java `ArgusModel` wrapper is closed. Deferred backend teardown (`g_backend_active_resources`) ensures memory safety during out-of-order JVM shutdown.
 *   **Panama FFM Shared Arena Concurrency Safety:** Employs an internal, context-owned `Arena.ofShared()` protected by reentrant lifecycle locks. Multi-threaded worker pools can concurrently dispatch downcalls on shared contexts without tripping `WrongThreadException`.
 *   **C ABI Exception Containment & Structured Diagnostics:** Comprehensive `try/catch` barriers enclose every exported native function, capturing runtime errors into zero-allocation thread-local diagnostics (`argus_last_error_code`, `argus_last_error_message`), mapped cleanly into `ArgusNativeException` on the Java side.
 *   **Bounded Buffer C ABI Diagnostics & Copy-Out:** Eliminates unbounded off-heap pointer traversals and buffer overrun hazards with explicit length-bearing diagnostic retrieval (`argus_last_error_message_copy`) and bounded string and audio exports (`argus_synthesize_speech_n`, `argus_model_meta_val_str_n`).

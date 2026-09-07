@@ -53,8 +53,7 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
         Objects.requireNonNull(model);
         Objects.requireNonNull(mmprojPath);
 
-        MemorySegment modelH = model.acquireReadLease();
-        try {
+        try (var modelLease = model.lease()) {
             MemorySegment pathSeg = arena.allocateFrom(mmprojPath.toAbsolutePath().toString());
             MemorySegment paramsSeg = arena.allocate(ArgusLayouts.MULTIMODAL_PARAMS);
 
@@ -71,16 +70,14 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
                 useGpu
             );
 
-            MemorySegment mctxPtr = (MemorySegment) ArgusBindings.argus_multimodal_init.invokeExact(modelH, paramsSeg);
+            MemorySegment mctxPtr = (MemorySegment) ArgusBindings.argus_multimodal_init.invokeExact(modelLease.handle(), paramsSeg);
             if (mctxPtr.equals(MemorySegment.NULL)) {
-                ArgusNativeException.checkStatus(-1, "argus_multimodal_init");
+                ArgusNativeException.throwLastError("argus_multimodal_init for " + mmprojPath);
             }
             return new ArgusMultimodalContext(mctxPtr, model);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load native multimodal projector context", t);
-        } finally {
-            model.releaseReadLease();
         }
     }
 
@@ -157,24 +154,24 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
         MemorySegment mctxH = acquireReadLease();
         try {
             ArgusInputChunks chunks = ArgusInputChunks.init();
-            try {
+            try (var lChunks = chunks.lease()) {
                 int nBitmaps = bitmaps.size();
                 MemorySegment bitmapsArray = MemorySegment.NULL;
-                MemorySegment[] leasedBitmaps = new MemorySegment[nBitmaps];
+                ArgusNativeResource.Lease[] leasedBitmaps = new ArgusNativeResource.Lease[nBitmaps];
                 try {
                     for (int i = 0; i < nBitmaps; i++) {
-                        leasedBitmaps[i] = bitmaps.get(i).acquireReadLease();
+                        leasedBitmaps[i] = bitmaps.get(i).lease();
                     }
                     if (nBitmaps > 0) {
                         bitmapsArray = arena.allocate(ValueLayout.ADDRESS, nBitmaps);
                         for (int i = 0; i < nBitmaps; ++i) {
-                            bitmapsArray.setAtIndex(ValueLayout.ADDRESS, i, leasedBitmaps[i]);
+                            bitmapsArray.setAtIndex(ValueLayout.ADDRESS, i, leasedBitmaps[i].handle());
                         }
                     }
 
                     int res = (int) ArgusBindings.argus_multimodal_tokenize_n.invokeExact(
                         mctxH,
-                        chunks.getHandle(),
+                        lChunks.handle(),
                         textSeg,
                         textLen,
                         addBos,
@@ -190,11 +187,15 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
                 } finally {
                     for (int i = 0; i < nBitmaps; i++) {
                         if (leasedBitmaps[i] != null) {
-                            bitmaps.get(i).releaseReadLease();
+                            try {
+                                leasedBitmaps[i].close();
+                            } catch (Throwable ignored) {
+                            }
                         }
                     }
                 }
-            } catch (Throwable t) {
+            }
+ catch (Throwable t) {
                 chunks.close();
                 if (t instanceof RuntimeException re) throw re;
                 throw new RuntimeException("Failed to execute native multimodal tokenization", t);

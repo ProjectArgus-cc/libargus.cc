@@ -58,4 +58,33 @@ public class ArgusNativeException extends RuntimeException {
             throw new ArgusNativeException(code, operation + " failed with status " + status + ": " + msg);
         }
     }
+
+    /**
+     * Throws an ArgusNativeException populated with the thread-local native error code and message,
+     * and clears the native error state.
+     *
+     * @param operation diagnostic operation label
+     */
+    public static void throwLastError(String operation) {
+        int code = 8; // ARGUS_ERROR_INTERNAL fallback
+        String msg = "Unknown native failure";
+        try {
+            code = (int) ArgusBindings.argus_last_error_code.invokeExact();
+            try (Arena localArena = Arena.ofConfined()) {
+                MemorySegment buf = localArena.allocate(512);
+                int len = (int) ArgusBindings.argus_last_error_message_copy.invokeExact(buf, 512);
+                if (len > 0) {
+                    msg = buf.getString(0);
+                }
+            }
+        } catch (Throwable t) {
+            // Ignore downcall introspection errors
+        } finally {
+            try {
+                ArgusBindings.argus_clear_error.invokeExact();
+            } catch (Throwable ignored) {
+            }
+        }
+        throw new ArgusNativeException(code, operation + " failed: " + msg);
+    }
 }

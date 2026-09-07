@@ -85,11 +85,10 @@ public final class ArgusBitmap extends ArgusNativeResource {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(filePath);
 
-        MemorySegment mctxH = mctx.acquireReadLease();
-        try {
+        try (var mctxLease = mctx.lease()) {
             MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_load_file.invokeExact(
-                mctxH,
+                mctxLease.handle(),
                 pathSeg,
                 placeholder
             );
@@ -100,8 +99,6 @@ public final class ArgusBitmap extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from file: " + filePath, t);
-        } finally {
-            mctx.releaseReadLease();
         }
     }
 
@@ -113,11 +110,10 @@ public final class ArgusBitmap extends ArgusNativeResource {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(buffer);
 
-        MemorySegment mctxH = mctx.acquireReadLease();
-        try {
+        try (var mctxLease = mctx.lease()) {
             MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_bitmap_load_buffer.invokeExact(
-                mctxH,
+                mctxLease.handle(),
                 bufferSeg,
                 buffer.length,
                 placeholder
@@ -129,8 +125,6 @@ public final class ArgusBitmap extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from memory buffer", t);
-        } finally {
-            mctx.releaseReadLease();
         }
     }
 }

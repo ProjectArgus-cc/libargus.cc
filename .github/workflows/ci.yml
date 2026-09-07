@@ -17,18 +17,22 @@ jobs:
   # =========================================================================
   build-test-linux:
     name: Linux (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: cpu
+            os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
           - target: cuda
+            os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=ON -DGGML_METAL=OFF"
           - target: rocm
-            cmake_flags: "-DGGML_CUDA=OFF -DGGML_METAL=OFF"
+            os: ubuntu-22.04
+            cmake_flags: '-DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_HIP=ON "-DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"'
           - target: vulkan
+            os: ubuntu-latest
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
 
     steps:
@@ -41,13 +45,29 @@ jobs:
           distribution: 'temurin'
           java-version: '22'
 
-      - name: Install System Build Dependencies
+      - name: Install System Build Dependencies (Linux)
+        if: matrix.target != 'rocm'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build ccache \
             libvulkan-dev vulkan-tools mesa-vulkan-drivers glslc libshaderc-dev nvidia-cuda-toolkit
 
+      - name: Set up ROCm and HIP Toolchain (Linux ROCm)
+        if: matrix.target == 'rocm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wget gnupg2 build-essential cmake ninja-build ccache
+          wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm-keyring.gpg
+          echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm-keyring.gpg] https://repo.radeon.com/rocm/apt/6.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
+          echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            rocm-dev hip-dev hipblas-dev rocblas-dev
+          echo "ROCM_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "HIP_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "/opt/rocm/bin" >> $GITHUB_PATH
+          echo "/opt/rocm/llvm/bin" >> $GITHUB_PATH
 
       - name: Set up ccache
         uses: actions/cache@v4
@@ -59,10 +79,11 @@ jobs:
 
       - name: Configure CMake
         run: |
+          eval "args=( ${{ matrix.cmake_flags }} )"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARGUS_PORTABLE=ON \
-            ${{ matrix.cmake_flags }}
+            "${args[@]}"
 
       - name: Compile Native Binary
         run: |
@@ -70,11 +91,22 @@ jobs:
 
       - name: Execute C++ Unit Tests
         run: |
-          ./build/bin/test_libargus
+          ./build/bin/test_libargus --expect-features ${{ matrix.target }}
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
           ./gradlew test --info
+
+      - name: Upload Test Results & Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-linux-${{ matrix.target }}
+          path: |
+            bindings/java/libargus-core/build/reports/tests/
+            bindings/java/libargus-core/build/test-results/
+            **/hs_err_pid*.log
+          if-no-files-found: ignore
 
   # =========================================================================
   # 2. Windows MSVC Compilation & Testing Matrix
@@ -137,11 +169,26 @@ jobs:
 
       - name: Execute C++ Unit Tests
         run: |
-          .\build\bin\Release\test_libargus.exe
+          if (Test-Path .\build\bin\Release\test_libargus.exe) {
+            .\build\bin\Release\test_libargus.exe --expect-features ${{ matrix.target }}
+          } else {
+            .\build\bin\test_libargus.exe --expect-features ${{ matrix.target }}
+          }
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
           .\gradlew.bat test --info
+
+      - name: Upload Test Results & Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows-${{ matrix.target }}
+          path: |
+            bindings/java/libargus-core/build/reports/tests/
+            bindings/java/libargus-core/build/test-results/
+            **/hs_err_pid*.log
+          if-no-files-found: ignore
 
   # =========================================================================
   # 3. macOS Apple Silicon Compilation & Testing Matrix
@@ -185,8 +232,19 @@ jobs:
 
       - name: Execute C++ Unit Tests
         run: |
-          ./build/bin/test_libargus
+          ./build/bin/test_libargus --expect-features metal
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
           ./gradlew test --info
+
+      - name: Upload Test Results & Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-macos-metal
+          path: |
+            bindings/java/libargus-core/build/reports/tests/
+            bindings/java/libargus-core/build/test-results/
+            **/hs_err_pid*.log
+          if-no-files-found: ignore

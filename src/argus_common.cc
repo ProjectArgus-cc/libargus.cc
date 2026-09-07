@@ -179,8 +179,15 @@ void argus_backend_free(void) {
 }
 
 bool argus_backend_is_initialized(void) {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
-    return g_backend_initialized;
+    try {
+        std::lock_guard<std::mutex> lock(g_backend_mutex);
+        return g_backend_initialized;
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_INTERNAL, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown exception while querying backend state");
+    }
+    return false;
 }
 
 int32_t argus_backend_get_count(void) {

@@ -40,11 +40,10 @@ public final class ArgusVideo extends ArgusNativeResource {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(filePath);
 
-        MemorySegment mctxH = mctx.acquireReadLease();
-        try {
+        try (var mctxLease = mctx.lease()) {
             MemorySegment pathSeg = arena.allocateFrom(filePath.toAbsolutePath().toString());
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_video_load_file.invokeExact(
-                mctxH,
+                mctxLease.handle(),
                 pathSeg,
                 fpsTarget,
                 timestampIntervalMs
@@ -56,8 +55,6 @@ public final class ArgusVideo extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from file: " + filePath, t);
-        } finally {
-            mctx.releaseReadLease();
         }
     }
 
@@ -69,11 +66,10 @@ public final class ArgusVideo extends ArgusNativeResource {
         Objects.requireNonNull(mctx);
         Objects.requireNonNull(buffer);
 
-        MemorySegment mctxH = mctx.acquireReadLease();
-        try {
+        try (var mctxLease = mctx.lease()) {
             MemorySegment bufferSeg = arena.allocateFrom(ValueLayout.JAVA_BYTE, buffer);
             MemorySegment ptr = (MemorySegment) ArgusBindings.argus_video_load_buffer.invokeExact(
-                mctxH,
+                mctxLease.handle(),
                 bufferSeg,
                 buffer.length,
                 fpsTarget,
@@ -86,8 +82,6 @@ public final class ArgusVideo extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from memory buffer", t);
-        } finally {
-            mctx.releaseReadLease();
         }
     }
 
@@ -149,26 +143,31 @@ public final class ArgusVideo extends ArgusNativeResource {
         Objects.requireNonNull(item);
         MemorySegment videoH = acquireReadLease();
         try {
-            MemorySegment outBitmapSeg = item.outBitmapSeg();
-            MemorySegment outTextSeg = item.outTextSeg();
-            outBitmapSeg.set(ValueLayout.ADDRESS, 0, MemorySegment.NULL);
-            outTextSeg.set(ValueLayout.JAVA_BYTE, 0, (byte) 0);
+            item.acquireWriteLock();
+            try {
+                MemorySegment outBitmapSeg = item.outBitmapSeg();
+                MemorySegment outTextSeg = item.outTextSeg();
+                outBitmapSeg.set(ValueLayout.ADDRESS, 0, MemorySegment.NULL);
+                outTextSeg.set(ValueLayout.JAVA_BYTE, 0, (byte) 0);
 
-            int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoH, outBitmapSeg, outTextSeg, 256);
-            if (res == 0) {
-                MemorySegment bitmapHandle = outBitmapSeg.get(ValueLayout.ADDRESS, 0);
-                String text = outTextSeg.getString(0);
-                if (text.isEmpty()) {
-                    text = null;
+                int res = (int) ArgusBindings.argus_video_read_next.invokeExact(videoH, outBitmapSeg, outTextSeg, 256);
+                if (res == 0) {
+                    MemorySegment bitmapHandle = outBitmapSeg.get(ValueLayout.ADDRESS, 0);
+                    String text = outTextSeg.getString(0);
+                    if (text.isEmpty()) {
+                        text = null;
+                    }
+                    item.update(bitmapHandle, text);
+                    return true;
+                } else if (res == -1) {
+                    item.update(null, null);
+                    return false; // EOF
+                } else {
+                    ArgusNativeException.checkStatus(res, "argus_video_read_next");
+                    return false;
                 }
-                item.update(bitmapHandle, text);
-                return true;
-            } else if (res == -1) {
-                item.update(null, null);
-                return false; // EOF
-            } else {
-                ArgusNativeException.checkStatus(res, "argus_video_read_next");
-                return false;
+            } finally {
+                item.releaseWriteLock();
             }
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;

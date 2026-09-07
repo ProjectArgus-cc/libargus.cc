@@ -23,7 +23,46 @@
         } \
     } while (0)
 
-int main() {
+int main(int argc, char ** argv) {
+    std::string expected_target = "";
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--expect-features") == 0 && i + 1 < argc) {
+            expected_target = argv[++i];
+        }
+    }
+
+    uint64_t build_features = argus_build_features();
+    std::cout << "[Test] Active Build Features bitmask: 0x" << std::hex << build_features << std::dec << std::endl;
+    if ((build_features & ARGUS_FEATURE_CPU) != 0) std::cout << "  - Feature: CPU" << std::endl;
+    if ((build_features & ARGUS_FEATURE_CUDA) != 0) std::cout << "  - Feature: CUDA" << std::endl;
+    if ((build_features & ARGUS_FEATURE_HIP) != 0) std::cout << "  - Feature: ROCm/HIP" << std::endl;
+    if ((build_features & ARGUS_FEATURE_VULKAN) != 0) std::cout << "  - Feature: Vulkan" << std::endl;
+    if ((build_features & ARGUS_FEATURE_METAL) != 0) std::cout << "  - Feature: Metal" << std::endl;
+
+    if (!expected_target.empty()) {
+        std::cout << "[Test] Validating expected feature contract for target: " << expected_target << std::endl;
+        if (expected_target == "cpu") {
+            ARGUS_CHECK((build_features & ARGUS_FEATURE_CPU) != 0);
+            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
+        } else if (expected_target == "cuda") {
+            ARGUS_CHECK((build_features & ARGUS_FEATURE_CUDA) != 0);
+            ARGUS_CHECK((build_features & (ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
+        } else if (expected_target == "rocm" || expected_target == "hip") {
+            ARGUS_CHECK((build_features & ARGUS_FEATURE_HIP) != 0);
+            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
+        } else if (expected_target == "vulkan") {
+            ARGUS_CHECK((build_features & ARGUS_FEATURE_VULKAN) != 0);
+            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_METAL)) == 0);
+        } else if (expected_target == "metal") {
+            ARGUS_CHECK((build_features & ARGUS_FEATURE_METAL) != 0);
+            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN)) == 0);
+        } else {
+            std::cerr << "[FAIL] Unknown expected target: " << expected_target << std::endl;
+            return 1;
+        }
+        std::cout << "[Test] Expected feature contract verified for " << expected_target << std::endl;
+    }
+
     std::cout << "[Test] Starting libargus lifecycle integration verification..." << std::endl;
 
     // 1. Initialize the global backends
@@ -33,7 +72,7 @@ int main() {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.1") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.2") == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -242,6 +281,8 @@ int main() {
         argus_context_t * ctx = argus_context_init(model, &cparams);
         ARGUS_CHECK(ctx != nullptr);
         ARGUS_CHECK(argus_context_has_draft(ctx) == true);
+        ARGUS_CHECK(argus_context_get_model(ctx) == model);
+        ARGUS_CHECK(argus_context_get_model(nullptr) == nullptr);
         std::cout << "  - Primary and Speculative Draft Context initialized." << std::endl;
 
         // 7.3. Token Batch Decoding & Position Verification

@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.7.1
+ * @version 1.7.2
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -308,6 +308,15 @@ ARGUS_API argus_context_t * argus_context_init(argus_model_t * model, const argu
  * @param ctx Target execution context.
  */
 ARGUS_API void argus_context_free(argus_context_t * ctx);
+
+/**
+ * @brief Retrieves the primary model weights retained by this execution context.
+ * Enables independent-context lifetime where context convenience queries (tokenization,
+ * vocab lookup) operate directly on the context's retained model reference.
+ * @param ctx Target execution context.
+ * @return Retained model pointer, or NULL if context is invalid.
+ */
+ARGUS_API const argus_model_t * argus_context_get_model(const argus_context_t * ctx);
 
 /**
  * @brief Sets CPU thread counts for an existing context session.

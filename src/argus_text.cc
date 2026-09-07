@@ -434,6 +434,10 @@ void argus_context_free(argus_context_t * ctx) {
     }
 }
 
+const argus_model_t * argus_context_get_model(const argus_context_t * ctx) {
+    return ctx ? ctx->model_ref : nullptr;
+}
+
 
 void argus_set_n_threads(argus_context_t * ctx, int32_t n_threads, int32_t n_threads_batch) {
     argus_guard_void("argus_set_n_threads", [&]() {

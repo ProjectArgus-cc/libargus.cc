@@ -75,7 +75,7 @@ public final class ArgusModel extends ArgusNativeResource {
         try {
             MemorySegment modelPtr = (MemorySegment) ArgusBindings.argus_model_load.invokeExact(paramsSegment);
             if (modelPtr.equals(MemorySegment.NULL)) {
-                throw new RuntimeException("Native argus_model_load returned NULL for: " + modelPath);
+                ArgusNativeException.throwLastError("argus_model_load for " + modelPath);
             }
             return new ArgusModel(modelPtr);
         } catch (Throwable t) {
