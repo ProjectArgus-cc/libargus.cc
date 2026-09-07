@@ -239,7 +239,7 @@ public final class ArgusBindings {
         ))
     );
 
-    public static MethodHandle bindCritical(String name, FunctionDescriptor desc) {
+    static MethodHandle bindCritical(String name, FunctionDescriptor desc) {
         if (!CRITICAL_ALLOWLIST.contains(name)) {
             throw new SecurityException("Symbol '" + name + "' is not permitted in Panama critical allowlist!");
         }
@@ -532,6 +532,14 @@ public final class ArgusBindings {
     );
 
     public static final MethodHandle argus_multimodal_free = bind("argus_multimodal_free",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_multimodal_retain = bind("argus_multimodal_retain",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_multimodal_release = bind("argus_multimodal_release",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
 

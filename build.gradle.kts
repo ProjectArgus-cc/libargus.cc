@@ -15,9 +15,20 @@ val libName = when {
     else -> "libargus.so"
 }
 
+val skipCMake = project.findProperty("skipCMake")?.toString()?.lowercase().let { it == "true" || it == "on" || it == "1" }
+
+val possibleLibFiles = listOf(
+    file("build/lib/$libName"),
+    file("build/lib/Release/$libName"),
+    file("build/bin/$libName"),
+    file("build/bin/Release/$libName"),
+    file("build/$libName")
+)
+
 tasks.register<Exec>("configureCMake") {
     group = "build"
     description = "Configures the CMake build directory"
+    onlyIf { !skipCMake }
     
     inputs.file("CMakeLists.txt")
     inputs.file("version.txt")
@@ -36,13 +47,14 @@ tasks.register<Exec>("configureCMake") {
 tasks.register<Exec>("compileCMake") {
     group = "build"
     description = "Compiles the native C++ shared library"
+    onlyIf { !skipCMake }
     dependsOn("configureCMake")
     
     inputs.dir("src")
     inputs.dir("include")
     inputs.file("CMakeLists.txt")
     inputs.file("version.txt")
-    outputs.file("build/lib/$libName")
+    outputs.files(possibleLibFiles)
     
     val nproc = try {
         Runtime.getRuntime().availableProcessors()
@@ -213,3 +225,55 @@ tasks.register("verifyPackagedClassifiers") {
         logger.lifecycle("Successfully verified $verifiedCount packaged classifier JAR(s).")
     }
 }
+
+tasks.register("verifyClassifierRuntime") {
+    group = "verification"
+    description = "Loads a target classifier JAR in isolation with libargus-core and verifies runtime extraction and feature mask"
+
+    doLast {
+        val targetClassifier = project.findProperty("targetClassifier")?.toString()
+            ?: project.findProperty("classifierJar")?.toString()
+        val expectedTarget = project.findProperty("expectedTarget")?.toString() ?: ""
+
+        if (targetClassifier.isNullOrEmpty()) {
+            logger.lifecycle("No targetClassifier specified; skipping isolated classifier runtime verification.")
+            return@doLast
+        }
+
+        val coreProj = subprojects.find { it.name == "libargus-core" }
+            ?: error("Subproject 'libargus-core' not found!")
+        val coreJar = coreProj.layout.buildDirectory.dir("libs").get().asFile.resolve("${coreProj.name}-${coreProj.version}.jar")
+
+        val subJar = if (project.file(targetClassifier).exists()) {
+            project.file(targetClassifier)
+        } else {
+            val subproj = subprojects.find { it.name == targetClassifier }
+                ?: error("Subproject or jar '$targetClassifier' not found!")
+            subproj.layout.buildDirectory.dir("libs").get().asFile.resolve("${subproj.name}-${subproj.version}.jar")
+        }
+
+        if (!subJar.exists()) error("Classifier JAR missing: ${subJar.absolutePath}")
+        if (!coreJar.exists()) error("Core JAR missing: ${coreJar.absolutePath}")
+
+        val cp = listOf(subJar.absolutePath, coreJar.absolutePath).joinToString(java.io.File.pathSeparator)
+        val javaBin = java.nio.file.Paths.get(System.getProperty("java.home"), "bin", if (System.getProperty("os.name").lowercase().contains("windows")) "java.exe" else "java").toString()
+
+        logger.lifecycle("Executing isolated JVM classifier runtime test with CP: $cp (target=$expectedTarget)")
+        val proc = ProcessBuilder(
+            javaBin,
+            "--enable-native-access=ALL-UNNAMED",
+            "-cp", cp,
+            "cc.projectargus.libargus.ArgusBackend",
+            expectedTarget
+        ).redirectErrorStream(true).start()
+
+        val output = proc.inputStream.bufferedReader().readText()
+        val exitCode = proc.waitFor()
+        logger.lifecycle("Verification output:\n$output")
+        if (exitCode != 0) {
+            error("Isolated classifier runtime test failed with exit code $exitCode: $output")
+        }
+        logger.lifecycle("Isolated classifier runtime test passed successfully for $targetClassifier")
+    }
+}
+

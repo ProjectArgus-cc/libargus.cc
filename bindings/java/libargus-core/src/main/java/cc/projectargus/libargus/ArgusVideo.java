@@ -14,8 +14,20 @@ import java.util.Objects;
  */
 public final class ArgusVideo extends ArgusNativeResource {
 
-    private ArgusVideo(MemorySegment videoPtr) {
+    private final ArgusMultimodalContext mctx;
+
+    private ArgusVideo(MemorySegment videoPtr, ArgusMultimodalContext mctx) {
         super(videoPtr);
+        this.mctx = Objects.requireNonNull(mctx, "mctx cannot be null");
+    }
+
+    /**
+     * Returns the multimodal context associated with this video iterator.
+     *
+     * @return active or retained ArgusMultimodalContext
+     */
+    public ArgusMultimodalContext multimodalContext() {
+        return mctx;
     }
 
     @Override
@@ -51,7 +63,7 @@ public final class ArgusVideo extends ArgusNativeResource {
             if (ptr.equals(MemorySegment.NULL)) {
                 ArgusNativeException.checkStatus(-1, "argus_video_load_file");
             }
-            return new ArgusVideo(ptr);
+            return new ArgusVideo(ptr, mctx);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from file: " + filePath, t);
@@ -78,7 +90,7 @@ public final class ArgusVideo extends ArgusNativeResource {
             if (ptr.equals(MemorySegment.NULL)) {
                 ArgusNativeException.checkStatus(-1, "argus_video_load_buffer");
             }
-            return new ArgusVideo(ptr);
+            return new ArgusVideo(ptr, mctx);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from memory buffer", t);

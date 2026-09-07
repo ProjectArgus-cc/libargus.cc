@@ -8,15 +8,15 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.2 Release — Independent Context Policy, Safe Handle Leasing API, FFM Critical Allowlist & Hardened Multi-Platform Verification**
+> **v1.7.3 Release — Thread-Affine Lease Hardening, Video Multimodal Refcounting & Decoupled Toolchains**
 > 
-> * **Independent Context Policy (`argus_context_get_model`):** Decoupled `ArgusContext` lifecycle from `ArgusModel`. The native context holds an internal reference to `argus_model_t`, and Java context methods query the model via `argus_context_get_model` under context read lease. Closing `ArgusModel` will not invalidate active evaluation contexts.
-> * **Safe Handle Leasing API (`ArgusNativeResource.lease()`):** Demoted raw `acquireReadLease()` / `releaseReadLease()` to protected to prevent lease leaks. Introduced AutoCloseable `try (var lease = resource.lease())`, functional `withHandle(Function)`, and marked raw segment access as `@Deprecated unsafeBorrowedHandle()`.
-> * **Panama Critical Downcall Allowlist:** Enforced a strict architectural allowlist (`CRITICAL_ALLOWLIST`) limiting JDK 22 `Linker.Option.critical(false)` strictly to 4 atomic, non-blocking C leaf symbols (`argus_build_features`, `argus_abort_flag_is_requested`, `argus_last_error_code`, `argus_clear_error`). All blocking, allocation-bearing, or mutex-guarded symbols are safely dispatched as standard downcalls.
-> * **Transactional Context Construction & Structured Diagnostics:** Atomic initialization guarantees that Java constructor failures immediately free allocated off-heap resources via `argus_context_free()`, while `throwLastError` captures structured error codes and messages before resetting thread-local diagnostic buffers.
-> * **ArgusVideoItem Lifecycle Synchronization & Idempotence:** Enforced `ReentrantReadWriteLock` across `ArgusVideoItem`, guarding off-heap updates and reads against concurrent tear-downs with deterministic idempotent double-close.
-> * **ROCm/HIP Shell Safety & Cross-Platform Feature Verification:** Quoted `AMDGPU_TARGETS` flags to prevent Bash semicolon splitting errors, and introduced `--expect-features <target>` in both C++ and Java test pipelines across Linux, Windows, and macOS.
-> * **Build Toolchain & Java 22 Pinning:** Set Java toolchain and compilation targets strictly to Java 22 bytecode, fully eliminating CI toolchain download regressions while enabling Java 22+ and Java 25 JVM execution with full FFM runtime benefits.
+> * **Thread-Affine Lease Enforcement (`ArgusNativeResource.lease()`):** `Lease` captures the allocating `Thread` and enforces strict single-thread ownership upon `.close()`. Closing a lease from a different thread throws `IllegalStateException`, guaranteeing thread-affinity of underlying `ReentrantReadWriteLock` read locks.
+> * **Fail-Fast Lock Upgrade Prevention:** `ArgusNativeResource.close()` detects same-thread read-to-write lock upgrades and throws `IllegalStateException` immediately, deterministically preventing deadlocks.
+> * **Multimodal Video Refcounting (`argus_multimodal_retain` / `argus_multimodal_release`):** Native multimodal context lifecycle is now managed via atomic reference counting. `argus_video_t` retains its parent `argus_multimodal_t`, and Java `ArgusVideo` maintains a strong reference to `ArgusMultimodalContext`, decoupling iterator lifecycles and eliminating use-after-free races.
+> * **Native Video Iterator Thread Safety:** `argus_video_read_next` is protected by an internal C++ mutex, guaranteeing deterministic multi-threaded iterator safety.
+> * **Toolchain Decoupling (`skipCMake`):** Gradle build tasks support `-PskipCMake=true`, allowing CI/CD pipelines and developers to compile native binaries via Ninja/CMake separately without Gradle clobbering CMake cache or accelerator flags.
+> * **Isolated Classifier Verification (`verifyClassifierRuntime`):** Added automated Gradle verification task executing an isolated JVM process to test target classifier JAR SPI extraction and feature bitmask contracts (`cpu`, `cuda`, `rocm`, `vulkan`, `metal`).
+> * **Release Gating & Structured Manifest:** Release workflows enforce mandatory publishing secrets on `v*` release tags and generate structured `manifest.json` along with SHA-256 checksums.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -35,14 +35,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.2</version>
+        <version>1.7.3</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.2</version>
+        <version>1.7.3</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -52,10 +52,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.2")
+    implementation("cc.projectargus:libargus-core:1.7.3")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.2")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.3")
 }
 ```
 

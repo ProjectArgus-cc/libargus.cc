@@ -24,6 +24,7 @@ public abstract class ArgusNativeResource implements AutoCloseable {
      */
     public final class Lease implements AutoCloseable {
         private final MemorySegment leasedHandle;
+        private final Thread owner = Thread.currentThread();
         private boolean released = false;
 
         private Lease(MemorySegment leasedHandle) {
@@ -45,10 +46,14 @@ public abstract class ArgusNativeResource implements AutoCloseable {
 
         @Override
         public void close() {
-            if (!released) {
-                released = true;
-                releaseReadLease();
+            if (released) {
+                return;
             }
+            if (Thread.currentThread() != owner) {
+                throw new IllegalStateException("Lease for " + resourceName() + " must be closed by its owning thread (" + owner.getName() + "), but was called by " + Thread.currentThread().getName());
+            }
+            releaseReadLease();
+            released = true;
         }
     }
 
@@ -81,7 +86,7 @@ public abstract class ArgusNativeResource implements AutoCloseable {
      * @throws E if action throws
      * @throws IllegalStateException if resource is closed
      */
-    public <R, E extends Throwable> R withHandle(ResourceAction<R, E> action) throws E {
+    protected <R, E extends Throwable> R withHandle(ResourceAction<R, E> action) throws E {
         MemorySegment h = acquireReadLease();
         try {
             return action.execute(h);
@@ -146,7 +151,7 @@ public abstract class ArgusNativeResource implements AutoCloseable {
      * @return the memory segment handle
      * @throws IllegalStateException if this resource is closed
      */
-    @Deprecated
+    @Deprecated(forRemoval = true)
     public MemorySegment getHandle() {
         return unsafeBorrowedHandle();
     }
@@ -167,6 +172,10 @@ public abstract class ArgusNativeResource implements AutoCloseable {
     public void close() {
         if (closed) {
             return;
+        }
+        if (lifecycleLock.getReadHoldCount() > 0 && !lifecycleLock.isWriteLockedByCurrentThread()) {
+            throw new IllegalStateException("Cannot close " + resourceName() + 
+                " while the current thread holds an active lease (self-upgrade deadlock prevention)");
         }
         lifecycleLock.writeLock().lock();
         MemorySegment oldHandle;

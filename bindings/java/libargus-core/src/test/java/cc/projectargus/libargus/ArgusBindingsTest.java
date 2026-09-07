@@ -8,12 +8,15 @@ import cc.projectargus.libargus.internal.ArgusNativeResource;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ArgusBindingsTest {
@@ -62,8 +65,8 @@ public class ArgusBindingsTest {
             });
 
             try (ArgusInputChunks chunks = ArgusInputChunks.init()) {
-                assertNotNull(chunks.getHandle());
-                assertFalse(chunks.getHandle().equals(Arena.ofConfined().allocate(0)));
+                assertNotNull(chunks.unsafeBorrowedHandle());
+                assertFalse(chunks.unsafeBorrowedHandle().equals(Arena.ofConfined().allocate(0)));
             }
         }
         System.out.println("[Java Test] FFM multimodal wrappers successfully validated.");
@@ -77,7 +80,7 @@ public class ArgusBindingsTest {
             MemorySegment dummyPtr = arena.allocate(16);
             ArgusModel model = new ArgusModel(dummyPtr);
             assertFalse(model.isClosed());
-            assertNotEquals(MemorySegment.NULL, model.getHandle());
+            assertNotEquals(MemorySegment.NULL, model.unsafeBorrowedHandle());
 
             // Acquire read lease via AutoCloseable lease()
             try (ArgusNativeResource.Lease lease = model.lease()) {
@@ -85,20 +88,14 @@ public class ArgusBindingsTest {
                 assertFalse(model.isClosed());
             }
 
-            // Test functional withHandle accessor
-            long addr = model.withHandle(MemorySegment::address);
-            assertEquals(dummyPtr.address(), addr);
-
             // Test unsafeBorrowedHandle
             assertEquals(dummyPtr.address(), model.unsafeBorrowedHandle().address());
 
             model.clearHandleForTesting();
             model.close(); // closes wrapper
             assertTrue(model.isClosed());
-            assertThrows(IllegalStateException.class, model::getHandle);
-            assertThrows(IllegalStateException.class, model::lease);
-            assertThrows(IllegalStateException.class, () -> model.withHandle(h -> h));
             assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
+            assertThrows(IllegalStateException.class, model::lease);
 
             // Idempotent double close must not throw
             model.close();
@@ -159,23 +156,23 @@ public class ArgusBindingsTest {
                 // Create a real native bitmap using ArgusBitmap.fromRgb
                 MemorySegment rgbData = arena.allocate(3); // 1 pixel
                 ArgusBitmap realBitmap1 = ArgusBitmap.fromRgb(1, 1, rgbData);
-                MemorySegment handle1 = realBitmap1.getHandle();
+                MemorySegment handle1 = realBitmap1.unsafeBorrowedHandle();
 
                 // Pass the handle to item. Note that realBitmap1 must NOT be closed manually,
                 // because item will take ownership of this handle and close it when updated/closed.
                 item.update(handle1, null);
                 assertNotNull(item.bitmap());
-                assertEquals(handle1, item.bitmap().getHandle());
+                assertEquals(handle1, item.bitmap().unsafeBorrowedHandle());
                 assertNull(item.text());
 
                 // Create another native bitmap
                 ArgusBitmap realBitmap2 = ArgusBitmap.fromRgb(1, 1, rgbData);
-                MemorySegment handle2 = realBitmap2.getHandle();
+                MemorySegment handle2 = realBitmap2.unsafeBorrowedHandle();
 
                 // Updating item with handle2 will automatically close/free handle1!
                 item.update(handle2, "frame 2");
                 assertNotNull(item.bitmap());
-                assertEquals(handle2, item.bitmap().getHandle());
+                assertEquals(handle2, item.bitmap().unsafeBorrowedHandle());
                 assertEquals("frame 2", item.text());
             } // item.close() will automatically close/free handle2!
         } finally {
@@ -303,13 +300,14 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.7.2", ArgusBindings.VERSION);
+        assertEquals("1.7.3", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.7.2", nativeVer);
+            assertEquals("1.7.3", nativeVer);
+            assertEquals(ArgusBindings.VERSION, nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
             fail("Failed to verify native version: " + t.getMessage());
@@ -883,7 +881,7 @@ public class ArgusBindingsTest {
             // Double close model
             model.close();
             assertTrue(model.isClosed());
-            assertThrows(IllegalStateException.class, () -> model.getHandle());
+            assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
 
             // 3. ArgusInputChunks idempotence
             ArgusInputChunks chunks = ArgusInputChunks.init();
@@ -892,7 +890,7 @@ public class ArgusBindingsTest {
             assertTrue(chunks.isClosed());
             chunks.close();
             assertTrue(chunks.isClosed());
-            assertThrows(IllegalStateException.class, () -> chunks.getHandle());
+            assertThrows(IllegalStateException.class, chunks::unsafeBorrowedHandle);
 
             // 4. ArgusBitmap idempotence
             MemorySegment rgbData = arena.allocate(3);
@@ -902,7 +900,7 @@ public class ArgusBindingsTest {
             assertTrue(bitmap.isClosed());
             bitmap.close();
             assertTrue(bitmap.isClosed());
-            assertThrows(IllegalStateException.class, () -> bitmap.getHandle());
+            assertThrows(IllegalStateException.class, bitmap::unsafeBorrowedHandle);
         } finally {
             ArgusBackend.free();
         }
@@ -1086,7 +1084,6 @@ public class ArgusBindingsTest {
 
             assertTrue(model.isClosed());
             assertThrows(IllegalStateException.class, model::lease);
-            assertThrows(IllegalStateException.class, model::getHandle);
             assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
             System.out.println("  - Deterministic handle lease vs close verified without race or memory leak.");
         } finally {
@@ -1143,10 +1140,7 @@ public class ArgusBindingsTest {
         assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_last_error_code"));
         assertTrue(ArgusBindings.CRITICAL_ALLOWLIST.contains("argus_clear_error"));
 
-        // Verify that critical downcall on a non-allowlisted symbol fails fast via SecurityException
-        assertThrows(SecurityException.class, () -> {
-            ArgusBindings.bindCritical("argus_backend_get_count", java.lang.foreign.FunctionDescriptor.of(ValueLayout.JAVA_INT));
-        });
+        // Note: Package-private bindCritical and descriptor validation is tested in ArgusInternalResourceTest
     }
 
     @Test
@@ -1323,6 +1317,244 @@ public class ArgusBindingsTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             fail("Interrupted during concurrency test");
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testLeaseWrongThreadCloseFailsDeterministically() throws Exception {
+        System.out.println("[Java Test] Validating wrong-thread Lease.close() rejection...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyPtr = arena.allocate(16);
+            ArgusModel model = new ArgusModel(dummyPtr);
+
+            ArgusNativeResource.Lease lease = model.lease();
+            AtomicReference<Throwable> threadError = new AtomicReference<>();
+            CountDownLatch latch = new CountDownLatch(1);
+
+            Thread wrongThread = new Thread(() -> {
+                try {
+                    lease.close();
+                } catch (Throwable t) {
+                    threadError.set(t);
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            wrongThread.start();
+            assertTrue(latch.await(2, TimeUnit.SECONDS));
+
+            assertNotNull(threadError.get(), "Wrong-thread lease.close() must throw IllegalStateException");
+            assertTrue(threadError.get() instanceof IllegalStateException, "Expected IllegalStateException, got: " + threadError.get());
+
+            // Owning thread can still successfully close the lease
+            assertDoesNotThrow(lease::close);
+
+            // Double close by owner is idempotent
+            assertDoesNotThrow(lease::close);
+
+            // Resource can now close cleanly without deadlocks
+            model.close();
+            assertTrue(model.isClosed());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testSelfUpgradeDeadlockThrowsDeterministically() {
+        System.out.println("[Java Test] Validating same-thread close() deadlock prevention...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyPtr = arena.allocate(16);
+            ArgusModel model = new ArgusModel(dummyPtr);
+
+            try (ArgusNativeResource.Lease lease = model.lease()) {
+                IllegalStateException ex = assertThrows(IllegalStateException.class, model::close);
+                assertTrue(ex.getMessage().contains("self-upgrade deadlock prevention") ||
+                           ex.getMessage().contains("active lease"));
+                assertFalse(model.isClosed());
+            }
+
+            // Once lease is closed, model can close cleanly
+            model.close();
+            assertTrue(model.isClosed());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testCrossThreadOperationVsCloseRace() throws Exception {
+        System.out.println("[Java Test] Validating cross-thread operation vs close synchronization gate...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            Path root = Paths.get("").toAbsolutePath();
+            while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+                root = root.getParent();
+            }
+            assertNotNull(root);
+            Path modelPath = root.resolve("tests/data/tiny.gguf");
+            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+
+            CountDownLatch opStarted = new CountDownLatch(1);
+            CountDownLatch closeAttempted = new CountDownLatch(1);
+            AtomicBoolean opCompleted = new AtomicBoolean(false);
+            AtomicReference<Throwable> threadError = new AtomicReference<>();
+
+            Thread worker = new Thread(() -> {
+                try {
+                    try (var lease = model.lease()) {
+                        opStarted.countDown();
+                        assertTrue(closeAttempted.await(2, TimeUnit.SECONDS));
+                        Thread.sleep(100);
+                        assertNotNull(model.desc());
+                        opCompleted.set(true);
+                    }
+                } catch (Throwable t) {
+                    threadError.set(t);
+                }
+            });
+
+            Thread closer = new Thread(() -> {
+                try {
+                    assertTrue(opStarted.await(2, TimeUnit.SECONDS));
+                    closeAttempted.countDown();
+                    model.close();
+                } catch (Throwable t) {
+                    threadError.set(t);
+                }
+            });
+
+            worker.start();
+            closer.start();
+
+            worker.join(3000);
+            closer.join(3000);
+
+            assertNull(threadError.get(), "Thread encountered error during operation vs close race");
+            assertTrue(opCompleted.get(), "Operation must complete before close finishes");
+            assertTrue(model.isClosed());
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    private static boolean isFfprobeAvailable() {
+        try {
+            Process p = new ProcessBuilder("ffprobe", "-version").redirectErrorStream(true).start();
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Test
+    public void testVideoMultimodalContextLifetimeDecoupling() throws Exception {
+        System.out.println("[Java Test] Validating video to multimodal context decoupled refcounting...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            Path root = Paths.get("").toAbsolutePath();
+            while (root != null && !Files.exists(root.resolve("media/video.mp4"))) {
+                root = root.getParent();
+            }
+            Path videoPath = root != null ? root.resolve("media/video.mp4") : null;
+            Path modelPath = root != null ? root.resolve("models/qwen2-vl-2b-it-Q4_K_M.gguf") : null;
+            Path mmprojPath = root != null ? root.resolve("models/qwen2-vl-2b-it-mmproj.gguf") : null;
+
+            if (videoPath != null && Files.exists(videoPath) &&
+                modelPath != null && Files.exists(modelPath) &&
+                mmprojPath != null && Files.exists(mmprojPath) &&
+                isFfprobeAvailable()) {
+
+                ArgusModel baseModel = ArgusModel.load(arena, modelPath, 0, false);
+                ArgusMultimodalContext mctx = ArgusMultimodalContext.init(arena, baseModel, mmprojPath, 2, false);
+
+                ArgusVideo video = ArgusVideo.loadFile(arena, mctx, videoPath, 1.0f, 1000);
+                assertNotNull(video);
+
+                // Closing multimodal context does NOT invalidate the active video iterator!
+                mctx.close();
+                assertTrue(mctx.isClosed());
+                assertFalse(video.isClosed());
+
+                // Video reading remains safe because native mctx was retained
+                try (ArgusVideoItem item = new ArgusVideoItem()) {
+                    boolean hasNext = video.readNext(item);
+                    assertTrue(hasNext);
+                }
+
+                video.close();
+                assertTrue(video.isClosed());
+                baseModel.close();
+                System.out.println("  - ArgusVideo decoupled lifecycle with retained native context verified.");
+            } else {
+                System.out.println("  - Video assets or ffprobe not found; validating boundary null/rejection safety.");
+                assertThrows(NullPointerException.class, () -> ArgusVideo.loadFile(arena, null, Paths.get("dummy.mp4"), 1.0f, 1000));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testArgusVideoConcurrentReadNextThreadSafety() throws Exception {
+        System.out.println("[Java Test] Validating ArgusVideo concurrent readNext thread safety...");
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            Path root = Paths.get("").toAbsolutePath();
+            while (root != null && !Files.exists(root.resolve("media/video.mp4"))) {
+                root = root.getParent();
+            }
+            Path videoPath = root != null ? root.resolve("media/video.mp4") : null;
+            Path modelPath = root != null ? root.resolve("models/qwen2-vl-2b-it-Q4_K_M.gguf") : null;
+            Path mmprojPath = root != null ? root.resolve("models/qwen2-vl-2b-it-mmproj.gguf") : null;
+
+            if (videoPath != null && Files.exists(videoPath) &&
+                modelPath != null && Files.exists(modelPath) &&
+                mmprojPath != null && Files.exists(mmprojPath) &&
+                isFfprobeAvailable()) {
+
+                ArgusModel baseModel = ArgusModel.load(arena, modelPath, 0, false);
+                ArgusMultimodalContext mctx = ArgusMultimodalContext.init(arena, baseModel, mmprojPath, 2, false);
+                ArgusVideo video = ArgusVideo.loadFile(arena, mctx, videoPath, 1.0f, 1000);
+
+                int numWorkers = 4;
+                ExecutorService exec = Executors.newFixedThreadPool(numWorkers);
+                CountDownLatch startLatch = new CountDownLatch(1);
+                CountDownLatch doneLatch = new CountDownLatch(numWorkers);
+                AtomicReference<Throwable> failure = new AtomicReference<>();
+
+                for (int i = 0; i < numWorkers; i++) {
+                    exec.submit(() -> {
+                        try (ArgusVideoItem item = new ArgusVideoItem()) {
+                            startLatch.await();
+                            for (int j = 0; j < 5; j++) {
+                                video.readNext(item);
+                            }
+                        } catch (Throwable t) {
+                            failure.compareAndSet(null, t);
+                        } finally {
+                            doneLatch.countDown();
+                        }
+                    });
+                }
+
+                startLatch.countDown();
+                assertTrue(doneLatch.await(10, TimeUnit.SECONDS));
+                exec.shutdown();
+                assertNull(failure.get(), "Concurrent video readNext failed: " + failure.get());
+
+                video.close();
+                mctx.close();
+                baseModel.close();
+                System.out.println("  - ArgusVideo concurrent readNext serialized successfully via native mutex.");
+            } else {
+                System.out.println("  - Heavy model files not found; video concurrency stress skipped.");
+            }
         } finally {
             ArgusBackend.free();
         }

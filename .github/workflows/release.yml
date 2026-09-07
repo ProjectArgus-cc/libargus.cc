@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. 1.7.2)'
+        description: 'Release Version (e.g. 1.7.3)'
         required: true
-        default: '1.7.2'
+        default: '1.7.3'
 
 permissions:
   contents: write
@@ -113,9 +113,38 @@ jobs:
 
       - name: Configure CMake
         run: |
-          eval "args=( ${{ matrix.cmake_flags }} )"
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON "${args[@]}"
+          CMAKE_FLAGS=()
+          case "${{ matrix.target }}" in
+            cpu)
+              CMAKE_FLAGS=(-DGGML_CUDA=OFF -DGGML_METAL=OFF)
+              ;;
+            cuda)
+              if [ "${{ runner.os }}" = "Windows" ]; then
+                CMAKE_FLAGS=(-DGGML_CUDA=ON -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler)
+              else
+                CMAKE_FLAGS=(-DGGML_CUDA=ON -DGGML_METAL=OFF)
+              fi
+              ;;
+            rocm)
+              CMAKE_FLAGS=(
+                -DGGML_CUDA=OFF
+                -DGGML_METAL=OFF
+                -DGGML_HIP=ON
+                -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
+                -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++
+                "-DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"
+              )
+              ;;
+            vulkan)
+              CMAKE_FLAGS=(-DGGML_CUDA=OFF -DGGML_VULKAN=ON)
+              ;;
+            metal)
+              CMAKE_FLAGS=(-DGGML_METAL=ON -DGGML_CUDA=OFF)
+              ;;
+          esac
 
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON "${CMAKE_FLAGS[@]}"
 
       - name: Compile Native Binary
         run: |
@@ -124,11 +153,11 @@ jobs:
       - name: Verify Compiled Features
         run: |
           if [ -f build/bin/test_libargus ]; then
-            ./build/bin/test_libargus --expect-features ${{ matrix.target }}
+            ./build/bin/test_libargus --features-only --expect-features ${{ matrix.target }}
           elif [ -f build/bin/Release/test_libargus.exe ]; then
-            ./build/bin/Release/test_libargus.exe --expect-features ${{ matrix.target }}
+            ./build/bin/Release/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
           elif [ -f build/bin/test_libargus.exe ]; then
-            ./build/bin/test_libargus.exe --expect-features ${{ matrix.target }}
+            ./build/bin/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
           fi
 
       - name: Stage Native Binary
@@ -203,7 +232,7 @@ jobs:
 
       - name: Build Java Core & Native Classifier Jars
         run: |
-          ./gradlew build --info
+          ./gradlew build -PskipCMake=true --info
 
       - name: Verify Packaged Native Classifier Jars
         run: |
@@ -250,6 +279,12 @@ jobs:
             fi
           done
           ./gradlew verifyPackagedClassifiers
+
+          echo "Running isolated JVM verification on Linux CPU classifier..."
+          linux_cpu_jar=$(find bindings/java/libargus-native-linux-cpu/build/libs -name "libargus-native-linux-cpu-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+          ./gradlew verifyClassifierRuntime \
+            -PclassifierJar="$linux_cpu_jar" \
+            -PexpectedTarget="cpu"
           echo "All native classifier jars verified successfully with embedded binary payloads."
 
       - name: Publish to GitHub Packages Maven Registry
@@ -257,7 +292,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./gradlew publishAllPublicationsToGitHubPackagesRepository --info || {
+          ./gradlew publishAllPublicationsToGitHubPackagesRepository -PskipCMake=true --info || {
             echo "::warning::Publishing to GitHub Packages failed (likely already published). Continuing release pipeline..."
           }
 
@@ -268,24 +303,54 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          if [ -z "$MAVEN_CENTRAL_USERNAME" ] || [ -z "$MAVEN_CENTRAL_PASSWORD" ]; then
-            echo "::warning::MAVEN_CENTRAL_USERNAME or MAVEN_CENTRAL_PASSWORD is not set. Skipping Maven Central publication."
+          if [ -z "$MAVEN_CENTRAL_USERNAME" ] || [ -z "$MAVEN_CENTRAL_PASSWORD" ] || [ -z "$GPG_PRIVATE_KEY" ]; then
+            if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+              echo "::error::Fatal: Missing required Maven Central publication credentials on release tag ${{ github.ref }}" >&2
+              exit 1
+            fi
+            echo "::warning::MAVEN_CENTRAL_USERNAME, MAVEN_CENTRAL_PASSWORD, or GPG_PRIVATE_KEY is not set. Skipping Maven Central publication for non-tag workflow."
           else
             ./gradlew publishAggregationToCentralPortal \
+              -PskipCMake=true \
               -PmavenCentralUsername="$MAVEN_CENTRAL_USERNAME" \
               -PmavenCentralPassword="$MAVEN_CENTRAL_PASSWORD" \
               --info
           fi
 
-
-
-      - name: Generate Checksums Manifest
+      - name: Generate Checksums & Metadata Manifest
         run: |
           set -euo pipefail
           echo "Generating SHA-256 checksums manifest..."
           find bindings/java/ -name "*.jar" -exec sha256sum {} + > checksums.txt
           find native-binaries/ -type f -exec sha256sum {} + >> checksums.txt
           cat checksums.txt
+
+          echo "Generating structured manifest.json..."
+          python3 - << 'EOF'
+          import json, os, hashlib, glob
+
+          manifest = {
+              "version": "1.7.3",
+              "artifacts": []
+          }
+
+          for filepath in sorted(glob.glob("bindings/java/**/*.jar", recursive=True) + glob.glob("native-binaries/**/*", recursive=True)):
+              if os.path.isfile(filepath):
+                  with open(filepath, "rb") as f:
+                      content = f.read()
+                      sha256 = hashlib.sha256(content).hexdigest()
+                      size = len(content)
+                  manifest["artifacts"].append({
+                      "path": filepath,
+                      "filename": os.path.basename(filepath),
+                      "size_bytes": size,
+                      "sha256": sha256
+                  })
+
+          with open("manifest.json", "w") as out:
+              json.dump(manifest, out, indent=2)
+          EOF
+          cat manifest.json
 
       - name: Create GitHub Tagged Release
         uses: softprops/action-gh-release@v2
@@ -295,6 +360,7 @@ jobs:
             bindings/java/libargus-native-*/build/libs/*.jar
             native-binaries/**/*
             checksums.txt
+            manifest.json
           draft: false
           prerelease: false
           generate_release_notes: true

@@ -149,4 +149,70 @@ public final class ArgusBackend {
         }
         return Collections.unmodifiableList(list);
     }
+
+    /**
+     * Returns the compiled framework version string.
+     */
+    public static String getVersion() {
+        return ArgusBindings.VERSION;
+    }
+
+    /**
+     * Isolated CLI entry point verifying SPI native library extraction and build feature masks.
+     *
+     * @param args optional args[0] specifies expected backend target: "cpu", "cuda", "rocm", "vulkan", "metal"
+     */
+    public static void main(String[] args) {
+        String expectedTarget = args.length > 0 ? args[0] : null;
+        System.out.println("[ArgusBackend] Version: " + getVersion());
+        System.out.println("[ArgusBackend] Extracted/Loaded dir: " + ArgusBindings.EXTRACTED_DIR);
+        long features = getBuildFeatures();
+        System.out.println("[ArgusBackend] Build features bitmask: 0x" + Long.toHexString(features));
+        if ((features & FEATURE_CPU) != 0) System.out.println("  - CPU");
+        if ((features & FEATURE_CUDA) != 0) System.out.println("  - CUDA");
+        if ((features & FEATURE_ROCM) != 0) System.out.println("  - ROCm/HIP");
+        if ((features & FEATURE_VULKAN) != 0) System.out.println("  - Vulkan");
+        if ((features & FEATURE_METAL) != 0) System.out.println("  - Metal");
+
+        if (expectedTarget != null && !expectedTarget.isEmpty()) {
+            System.out.println("[ArgusBackend] Validating expected target: " + expectedTarget);
+            switch (expectedTarget.toLowerCase()) {
+                case "cpu" -> {
+                    if ((features & FEATURE_CPU) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
+                        System.err.println("FAIL: Expected CPU-only feature mask, got 0x" + Long.toHexString(features));
+                        System.exit(1);
+                    }
+                }
+                case "cuda" -> {
+                    if ((features & FEATURE_CUDA) == 0 || (features & (FEATURE_ROCM | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
+                        System.err.println("FAIL: Expected CUDA feature mask, got 0x" + Long.toHexString(features));
+                        System.exit(1);
+                    }
+                }
+                case "rocm", "hip" -> {
+                    if ((features & FEATURE_ROCM) == 0 || (features & (FEATURE_CUDA | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
+                        System.err.println("FAIL: Expected ROCm feature mask, got 0x" + Long.toHexString(features));
+                        System.exit(1);
+                    }
+                }
+                case "vulkan" -> {
+                    if ((features & FEATURE_VULKAN) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_METAL)) != 0) {
+                        System.err.println("FAIL: Expected Vulkan feature mask, got 0x" + Long.toHexString(features));
+                        System.exit(1);
+                    }
+                }
+                case "metal" -> {
+                    if ((features & FEATURE_METAL) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_VULKAN)) != 0) {
+                        System.err.println("FAIL: Expected Metal feature mask, got 0x" + Long.toHexString(features));
+                        System.exit(1);
+                    }
+                }
+                default -> {
+                    System.err.println("FAIL: Unknown expected target: " + expectedTarget);
+                    System.exit(1);
+                }
+            }
+            System.out.println("[ArgusBackend] Target contract verified successfully for " + expectedTarget);
+        }
+    }
 }

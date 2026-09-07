@@ -11,6 +11,7 @@
 
 // Internal wrappers
 struct argus_multimodal {
+    std::atomic<uint32_t> refs{1};
     mtmd_context * ctx;
     argus_model_t * model_ref;
 };
@@ -19,6 +20,8 @@ struct argus_multimodal {
 
 struct argus_video {
     mtmd_helper_video * video;
+    argus_multimodal_t * mctx;
+    std::mutex mtx;
 };
 
 struct argus_input_chunks {
@@ -73,24 +76,38 @@ argus_multimodal_t * argus_multimodal_init(const argus_model_t * model, const ar
     return nullptr;
 }
 
-void argus_multimodal_free(argus_multimodal_t * mctx) {
+bool argus_multimodal_retain(argus_multimodal_t * mctx) {
+    if (!mctx) {
+        return false;
+    }
+    mctx->refs.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void argus_multimodal_release(argus_multimodal_t * mctx) {
     if (!mctx) {
         return;
     }
-    try {
-        clear_last_error();
-        if (mctx->ctx) {
-            mtmd_free(mctx->ctx);
-            mctx->ctx = nullptr;
+    if (mctx->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        try {
+            clear_last_error();
+            if (mctx->ctx) {
+                mtmd_free(mctx->ctx);
+                mctx->ctx = nullptr;
+            }
+            if (mctx->model_ref) {
+                argus_model_release(mctx->model_ref);
+                mctx->model_ref = nullptr;
+            }
+            delete mctx;
+        } catch (...) {
+            // Suppress exceptions during destruction
         }
-        if (mctx->model_ref) {
-            argus_model_release(mctx->model_ref);
-            mctx->model_ref = nullptr;
-        }
-        delete mctx;
-    } catch (...) {
-        // Suppress exceptions during destruction
     }
+}
+
+void argus_multimodal_free(argus_multimodal_t * mctx) {
+    argus_multimodal_release(mctx);
 }
 
 bool argus_multimodal_support_vision(const argus_multimodal_t * mctx) {
@@ -201,8 +218,10 @@ argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * pa
             return nullptr;
         }
 
+        argus_multimodal_retain(mctx);
         argus_video_t * v = new argus_video();
         v->video = video;
+        v->mctx = mctx;
         return v;
     });
 }
@@ -223,8 +242,10 @@ argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t
             return nullptr;
         }
 
+        argus_multimodal_retain(mctx);
         argus_video_t * v = new argus_video();
         v->video = video;
+        v->mctx = mctx;
         return v;
     });
 }
@@ -232,8 +253,16 @@ argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t
 void argus_video_free(argus_video_t * video) {
     argus_guard_void("argus_video_free", [&]() {
         if (video) {
-            if (video->video) {
-                mtmd_helper_video_free(video->video);
+            {
+                std::lock_guard<std::mutex> lock(video->mtx);
+                if (video->video) {
+                    mtmd_helper_video_free(video->video);
+                    video->video = nullptr;
+                }
+            }
+            if (video->mctx) {
+                argus_multimodal_release(video->mctx);
+                video->mctx = nullptr;
             }
             delete video;
         }
@@ -242,8 +271,14 @@ void argus_video_free(argus_video_t * video) {
 
 int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitmap, char * out_text, int32_t max_chars) {
     return argus_guard(ARGUS_ERROR_INTERNAL, -2, "argus_video_read_next", [&]() -> int32_t {
-        if (!video || !video->video || !out_bitmap || !out_text || max_chars <= 0) {
+        if (!video || !out_bitmap || !out_text || max_chars <= 0) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid video arguments");
+            return -2;
+        }
+
+        std::lock_guard<std::mutex> lock(video->mtx);
+        if (!video->video) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "video iterator already closed or invalid");
             return -2;
         }
 

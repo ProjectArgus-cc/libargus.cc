@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # Load project version from the single source of truth version.txt file
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" LIBARGUS_VERSION_RAW)
 string(STRIP "${LIBARGUS_VERSION_RAW}" LIBARGUS_VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt")
 
 project(libargus VERSION ${LIBARGUS_VERSION} LANGUAGES C CXX)
 

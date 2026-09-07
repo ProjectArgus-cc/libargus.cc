@@ -53,8 +53,12 @@ tasks.named("sourcesJar") {
     dependsOn(copyVersionFile)
 }
 
+val skipCMake = project.findProperty("skipCMake")?.toString()?.lowercase().let { it == "true" || it == "on" || it == "1" }
+
 tasks.test {
-    dependsOn(":compileCMake")
+    if (!skipCMake) {
+        dependsOn(":compileCMake")
+    }
     useJUnitPlatform()
     
     // Enable native access warning suppression for FFM downcalls in test suite

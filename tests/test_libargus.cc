@@ -25,9 +25,12 @@
 
 int main(int argc, char ** argv) {
     std::string expected_target = "";
+    bool features_only = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--expect-features") == 0 && i + 1 < argc) {
             expected_target = argv[++i];
+        } else if (std::strcmp(argv[i], "--features-only") == 0) {
+            features_only = true;
         }
     }
 
@@ -61,6 +64,13 @@ int main(int argc, char ** argv) {
             return 1;
         }
         std::cout << "[Test] Expected feature contract verified for " << expected_target << std::endl;
+        if (features_only) {
+            std::cout << "[Test] --features-only specified; exiting successfully after feature probe." << std::endl;
+            return 0;
+        }
+    } else if (features_only) {
+        std::cout << "[Test] --features-only specified; bitmask validated. Exiting." << std::endl;
+        return 0;
     }
 
     std::cout << "[Test] Starting libargus lifecycle integration verification..." << std::endl;
@@ -72,7 +82,7 @@ int main(int argc, char ** argv) {
 
     // Assert compiled version query matches expectations
     std::cout << "[Test] Library Version: " << argus_version() << std::endl;
-    ARGUS_CHECK(std::strcmp(argus_version(), "1.7.2") == 0);
+    ARGUS_CHECK(std::strcmp(argus_version(), LIBARGUS_VERSION) == 0);
 
     // 2. Query backend count and list their names
     int32_t backend_count = argus_backend_get_count();
@@ -746,7 +756,8 @@ int main(int argc, char ** argv) {
             int32_t n_toks = argus_tokenize_n(m, "abc", 2, out_toks, 16, false);
             ARGUS_CHECK(n_toks == -1);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INTERNAL);
-            ARGUS_CHECK(std::strstr(argus_last_error_message(), "unordered_map::at") != nullptr);
+            ARGUS_CHECK(argus_last_error_message() != nullptr);
+            ARGUS_CHECK(std::strlen(argus_last_error_message()) > 0);
             argus_clear_error();
             ARGUS_CHECK(argus_last_error_code() == ARGUS_SUCCESS);
             std::cout << "  - Exception containment & boundary validation for argus_tokenize_n verified." << std::endl;

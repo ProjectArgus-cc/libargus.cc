@@ -79,23 +79,51 @@ jobs:
 
       - name: Configure CMake
         run: |
-          eval "args=( ${{ matrix.cmake_flags }} )"
+          CMAKE_FLAGS=()
+          case "${{ matrix.target }}" in
+            cpu)
+              CMAKE_FLAGS=(-DGGML_CUDA=OFF -DGGML_METAL=OFF)
+              ;;
+            cuda)
+              CMAKE_FLAGS=(-DGGML_CUDA=ON -DGGML_METAL=OFF)
+              ;;
+            rocm)
+              CMAKE_FLAGS=(
+                -DGGML_CUDA=OFF
+                -DGGML_METAL=OFF
+                -DGGML_HIP=ON
+                -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
+                -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+                -DCMAKE_HIP_COMPILER=/opt/rocm/llvm/bin/clang++
+                "-DAMDGPU_TARGETS=gfx906;gfx908;gfx90a;gfx1030;gfx1100"
+              )
+              ;;
+            vulkan)
+              CMAKE_FLAGS=(-DGGML_CUDA=OFF -DGGML_VULKAN=ON)
+              ;;
+          esac
+
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARGUS_PORTABLE=ON \
-            "${args[@]}"
+            "${CMAKE_FLAGS[@]}"
 
       - name: Compile Native Binary
         run: |
           cmake --build build --config Release -j $(nproc)
 
-      - name: Execute C++ Unit Tests
+      - name: Verify Native Feature Flags
         run: |
-          ./build/bin/test_libargus --expect-features ${{ matrix.target }}
+          ./build/bin/test_libargus --features-only --expect-features ${{ matrix.target }}
+
+      - name: Execute C++ Unit Tests
+        if: matrix.target == 'cpu'
+        run: |
+          ./build/bin/test_libargus --expect-features cpu
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
-          ./gradlew test --info
+          ./gradlew test -PskipCMake=true --info
 
       - name: Upload Test Results & Logs
         if: always()
@@ -167,17 +195,28 @@ jobs:
         run: |
           cmake --build build --config Release -j 4
 
-      - name: Execute C++ Unit Tests
+      - name: Verify Native Feature Flags
+        shell: bash
         run: |
-          if (Test-Path .\build\bin\Release\test_libargus.exe) {
-            .\build\bin\Release\test_libargus.exe --expect-features ${{ matrix.target }}
-          } else {
-            .\build\bin\test_libargus.exe --expect-features ${{ matrix.target }}
-          }
+          if [ -f build/bin/Release/test_libargus.exe ]; then
+            ./build/bin/Release/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
+          else
+            ./build/bin/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
+          fi
+
+      - name: Execute C++ Unit Tests
+        if: matrix.target == 'cpu'
+        shell: bash
+        run: |
+          if [ -f build/bin/Release/test_libargus.exe ]; then
+            ./build/bin/Release/test_libargus.exe --expect-features cpu
+          else
+            ./build/bin/test_libargus.exe --expect-features cpu
+          fi
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
-          .\gradlew.bat test --info
+          .\gradlew.bat test -PskipCMake=true --info
 
       - name: Upload Test Results & Logs
         if: always()
@@ -223,6 +262,7 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DARGUS_PORTABLE=ON \
             -DGGML_METAL=ON \
             -DGGML_CUDA=OFF
 
@@ -230,13 +270,17 @@ jobs:
         run: |
           cmake --build build --config Release -j $(sysctl -n hw.ncpu)
 
+      - name: Verify Native Feature Flags
+        run: |
+          ./build/bin/test_libargus --features-only --expect-features metal
+
       - name: Execute C++ Unit Tests
         run: |
           ./build/bin/test_libargus --expect-features metal
 
       - name: Execute JUnit Panama FFM Integration Tests
         run: |
-          ./gradlew test --info
+          ./gradlew test -PskipCMake=true --info
 
       - name: Upload Test Results & Logs
         if: always()

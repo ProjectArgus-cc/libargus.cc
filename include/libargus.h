@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.7.2
+ * @version 1.7.3
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -921,6 +921,19 @@ ARGUS_API argus_multimodal_t * argus_multimodal_init(const argus_model_t * model
  * @param mctx Target multimodal context pointer.
  */
 ARGUS_API void argus_multimodal_free(argus_multimodal_t * mctx);
+
+/**
+ * @brief Increments the reference count of the multimodal context.
+ * @param mctx Target multimodal context pointer.
+ * @return true if successfully retained, false if invalid.
+ */
+ARGUS_API bool argus_multimodal_retain(argus_multimodal_t * mctx);
+
+/**
+ * @brief Decrements the reference count of the multimodal context and frees when count reaches 0.
+ * @param mctx Target multimodal context pointer.
+ */
+ARGUS_API void argus_multimodal_release(argus_multimodal_t * mctx);
 
 /**
  * @brief Checks if the loaded multimodal context supports vision/image inputs.
