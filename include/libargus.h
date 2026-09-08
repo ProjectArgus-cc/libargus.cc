@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.7.3
+ * @version 1.7.4
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -1020,6 +1020,13 @@ ARGUS_API argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, con
 
 /**
  * @brief Releases video decoder context.
+ *
+ * Concurrency Contract:
+ * argus_video_free() must NOT be invoked concurrently with any other operation
+ * (including argus_video_read_next()) on the same video handle. Callers at the C ABI
+ * boundary must coordinate destruction lifetimes, or rely on higher-level bindings
+ * (such as Java's ArgusVideo) that enforce write-lock exclusion via ArgusNativeResource.
+ *
  * @param video Target video pointer.
  */
 ARGUS_API void argus_video_free(argus_video_t * video);
@@ -1027,6 +1034,11 @@ ARGUS_API void argus_video_free(argus_video_t * video);
 /**
  * @brief Iterates the video stream to extract the next bitmap frame or text timestamp chunk.
  * Exactly one of out_bitmap or out_text will be set per successful invocation.
+ *
+ * Concurrency Contract:
+ * Multiple concurrent callers to argus_video_read_next() on the same alive video handle
+ * are internally serialized via an internal C++ mutex.
+ *
  * @param video Active video pointer.
  * @param out_bitmap Destination address to receive the newly decoded frame bitmap pointer.
  * @param out_text Destination address to write any timestamp text strings.
@@ -1108,16 +1120,6 @@ ARGUS_API int32_t argus_eval_multimodal_chunks(
     int32_t n_batch,
     bool logits_last,
     int32_t * out_new_n_past);
-
-/**
- * @brief Diagnostic and testing hook to verify multimodal context mutex serialization.
- * Acquires ctx->mtx, clears pending logits, holds the lock for the specified duration, and releases.
- * @param ctx Target execution context.
- * @param seq_id Target sequence slot.
- * @param hold_us Microseconds to hold the context mutex.
- * @return 0 on success, negative on invalid argument.
- */
-ARGUS_API int32_t argus_multimodal_test_lock_sync(argus_context_t * ctx, int32_t seq_id, int32_t hold_us);
 
 #ifdef __cplusplus
 }

@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <chrono>
+#include <memory>
 
 // Internal wrappers
 struct argus_multimodal {
@@ -213,16 +214,19 @@ argus_video_t * argus_video_load_file(argus_multimodal_t * mctx, const char * pa
         params.fps_target = fps_target;
         params.timestamp_interval_ms = timestamp_interval_ms;
 
-        mtmd_helper_video * video = mtmd_helper_video_init(mctx->ctx, path, params);
-        if (!video) {
+        std::unique_ptr<mtmd_helper_video, decltype(&mtmd_helper_video_free)> owned_video(
+            mtmd_helper_video_init(mctx->ctx, path, params),
+            &mtmd_helper_video_free
+        );
+        if (!owned_video) {
             return nullptr;
         }
 
+        auto wrapper = std::make_unique<argus_video>();
         argus_multimodal_retain(mctx);
-        argus_video_t * v = new argus_video();
-        v->video = video;
-        v->mctx = mctx;
-        return v;
+        wrapper->mctx = mctx;
+        wrapper->video = owned_video.release();
+        return wrapper.release();
     });
 }
 
@@ -237,18 +241,22 @@ argus_video_t * argus_video_load_buffer(argus_multimodal_t * mctx, const uint8_t
         params.fps_target = fps_target;
         params.timestamp_interval_ms = timestamp_interval_ms;
 
-        mtmd_helper_video * video = mtmd_helper_video_init_from_buf(mctx->ctx, buffer, (size_t)size, params);
-        if (!video) {
+        std::unique_ptr<mtmd_helper_video, decltype(&mtmd_helper_video_free)> owned_video(
+            mtmd_helper_video_init_from_buf(mctx->ctx, buffer, (size_t)size, params),
+            &mtmd_helper_video_free
+        );
+        if (!owned_video) {
             return nullptr;
         }
 
+        auto wrapper = std::make_unique<argus_video>();
         argus_multimodal_retain(mctx);
-        argus_video_t * v = new argus_video();
-        v->video = video;
-        v->mctx = mctx;
-        return v;
+        wrapper->mctx = mctx;
+        wrapper->video = owned_video.release();
+        return wrapper.release();
     });
 }
+
 
 void argus_video_free(argus_video_t * video) {
     argus_guard_void("argus_video_free", [&]() {
@@ -309,16 +317,20 @@ int32_t argus_video_read_next(argus_video_t * video, argus_bitmap_t ** out_bitma
 
 argus_input_chunks_t * argus_input_chunks_init(void) {
     return argus_guard(ARGUS_ERROR_INTERNAL, (argus_input_chunks_t *)nullptr, "argus_input_chunks_init", [&]() -> argus_input_chunks_t * {
-        mtmd_input_chunks * chunks = mtmd_input_chunks_init();
-        if (!chunks) {
+        std::unique_ptr<mtmd_input_chunks, decltype(&mtmd_input_chunks_free)> owned_chunks(
+            mtmd_input_chunks_init(),
+            &mtmd_input_chunks_free
+        );
+        if (!owned_chunks) {
             return nullptr;
         }
 
-        argus_input_chunks_t * argus_chunks = new argus_input_chunks();
-        argus_chunks->chunks = chunks;
-        return argus_chunks;
+        auto wrapper = std::make_unique<argus_input_chunks>();
+        wrapper->chunks = owned_chunks.release();
+        return wrapper.release();
     });
 }
+
 
 void argus_input_chunks_free(argus_input_chunks_t * chunks) {
     argus_guard_void("argus_input_chunks_free", [&]() {
@@ -453,27 +465,5 @@ int32_t argus_eval_multimodal_chunks(
         return -1;
     }
 }
-
-int32_t argus_multimodal_test_lock_sync(argus_context_t * ctx, int32_t seq_id, int32_t hold_us) {
-    if (!ctx) {
-        return -1;
-    }
-    std::lock_guard<std::mutex> lock(ctx->mtx);
-
-    if (seq_id >= 0 && seq_id < (int32_t)ctx->seq_samplers.size()) {
-        discard_slot_pending_preserving_rng(ctx, seq_id);
-        ctx->seq_samplers[seq_id].has_logits = false;
-        ctx->seq_samplers[seq_id].last_logits_pos = -1;
-        if (ctx->last_decoded_seq_id == seq_id) {
-            ctx->last_decoded_seq_id = -1;
-        }
-    }
-
-    if (hold_us > 0) {
-        std::this_thread::sleep_for(std::chrono::microseconds(hold_us));
-    }
-
-    return 0;
-}
-
 } // extern "C"
+

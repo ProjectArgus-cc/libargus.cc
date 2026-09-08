@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release Version (e.g. 1.7.3)'
+        description: 'Release Version (e.g. 1.7.4)'
         required: true
-        default: '1.7.3'
+        default: '1.7.4'
 
 permissions:
   contents: write
@@ -47,16 +47,15 @@ jobs:
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
           - platform: windows-x86_64
             target: cpu
-            os: windows-latest
+            os: windows-2022
             cmake_flags: "-DGGML_CUDA=OFF"
           - platform: windows-x86_64
             target: cuda
             os: windows-2022
             cmake_flags: "-DGGML_CUDA=ON -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
-
           - platform: windows-x86_64
             target: vulkan
-            os: windows-latest
+            os: windows-2022
             cmake_flags: "-DGGML_CUDA=OFF -DGGML_VULKAN=ON"
           - platform: macos-aarch64
             target: metal
@@ -90,14 +89,13 @@ jobs:
           echo "/opt/rocm/bin" >> $GITHUB_PATH
           echo "/opt/rocm/llvm/bin" >> $GITHUB_PATH
 
-
       - name: Set up MSVC Developer Environment
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb9727c6 # v1.13.0
 
       - name: Set up CUDA Toolkit (Windows)
         if: runner.os == 'Windows' && matrix.target == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@506e12e3e56c52a0614cb43a4115e513813956bf # v0.2.19
         with:
           cuda: '12.4.1'
           method: 'network'
@@ -105,11 +103,10 @@ jobs:
       - name: Set up Vulkan SDK (Windows)
         if: runner.os == 'Windows' && matrix.target == 'vulkan'
         run: |
-          choco install vulkan-sdk -y
+          choco install vulkan-sdk --version 1.3.283.0 -y
           VULKAN_DIR=$(ls -d /c/VulkanSDK/* | tail -n 1)
           echo "VULKAN_SDK=$VULKAN_DIR" >> $GITHUB_ENV
           echo "$VULKAN_DIR/Bin" >> $GITHUB_PATH
-
 
       - name: Configure CMake
         run: |
@@ -150,14 +147,24 @@ jobs:
         run: |
           cmake --build build --config Release -j 4
 
-      - name: Verify Compiled Features
+      - name: Verify Compiled Features & Execute C++ Tests
         run: |
           if [ -f build/bin/test_libargus ]; then
-            ./build/bin/test_libargus --features-only --expect-features ${{ matrix.target }}
+            TEST_BIN="./build/bin/test_libargus"
           elif [ -f build/bin/Release/test_libargus.exe ]; then
-            ./build/bin/Release/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
+            TEST_BIN="./build/bin/Release/test_libargus.exe"
           elif [ -f build/bin/test_libargus.exe ]; then
-            ./build/bin/test_libargus.exe --features-only --expect-features ${{ matrix.target }}
+            TEST_BIN="./build/bin/test_libargus.exe"
+          else
+            echo "::error::Test binary test_libargus not found!" >&2
+            exit 1
+          fi
+
+          "$TEST_BIN" --features-only --expect-features ${{ matrix.target }}
+
+          if [ "${{ matrix.target }}" = "cpu" ]; then
+            echo "Executing full native C++ test suite on CPU target..."
+            "$TEST_BIN" --expect-features cpu
           fi
 
       - name: Stage Native Binary
@@ -175,10 +182,10 @@ jobs:
           if-no-files-found: error
 
   # =========================================================================
-  # 2. Package Java Modular Classifier Jars & Create GitHub Release
+  # 2. Package Java Modular Classifier Jars
   # =========================================================================
-  publish-release:
-    name: Package Jars & Publish Release
+  package-jars:
+    name: Package Java Modular Classifier Jars
     needs: build-native-artifacts
     runs-on: ubuntu-latest
 
@@ -187,7 +194,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 22
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '22'
@@ -278,14 +285,228 @@ jobs:
               }
             fi
           done
+
           ./gradlew verifyPackagedClassifiers
 
-          echo "Running isolated JVM verification on Linux CPU classifier..."
-          linux_cpu_jar=$(find bindings/java/libargus-native-linux-cpu/build/libs -name "libargus-native-linux-cpu-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+      - name: Upload Packaged JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-jars
+          path: |
+            bindings/java/libargus-core/build/libs/*.jar
+            bindings/java/libargus-native-*/build/libs/*.jar
+          if-no-files-found: error
+
+  # =========================================================================
+  # 3. Isolated-JVM Classifier Runtime Verification Matrix
+  # =========================================================================
+  verify-final-classifiers:
+    name: Verify Classifier (${{ matrix.platform }}-${{ matrix.target }})
+    needs: package-jars
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: cpu
+            os: ubuntu-latest
+            classifier: libargus-native-linux-cpu
+            expected: cpu
+          - platform: linux-x86_64
+            target: cuda
+            os: ubuntu-latest
+            classifier: libargus-native-linux-cuda
+            expected: cuda
+          - platform: linux-x86_64
+            target: rocm
+            os: ubuntu-22.04
+            classifier: libargus-native-linux-rocm
+            expected: rocm
+          - platform: linux-x86_64
+            target: vulkan
+            os: ubuntu-latest
+            classifier: libargus-native-linux-vulkan
+            expected: vulkan
+          - platform: windows-x86_64
+            target: cpu
+            os: windows-2022
+            classifier: libargus-native-windows-cpu
+            expected: cpu
+          - platform: windows-x86_64
+            target: cuda
+            os: windows-2022
+            classifier: libargus-native-windows-cuda
+            expected: cuda
+          - platform: windows-x86_64
+            target: vulkan
+            os: windows-2022
+            classifier: libargus-native-windows-vulkan
+            expected: vulkan
+          - platform: macos-aarch64
+            target: metal
+            os: macos-14
+            classifier: libargus-native-macos-metal
+            expected: metal
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Set up Runtime Dependencies (Linux CUDA/Vulkan)
+        if: runner.os == 'Linux' && (matrix.target == 'cuda' || matrix.target == 'vulkan')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libvulkan-dev vulkan-tools mesa-vulkan-drivers nvidia-cuda-toolkit
+
+      - name: Set up ROCm Runtime Dependencies (Linux ROCm)
+        if: runner.os == 'Linux' && matrix.target == 'rocm'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wget gnupg2
+          wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/rocm-keyring.gpg
+          echo 'deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/rocm-keyring.gpg] https://repo.radeon.com/rocm/apt/6.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
+          echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            rocm-dev hip-dev hipblas-dev rocblas-dev
+          echo "ROCM_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "HIP_PATH=/opt/rocm" >> $GITHUB_ENV
+          echo "/opt/rocm/bin" >> $GITHUB_PATH
+          echo "/opt/rocm/llvm/bin" >> $GITHUB_PATH
+
+      - name: Set up CUDA Toolkit (Windows)
+        if: runner.os == 'Windows' && matrix.target == 'cuda'
+        uses: Jimver/cuda-toolkit@506e12e3e56c52a0614cb43a4115e513813956bf # v0.2.19
+        with:
+          cuda: '12.4.1'
+          method: 'network'
+
+      - name: Set up Vulkan SDK (Windows)
+        if: runner.os == 'Windows' && matrix.target == 'vulkan'
+        run: |
+          choco install vulkan-sdk --version 1.3.283.0 -y
+          VULKAN_DIR=$(ls -d /c/VulkanSDK/* | tail -n 1)
+          echo "VULKAN_SDK=$VULKAN_DIR" >> $GITHUB_ENV
+          echo "$VULKAN_DIR/Bin" >> $GITHUB_PATH
+
+      - name: Download Packaged JAR Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packaged-jars
+          path: packaged-jars
+
+      - name: Execute Isolated JVM Runtime Verification
+        run: |
+          set -euo pipefail
+          classifier_jar=$(find packaged-jars -name "${{ matrix.classifier }}-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+          core_jar=$(find packaged-jars -name "libargus-core-*.jar" ! -name "*-sources.jar" ! -name "*-javadoc.jar" | head -n 1)
+
+          if [ -z "$classifier_jar" ] || [ ! -f "$classifier_jar" ]; then
+            echo "::error::Target classifier JAR for ${{ matrix.classifier }} not found!" >&2
+            exit 1
+          fi
+          if [ -z "$core_jar" ] || [ ! -f "$core_jar" ]; then
+            echo "::error::Core JAR libargus-core not found!" >&2
+            exit 1
+          fi
+
+          echo "Running positive runtime verification for ${{ matrix.classifier }} expecting '${{ matrix.target }}'..."
           ./gradlew verifyClassifierRuntime \
-            -PclassifierJar="$linux_cpu_jar" \
-            -PexpectedTarget="cpu"
-          echo "All native classifier jars verified successfully with embedded binary payloads."
+            -PclassifierJar="$classifier_jar" \
+            -PcoreJar="$core_jar" \
+            -PexpectedTarget="${{ matrix.target }}"
+
+          echo "Running negative runtime verification for ${{ matrix.classifier }} expecting mismatch to fail fast..."
+          negative_target="cpu"
+          if [ "${{ matrix.target }}" = "cpu" ]; then
+            negative_target="cuda"
+          fi
+          ./gradlew verifyClassifierRuntime \
+            -PclassifierJar="$classifier_jar" \
+            -PcoreJar="$core_jar" \
+            -PexpectedTarget="$negative_target" \
+            -PexpectFailure=true
+
+  # =========================================================================
+  # 4. Publish Gated Release & Deploy Artifacts
+  # =========================================================================
+  publish-release:
+    name: Publish Release & Deploy Artifacts
+    needs: [build-native-artifacts, package-jars, verify-final-classifiers]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 22
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '22'
+
+      - name: Download All Compiled Native Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: native-binaries
+
+      - name: Download Packaged JAR Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: packaged-jars
+          path: packaged-jars
+
+      - name: Stage Pre-Packaged JARs & Resources for Publishing
+        run: |
+          set -euo pipefail
+
+          copy_native() {
+            local src_dir="$1"
+            local dest_dir="$2"
+            local pattern="$3"
+
+            mkdir -p "$dest_dir"
+            local file
+            file=$(find "$src_dir" -type f -name "$pattern" 2>/dev/null | head -n 1)
+
+            if [ -z "$file" ] || [ ! -f "$file" ]; then
+              echo "::error::Required native binary '$pattern' not found under '$src_dir'!" >&2
+              exit 1
+            fi
+
+            cp "$file" "$dest_dir/"
+            echo "Successfully staged $file -> $dest_dir/$pattern"
+          }
+
+          copy_native "native-binaries/native-linux-x86_64-cpu" "bindings/java/libargus-native-linux-cpu/src/main/resources/natives/linux-amd64/cpu" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-cuda" "bindings/java/libargus-native-linux-cuda/src/main/resources/natives/linux-amd64/cuda" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-rocm" "bindings/java/libargus-native-linux-rocm/src/main/resources/natives/linux-amd64/rocm" "libargus.so"
+          copy_native "native-binaries/native-linux-x86_64-vulkan" "bindings/java/libargus-native-linux-vulkan/src/main/resources/natives/linux-amd64/vulkan" "libargus.so"
+          copy_native "native-binaries/native-windows-x86_64-cpu" "bindings/java/libargus-native-windows-cpu/src/main/resources/natives/windows-amd64/cpu" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-cuda" "bindings/java/libargus-native-windows-cuda/src/main/resources/natives/windows-amd64/cuda" "argus.dll"
+          copy_native "native-binaries/native-windows-x86_64-vulkan" "bindings/java/libargus-native-windows-vulkan/src/main/resources/natives/windows-amd64/vulkan" "argus.dll"
+          copy_native "native-binaries/native-macos-aarch64-metal" "bindings/java/libargus-native-macos-metal/src/main/resources/natives/macos-aarch64/metal" "libargus.dylib"
+
+          mkdir -p bindings/java/libargus-core/build/libs
+          cp packaged-jars/libargus-core-*.jar bindings/java/libargus-core/build/libs/
+          for d in bindings/java/libargus-native-*; do
+            [ -d "$d" ] || continue
+            subproject=$(basename "$d")
+            mkdir -p "$d/build/libs"
+            cp packaged-jars/${subproject}-*.jar "$d/build/libs/"
+          done
+          echo "Staged pre-packaged JARs into project build directories."
 
       - name: Publish to GitHub Packages Maven Registry
         continue-on-error: true
@@ -321,20 +542,33 @@ jobs:
         run: |
           set -euo pipefail
           echo "Generating SHA-256 checksums manifest..."
-          find bindings/java/ -name "*.jar" -exec sha256sum {} + > checksums.txt
+          find packaged-jars/ -name "*.jar" -exec sha256sum {} + > checksums.txt
           find native-binaries/ -type f -exec sha256sum {} + >> checksums.txt
           cat checksums.txt
 
           echo "Generating structured manifest.json..."
           python3 - << 'EOF'
-          import json, os, hashlib, glob
+          import json, os, hashlib, glob, subprocess
+
+          version = "1.7.4"
+          if os.path.isfile("version.txt"):
+              with open("version.txt", "r") as f:
+                  v = f.read().strip()
+                  if v:
+                      version = v
+
+          try:
+              git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+          except Exception:
+              git_sha = os.getenv("GITHUB_SHA", "unknown")
 
           manifest = {
-              "version": "1.7.3",
+              "version": version,
+              "git_sha": git_sha,
               "artifacts": []
           }
 
-          for filepath in sorted(glob.glob("bindings/java/**/*.jar", recursive=True) + glob.glob("native-binaries/**/*", recursive=True)):
+          for filepath in sorted(glob.glob("packaged-jars/**/*.jar", recursive=True) + glob.glob("native-binaries/**/*", recursive=True)):
               if os.path.isfile(filepath):
                   with open(filepath, "rb") as f:
                       content = f.read()
@@ -353,15 +587,13 @@ jobs:
           cat manifest.json
 
       - name: Create GitHub Tagged Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87238b5066dd85b6e0bd2 # v2.2.12
         with:
           files: |
-            bindings/java/libargus-core/build/libs/*.jar
-            bindings/java/libargus-native-*/build/libs/*.jar
+            packaged-jars/*.jar
             native-binaries/**/*
             checksums.txt
             manifest.json
           draft: false
           prerelease: false
           generate_release_notes: true
-

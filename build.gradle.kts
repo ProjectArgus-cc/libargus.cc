@@ -234,15 +234,17 @@ tasks.register("verifyClassifierRuntime") {
         val targetClassifier = project.findProperty("targetClassifier")?.toString()
             ?: project.findProperty("classifierJar")?.toString()
         val expectedTarget = project.findProperty("expectedTarget")?.toString() ?: ""
+        val expectFailure = project.findProperty("expectFailure")?.toString()?.lowercase().let { it == "true" || it == "1" }
 
         if (targetClassifier.isNullOrEmpty()) {
             logger.lifecycle("No targetClassifier specified; skipping isolated classifier runtime verification.")
             return@doLast
         }
 
+        val coreJarProp = project.findProperty("coreJar")?.toString()
         val coreProj = subprojects.find { it.name == "libargus-core" }
             ?: error("Subproject 'libargus-core' not found!")
-        val coreJar = coreProj.layout.buildDirectory.dir("libs").get().asFile.resolve("${coreProj.name}-${coreProj.version}.jar")
+        val defaultCoreJar = coreProj.layout.buildDirectory.dir("libs").get().asFile.resolve("${coreProj.name}-${coreProj.version}.jar")
 
         val subJar = if (project.file(targetClassifier).exists()) {
             project.file(targetClassifier)
@@ -252,13 +254,22 @@ tasks.register("verifyClassifierRuntime") {
             subproj.layout.buildDirectory.dir("libs").get().asFile.resolve("${subproj.name}-${subproj.version}.jar")
         }
 
+        val coreJar = when {
+            !coreJarProp.isNullOrEmpty() && project.file(coreJarProp).exists() -> project.file(coreJarProp)
+            defaultCoreJar.exists() -> defaultCoreJar
+            subJar.parentFile?.resolve("${coreProj.name}-${coreProj.version}.jar")?.exists() == true ->
+                subJar.parentFile.resolve("${coreProj.name}-${coreProj.version}.jar")
+            else -> subJar.parentFile?.listFiles()?.firstOrNull { it.name.startsWith("libargus-core-") && it.name.endsWith(".jar") && !it.name.contains("sources") && !it.name.contains("javadoc") }
+                ?: defaultCoreJar
+        }
+
         if (!subJar.exists()) error("Classifier JAR missing: ${subJar.absolutePath}")
         if (!coreJar.exists()) error("Core JAR missing: ${coreJar.absolutePath}")
 
         val cp = listOf(subJar.absolutePath, coreJar.absolutePath).joinToString(java.io.File.pathSeparator)
         val javaBin = java.nio.file.Paths.get(System.getProperty("java.home"), "bin", if (System.getProperty("os.name").lowercase().contains("windows")) "java.exe" else "java").toString()
 
-        logger.lifecycle("Executing isolated JVM classifier runtime test with CP: $cp (target=$expectedTarget)")
+        logger.lifecycle("Executing isolated JVM classifier runtime test with CP: $cp (target=$expectedTarget, expectFailure=$expectFailure)")
         val proc = ProcessBuilder(
             javaBin,
             "--enable-native-access=ALL-UNNAMED",
@@ -270,10 +281,18 @@ tasks.register("verifyClassifierRuntime") {
         val output = proc.inputStream.bufferedReader().readText()
         val exitCode = proc.waitFor()
         logger.lifecycle("Verification output:\n$output")
-        if (exitCode != 0) {
-            error("Isolated classifier runtime test failed with exit code $exitCode: $output")
+        if (expectFailure) {
+            if (exitCode == 0) {
+                error("Isolated classifier runtime test was expected to fail for target '$expectedTarget', but exited successfully!")
+            }
+            logger.lifecycle("Negative verification passed as expected (exit code $exitCode) for $targetClassifier")
+        } else {
+            if (exitCode != 0) {
+                error("Isolated classifier runtime test failed with exit code $exitCode: $output")
+            }
+            logger.lifecycle("Isolated classifier runtime test passed successfully for $targetClassifier")
         }
-        logger.lifecycle("Isolated classifier runtime test passed successfully for $targetClassifier")
     }
 }
+
 

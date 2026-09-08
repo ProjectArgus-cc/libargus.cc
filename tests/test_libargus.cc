@@ -660,7 +660,7 @@ int main(int argc, char ** argv) {
             int32_t pend_mm = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
             ARGUS_CHECK(pend_mm >= 0);
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
-            ARGUS_CHECK(argus_multimodal_test_lock_sync(ctx, 0, 0) == 0);
+            ARGUS_CHECK(argus_sampler_discard_pending(ctx, 0) == 1);
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
             std::cout << "  - Ghost token elimination & canonical pending discard verified." << std::endl;
         }
@@ -673,9 +673,10 @@ int main(int argc, char ** argv) {
 
             std::thread worker([&]() {
                 for (int iter = 0; iter < 100; ++iter) {
-                    // Actively acquires and holds ctx->mtx for 100 microseconds per iteration
-                    int32_t res = argus_multimodal_test_lock_sync(ctx, 0, 100);
-                    if (res != 0) {
+                    int32_t hist = argus_sampler_get_history_count(ctx, 0);
+                    int32_t pend = argus_sampler_has_pending(ctx, 0);
+                    int32_t pos = argus_kv_cache_seq_pos_max(ctx, 0);
+                    if (hist < 0 || pend < 0 || pos < -1) {
                         error_count.fetch_add(1);
                     }
                     sync_calls.fetch_add(1);

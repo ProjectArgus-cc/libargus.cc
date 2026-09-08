@@ -170,11 +170,28 @@ public final class ArgusBindings {
         if (customDir != null && !customDir.trim().isEmpty()) {
             destDir = new File(customDir.trim());
         } else {
-            destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache");
+            String rawUser = System.getProperty("user.name", "default");
+            String safeUser = rawUser.replaceAll("[^a-zA-Z0-9._-]", "_");
+            destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache_" + safeUser);
         }
 
-        if (!destDir.exists() && !destDir.mkdirs()) {
-            throw new RuntimeException("Failed to create native extraction directory: " + destDir);
+        try {
+            if (!destDir.exists()) {
+                if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+                    Files.createDirectories(
+                        destDir.toPath(),
+                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                            java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")
+                        )
+                    );
+                } else {
+                    if (!destDir.mkdirs() && !destDir.exists()) {
+                        throw new RuntimeException("Failed to create native extraction directory: " + destDir);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to initialize secure native extraction directory: " + destDir, e);
         }
 
         for (NativeLibraryProvider provider : providers) {

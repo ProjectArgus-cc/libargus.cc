@@ -5,3 +5,7 @@ cmake-build-debug/
 *.log
 models/
 native-binaries/
+media/
+*.jar
+*.tar.gz
+*.zip

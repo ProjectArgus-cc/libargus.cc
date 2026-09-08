@@ -8,15 +8,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.3 Release — Thread-Affine Lease Hardening, Video Multimodal Refcounting & Decoupled Toolchains**
+> **v1.7.4 Release — Transactional Native RAII, Multi-OS Classifier Verification & Fanged Lifecycle Test Safety**
 > 
-> * **Thread-Affine Lease Enforcement (`ArgusNativeResource.lease()`):** `Lease` captures the allocating `Thread` and enforces strict single-thread ownership upon `.close()`. Closing a lease from a different thread throws `IllegalStateException`, guaranteeing thread-affinity of underlying `ReentrantReadWriteLock` read locks.
-> * **Fail-Fast Lock Upgrade Prevention:** `ArgusNativeResource.close()` detects same-thread read-to-write lock upgrades and throws `IllegalStateException` immediately, deterministically preventing deadlocks.
-> * **Multimodal Video Refcounting (`argus_multimodal_retain` / `argus_multimodal_release`):** Native multimodal context lifecycle is now managed via atomic reference counting. `argus_video_t` retains its parent `argus_multimodal_t`, and Java `ArgusVideo` maintains a strong reference to `ArgusMultimodalContext`, decoupling iterator lifecycles and eliminating use-after-free races.
-> * **Native Video Iterator Thread Safety:** `argus_video_read_next` is protected by an internal C++ mutex, guaranteeing deterministic multi-threaded iterator safety.
-> * **Toolchain Decoupling (`skipCMake`):** Gradle build tasks support `-PskipCMake=true`, allowing CI/CD pipelines and developers to compile native binaries via Ninja/CMake separately without Gradle clobbering CMake cache or accelerator flags.
-> * **Isolated Classifier Verification (`verifyClassifierRuntime`):** Added automated Gradle verification task executing an isolated JVM process to test target classifier JAR SPI extraction and feature bitmask contracts (`cpu`, `cuda`, `rocm`, `vulkan`, `metal`).
-> * **Release Gating & Structured Manifest:** Release workflows enforce mandatory publishing secrets on `v*` release tags and generate structured `manifest.json` along with SHA-256 checksums.
+> * **Fanged Lifecycle Testing (`TestNativeResource`):** Eliminated arbitrary memory casting into typed native objects. Replaced brittle test scaffolding with deterministic, instrumented test resources validating handle leasing, thread affinity, write-lock exclusion, and idempotence without invoking unconstructed native destructors.
+> * **Transactional Native RAII:** Hardened native media factory functions (`argus_video_load_file`, `argus_video_load_buffer`, `argus_input_chunks_init`) with `std::unique_ptr` RAII guards, guaranteeing leak-free cleanup of partial resources and refcounts on any allocation failure.
+> * **Multi-OS Classifier Verification Matrix:** Release pipelines enforce isolated-JVM runtime verification across Linux, Windows, and macOS for all final classifier JARs, validating exact `argus_build_features()` masks and detecting mismatched payloads.
+> * **Immutable Gated Release Graph:** Publishing to Maven Central and GitHub is strictly gated on the green execution of the complete cross-platform test and verification matrix using immutable artifact handoff.
+> * **C ABI Concurrency Contract & Symbol Hardening:** Documented C ABI video thread safety contracts and purged synthetic test hooks (`argus_multimodal_test_lock_sync`) from public ABI exports.
+> * **Secure Native Extraction Cache:** Hardened runtime SPI extraction directory against symlink and permission hazards with user isolation and POSIX `rwx------` (0700) access restrictions.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -35,14 +34,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.3</version>
+        <version>1.7.4</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.3</version>
+        <version>1.7.4</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -52,12 +51,13 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.3")
+    implementation("cc.projectargus:libargus-core:1.7.4")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.3")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.4")
 }
 ```
+
 
 > [!TIP]
 > **JVM Runtime Requirement:** Because `libargus` leverages Project Panama Foreign Function & Memory (FFM) downcalls, you must pass `--enable-native-access=ALL-UNNAMED` to your JVM execution arguments.

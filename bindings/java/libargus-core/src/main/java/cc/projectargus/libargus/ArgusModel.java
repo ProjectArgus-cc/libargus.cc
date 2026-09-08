@@ -35,10 +35,6 @@ public final class ArgusModel extends ArgusNativeResource {
         }
     }
 
-    void clearHandleForTesting() {
-        this.handle = MemorySegment.NULL;
-    }
-
     /**
      * Loads GGUF weights off-heap using the specified configuration parameters.
      *

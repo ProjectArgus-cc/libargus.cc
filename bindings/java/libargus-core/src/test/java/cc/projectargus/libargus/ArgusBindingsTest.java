@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusNativeResource;
+import cc.projectargus.libargus.internal.TestNativeResource;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -74,34 +75,33 @@ public class ArgusBindingsTest {
 
     @Test
     public void testModelLifecycleAndLeaseProtection() {
-        System.out.println("[Java Test] Validating model lifecycle and handle leasing...");
-        ArgusBackend.init();
+        System.out.println("[Java Test] Validating resource lifecycle and handle leasing...");
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment dummyPtr = arena.allocate(16);
-            ArgusModel model = new ArgusModel(dummyPtr);
-            assertFalse(model.isClosed());
-            assertNotEquals(MemorySegment.NULL, model.unsafeBorrowedHandle());
+            TestNativeResource res = new TestNativeResource(dummyPtr);
+            assertFalse(res.isClosed());
+            assertEquals(dummyPtr.address(), res.unsafeBorrowedHandle().address());
 
             // Acquire read lease via AutoCloseable lease()
-            try (ArgusNativeResource.Lease lease = model.lease()) {
+            try (ArgusNativeResource.Lease lease = res.lease()) {
                 assertEquals(dummyPtr.address(), lease.handle().address());
-                assertFalse(model.isClosed());
+                assertFalse(res.isClosed());
             }
 
             // Test unsafeBorrowedHandle
-            assertEquals(dummyPtr.address(), model.unsafeBorrowedHandle().address());
+            assertEquals(dummyPtr.address(), res.unsafeBorrowedHandle().address());
 
-            model.clearHandleForTesting();
-            model.close(); // closes wrapper
-            assertTrue(model.isClosed());
-            assertThrows(IllegalStateException.class, model::unsafeBorrowedHandle);
-            assertThrows(IllegalStateException.class, model::lease);
+            res.close(); // closes resource cleanly
+            assertTrue(res.isClosed());
+            assertEquals(1, res.getReleaseCount());
+            assertEquals(dummyPtr.address(), res.getReleasedHandle().address());
+            assertThrows(IllegalStateException.class, res::unsafeBorrowedHandle);
+            assertThrows(IllegalStateException.class, res::lease);
 
-            // Idempotent double close must not throw
-            model.close();
-            assertTrue(model.isClosed());
-        } finally {
-            ArgusBackend.free();
+            // Idempotent double close must not throw and must not double-release
+            res.close();
+            assertTrue(res.isClosed());
+            assertEquals(1, res.getReleaseCount());
         }
     }
 
@@ -300,13 +300,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.7.3", ArgusBindings.VERSION);
+        assertEquals("1.7.4", ArgusBindings.VERSION);
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.7.3", nativeVer);
+            assertEquals("1.7.4", nativeVer);
             assertEquals(ArgusBindings.VERSION, nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
@@ -1325,12 +1325,11 @@ public class ArgusBindingsTest {
     @Test
     public void testLeaseWrongThreadCloseFailsDeterministically() throws Exception {
         System.out.println("[Java Test] Validating wrong-thread Lease.close() rejection...");
-        ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment dummyPtr = arena.allocate(16);
-            ArgusModel model = new ArgusModel(dummyPtr);
+            TestNativeResource res = new TestNativeResource(dummyPtr);
 
-            ArgusNativeResource.Lease lease = model.lease();
+            ArgusNativeResource.Lease lease = res.lease();
             AtomicReference<Throwable> threadError = new AtomicReference<>();
             CountDownLatch latch = new CountDownLatch(1);
 
@@ -1350,6 +1349,10 @@ public class ArgusBindingsTest {
             assertNotNull(threadError.get(), "Wrong-thread lease.close() must throw IllegalStateException");
             assertTrue(threadError.get() instanceof IllegalStateException, "Expected IllegalStateException, got: " + threadError.get());
 
+            // Lease is still held, releaseCount is 0
+            assertEquals(0, res.getReleaseCount());
+            assertFalse(res.isClosed());
+
             // Owning thread can still successfully close the lease
             assertDoesNotThrow(lease::close);
 
@@ -1357,91 +1360,174 @@ public class ArgusBindingsTest {
             assertDoesNotThrow(lease::close);
 
             // Resource can now close cleanly without deadlocks
-            model.close();
-            assertTrue(model.isClosed());
-        } finally {
-            ArgusBackend.free();
+            res.close();
+            assertTrue(res.isClosed());
+            assertEquals(1, res.getReleaseCount());
+            assertEquals(dummyPtr.address(), res.getReleasedHandle().address());
         }
     }
 
     @Test
     public void testSelfUpgradeDeadlockThrowsDeterministically() {
         System.out.println("[Java Test] Validating same-thread close() deadlock prevention...");
-        ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment dummyPtr = arena.allocate(16);
-            ArgusModel model = new ArgusModel(dummyPtr);
+            TestNativeResource res = new TestNativeResource(dummyPtr);
 
-            try (ArgusNativeResource.Lease lease = model.lease()) {
-                IllegalStateException ex = assertThrows(IllegalStateException.class, model::close);
+            try (ArgusNativeResource.Lease lease = res.lease()) {
+                IllegalStateException ex = assertThrows(IllegalStateException.class, res::close);
                 assertTrue(ex.getMessage().contains("self-upgrade deadlock prevention") ||
                            ex.getMessage().contains("active lease"));
-                assertFalse(model.isClosed());
+                assertFalse(res.isClosed());
+                assertEquals(0, res.getReleaseCount());
             }
 
-            // Once lease is closed, model can close cleanly
-            model.close();
-            assertTrue(model.isClosed());
-        } finally {
-            ArgusBackend.free();
+            // Once lease is closed, resource can close cleanly
+            res.close();
+            assertTrue(res.isClosed());
+            assertEquals(1, res.getReleaseCount());
         }
     }
 
     @Test
     public void testCrossThreadOperationVsCloseRace() throws Exception {
-        System.out.println("[Java Test] Validating cross-thread operation vs close synchronization gate...");
+        System.out.println("[Java Test] Validating cross-thread public operation vs close synchronization gate...");
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dummyPtr = arena.allocate(16);
+            TestNativeResource res = new TestNativeResource(dummyPtr);
+
+            AtomicBoolean opCompleted = new AtomicBoolean(false);
+            AtomicBoolean closeCompleted = new AtomicBoolean(false);
+            AtomicReference<Throwable> threadError = new AtomicReference<>();
+
+            // Thread 1: Enters real public operation on res and pauses inside withHandle()
+            Thread opWorker = new Thread(() -> {
+                try {
+                    res.executeBlockingOperation();
+                    opCompleted.set(true);
+                } catch (Throwable t) {
+                    threadError.set(t);
+                }
+            });
+
+            opWorker.start();
+            assertTrue(res.getEnterLatch().await(2, TimeUnit.SECONDS), "Operation must enter read lease");
+
+            // At this point, opWorker is actively holding the read lock inside withHandle
+            assertFalse(res.isClosed());
+            assertEquals(0, res.getReleaseCount());
+
+            // Thread 2: Attempts to close the resource. Must block because opWorker holds the read lock
+            Thread closeWorker = new Thread(() -> {
+                try {
+                    res.close();
+                    closeCompleted.set(true);
+                } catch (Throwable t) {
+                    threadError.set(t);
+                }
+            });
+
+            closeWorker.start();
+
+            // Give closeWorker time to run and block on writeLock()
+            Thread.sleep(100);
+
+            // Assert that while operation is active, close has NOT completed and release has NOT fired
+            assertFalse(closeCompleted.get(), "Close must be blocked while public operation is executing");
+            assertFalse(res.isClosed(), "Resource must remain open while public operation is executing");
+            assertEquals(0, res.getReleaseCount(), "Native release must not be invoked while operation is executing");
+
+            // Now release the operation in opWorker
+            res.getReleaseLatch().countDown();
+
+            opWorker.join(2000);
+            assertFalse(opWorker.isAlive(), "Operation worker should terminate normally");
+            assertTrue(opCompleted.get(), "Public operation must have completed successfully");
+
+            closeWorker.join(2000);
+            assertFalse(closeWorker.isAlive(), "Close worker should unblock and finish");
+            assertTrue(closeCompleted.get(), "Close must complete after operation exits");
+            assertTrue(res.isClosed(), "Resource must now be closed");
+            assertEquals(1, res.getReleaseCount(), "Native release must execute exactly once");
+
+            if (threadError.get() != null) {
+                fail("Thread worker threw unexpected exception: " + threadError.get());
+            }
+        }
+    }
+
+    @Test
+    public void testAbortFlagLeasedDuringDecodeBlocksClose() throws Exception {
+        System.out.println("[Java Test] Validating composite dependent-resource lease safety during active decode...");
         ArgusBackend.init();
         try (Arena arena = Arena.ofConfined()) {
             Path root = Paths.get("").toAbsolutePath();
             while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
                 root = root.getParent();
             }
-            assertNotNull(root);
+            assertNotNull(root, "Could not find tests/data/tiny.gguf");
             Path modelPath = root.resolve("tests/data/tiny.gguf");
-            ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
 
-            CountDownLatch opStarted = new CountDownLatch(1);
-            CountDownLatch closeAttempted = new CountDownLatch(1);
-            AtomicBoolean opCompleted = new AtomicBoolean(false);
-            AtomicReference<Throwable> threadError = new AtomicReference<>();
+            try (ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
+                 ArgusContext context = ArgusContext.init(model, ArgusContextConfig.createDefault(512))) {
 
-            Thread worker = new Thread(() -> {
-                try {
-                    try (var lease = model.lease()) {
-                        opStarted.countDown();
-                        assertTrue(closeAttempted.await(2, TimeUnit.SECONDS));
-                        Thread.sleep(100);
-                        assertNotNull(model.desc());
-                        opCompleted.set(true);
+                ArgusAbortFlag abortFlag = new ArgusAbortFlag();
+                MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, 4);
+                for (int i = 0; i < 4; i++) {
+                    tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, (i % 8) + 1);
+                }
+
+                CountDownLatch leaseAcquired = new CountDownLatch(1);
+                CountDownLatch closeAttempted = new CountDownLatch(1);
+                AtomicBoolean decodeDone = new AtomicBoolean(false);
+                AtomicBoolean closeDone = new AtomicBoolean(false);
+                AtomicReference<Throwable> threadError = new AtomicReference<>(null);
+
+                // Hold abortFlag lease on worker thread while decoding
+                Thread worker = new Thread(() -> {
+                    try {
+                        try (var lease = abortFlag.lease()) {
+                            leaseAcquired.countDown();
+                            assertTrue(closeAttempted.await(2, TimeUnit.SECONDS));
+                            int res = context.decodeBatch(tokensSeg, 4, 0, 0, false, lease.handle());
+                            assertEquals(0, res);
+                            decodeDone.set(true);
+                        }
+                    } catch (Throwable t) {
+                        threadError.set(t);
                     }
-                } catch (Throwable t) {
-                    threadError.set(t);
+                });
+
+                worker.start();
+                assertTrue(leaseAcquired.await(2, TimeUnit.SECONDS));
+
+                Thread closer = new Thread(() -> {
+                    try {
+                        closeAttempted.countDown();
+                        abortFlag.close();
+                        closeDone.set(true);
+                    } catch (Throwable t) {
+                        threadError.set(t);
+                    }
+                });
+
+                closer.start();
+                worker.join(3000);
+                closer.join(3000);
+
+                if (threadError.get() != null) {
+                    fail("Worker thread failed: " + threadError.get());
                 }
-            });
 
-            Thread closer = new Thread(() -> {
-                try {
-                    assertTrue(opStarted.await(2, TimeUnit.SECONDS));
-                    closeAttempted.countDown();
-                    model.close();
-                } catch (Throwable t) {
-                    threadError.set(t);
-                }
-            });
-
-            worker.start();
-            closer.start();
-
-            worker.join(3000);
-            closer.join(3000);
-
-            assertNull(threadError.get(), "Thread encountered error during operation vs close race");
-            assertTrue(opCompleted.get(), "Operation must complete before close finishes");
-            assertTrue(model.isClosed());
+                assertTrue(decodeDone.get(), "Decode must complete successfully");
+                assertTrue(closeDone.get(), "AbortFlag close must complete successfully");
+                assertTrue(abortFlag.isClosed());
+            }
         } finally {
             ArgusBackend.free();
         }
     }
+
 
     private static boolean isFfprobeAvailable() {
         try {
