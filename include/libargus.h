@@ -120,6 +120,13 @@ ARGUS_API void argus_clear_error(void);
  */
 ARGUS_API uint64_t argus_build_features(void);
 
+/** Copies newline-separated key=value build identity into a bounded buffer.
+ * Returns required bytes excluding NUL; truncates and terminates if capacity > 0.
+ * out=NULL, capacity=0 queries length. Invalid arguments return -1.
+ * Does not initialize any backend. */
+ARGUS_API int32_t argus_build_info_copy(char * out, int32_t capacity);
+
+
 // =========================================================================
 // Memory-Aligned Configuration & Transaction Layouts
 // =========================================================================
@@ -219,7 +226,7 @@ typedef struct argus_sampler_params {
     int32_t  dry_allowed_length;   /**< DRY allowed n-gram length before penalty (2 default) (4 bytes) */
     int32_t  dry_penalty_last_n;   /**< DRY penalty lookback window (-1 = full context) (4 bytes) */
     uint32_t seed;                 /**< RNG seed for distribution sampling (0xFFFFFFFF = random) (4 bytes) */
-    uint8_t  reserved_padding[4];  /**< Explicit alignment padding securing 8-byte boundaries (4 bytes) */
+    uint8_t  reserved_padding[4];  /**< Reserved bytes; struct size 56, alignment 4 (4 bytes) */
 } argus_sampler_params_t;
 
 // =========================================================================
@@ -662,6 +669,14 @@ ARGUS_API int32_t argus_quant_block_size(int32_t type);
  */
 ARGUS_API int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch);
 
+/** Direct-buffer equivalent of argus_decode_batch; all borrowed pointers must remain
+ * alive for this synchronous call. FFM callers pass buffers as address arguments so
+ * the linker can protect their scopes. No additional token-buffer copy is performed. */
+ARGUS_API int32_t argus_decode_tokens(argus_context_t * ctx, const int32_t * tokens,
+    int32_t n_tokens, int32_t start_pos, int32_t seq_id, bool request_logits,
+    argus_abort_flag_t * abort_flag);
+
+
 /**
  * @brief Retrieves the embeddings vector for a specific sequence ID.
  * This is a synchronized context operation.
@@ -962,6 +977,7 @@ ARGUS_API int32_t argus_multimodal_get_audio_sample_rate(const argus_multimodal_
  * @param rgb_data Contiguous array of raw 24-bit RGB values.
  * @return Bitmap pointer, or NULL on failure.
  */
+// Dimensions must be positive; width * height * 3 must not exceed INT32_MAX.
 ARGUS_API argus_bitmap_t * argus_bitmap_from_rgb(uint32_t width, uint32_t height, const uint8_t * rgb_data);
 
 /**
@@ -1101,6 +1117,10 @@ ARGUS_API int32_t argus_multimodal_tokenize_n(
 /**
  * @brief Evaluates the tokenized chunks through both multimodal projectors and LLM decoders.
  * Runs GPU batch encoding for media and schedules correct M-RoPE/Attention attention grids.
+ * Serializes mutable projector state even when shared by different text contexts.
+ * Lock order is projector then text context. Callers must retain all handles during use.
+ * Projector and text context must share the same base model. Output is written only
+ * on success; failure can leave partial KV work, and invalidates logits ownership.
  * @param mctx Active multimodal projector context.
  * @param ctx Active text execution context.
  * @param chunks Populated input chunks container pointer.

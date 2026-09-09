@@ -1,0 +1,70 @@
+name: Native toolchain
+description: Install only the selected catalog backend dependencies
+inputs:
+  backend:
+    description: Catalog backend
+    required: true
+  compile:
+    description: Whether this lane compiles native code
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Linux base
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends cmake ninja-build build-essential ffmpeg
+    - name: Linux Vulkan
+      if: runner.os == 'Linux' && inputs.backend == 'vulkan'
+      shell: bash
+      run: sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
+    - name: ROCm 6.1
+      if: runner.os == 'Linux' && inputs.backend == 'rocm'
+      shell: bash
+      run: |
+        curl --fail --silent --show-error https://repo.radeon.com/rocm/rocm.gpg.key -o /tmp/rocm.key
+        gpg --show-keys --with-fingerprint /tmp/rocm.key
+        sudo gpg --dearmor -o /usr/share/keyrings/rocm.gpg /tmp/rocm.key
+        echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends rocm-dev hip-dev hipblas-dev rocblas-dev
+        echo 'ROCM_PATH=/opt/rocm' >> "$GITHUB_ENV"
+        echo 'HIP_PATH=/opt/rocm' >> "$GITHUB_ENV"
+        echo '/opt/rocm/bin' >> "$GITHUB_PATH"
+        echo '/opt/rocm/llvm/bin' >> "$GITHUB_PATH"
+        echo 'LD_LIBRARY_PATH=/opt/rocm/lib' >> "$GITHUB_ENV"
+    - name: Install CUDA-compatible MSVC 14.39
+      if: runner.os == 'Windows' && inputs.backend == 'cuda' && inputs.compile == 'true'
+      shell: pwsh
+      run: |
+        $installerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+        $installation = & (Join-Path $installerRoot 'vswhere.exe') -latest -products '*' -property installationPath
+        if (-not $installation) { throw 'Visual Studio installation not found' }
+        $arguments = @('modify', '--installPath', "`"$installation`"", '--add', 'Microsoft.VisualStudio.Component.VC.14.39.17.9.x86.x64', '--quiet', '--norestart')
+        $process = Start-Process -FilePath (Join-Path $installerRoot 'setup.exe') -ArgumentList $arguments -Wait -PassThru
+        if ($process.ExitCode -notin @(0, 3010)) { throw "MSVC component installation failed: $($process.ExitCode)" }
+    - name: MSVC
+      if: runner.os == 'Windows' && inputs.compile == 'true'
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      with:
+        toolset: ${{ inputs.backend == 'cuda' && '14.39' || '' }}
+    - name: CUDA 12.4.1
+      if: inputs.backend == 'cuda'
+      uses: Jimver/cuda-toolkit@4bd727d5619dc6fa323b1e76c3aa5dca94f5ec6d # v0.2.19
+      with:
+        cuda: '12.4.1'
+        method: network
+    - name: Windows Vulkan
+      if: runner.os == 'Windows' && inputs.backend == 'vulkan'
+      shell: bash
+      run: |
+        choco install vulkan-sdk --version 1.3.283.0 -y
+        test -d /c/VulkanSDK/1.3.283.0/Bin
+        echo 'VULKAN_SDK=C:/VulkanSDK/1.3.283.0' >> "$GITHUB_ENV"
+        echo 'C:/VulkanSDK/1.3.283.0/Bin' >> "$GITHUB_PATH"
+    - name: macOS tools
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install ninja ffmpeg

@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" LIBARGUS_VERSION_RAW)
 string(STRIP "${LIBARGUS_VERSION_RAW}" LIBARGUS_VERSION)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/libargus.h")
 
 project(libargus VERSION ${LIBARGUS_VERSION} LANGUAGES C CXX)
 
@@ -19,11 +20,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(FetchContent)
+include(cmake/ArgusBuild.cmake)
 
 # =========================================================================
 # 1. Global Hardware Acceleration Pipeline Configuration
 # =========================================================================
-option(GGML_CUDA "Compile with NVIDIA CUDA Core acceleration" ON)
+option(GGML_CUDA "Compile with NVIDIA CUDA Core acceleration" OFF)
 option(GGML_METAL "Compile with Apple Silicon Metal acceleration" OFF)
 option(GGML_HIP "Compile with AMD ROCm/HIP acceleration" OFF)
 option(GGML_VULKAN "Compile with Vulkan acceleration" OFF)
@@ -71,20 +73,21 @@ set(WHISPER_BUILD_TESTS     OFF CACHE INTERNAL "Disable whisper.cpp validation t
 FetchContent_Declare(
         llamacpp
         GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-        GIT_TAG        b10472
+        GIT_TAG        ${ARGUS_LLAMA_REVISION}
 )
 
 # Fetch core whisper.cpp framework layer
 FetchContent_Declare(
         whispercpp
         GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp.git
-        GIT_TAG        v1.9.2
+        GIT_TAG        ${ARGUS_WHISPER_REVISION}
 )
 
 
 # Make components available sequentially; whisper automatically inherits the
 # pre-existing initialized 'ggml' targets exposed by the llama subproject
 FetchContent_MakeAvailable(llamacpp whispercpp)
+include(cmake/PatchLlama.cmake)
 
 # =========================================================================
 # 3. Target Assembly Configuration (libargus Public Layer)
@@ -133,24 +136,7 @@ target_link_libraries(argus PRIVATE
         mtmd
 )
 
-# Enforce clean hardware optimization flags across target compilation matrices
-if(MSVC)
-    target_compile_options(argus PRIVATE /W4 /O2 /Oarch:AVX2)
-else()
-    option(ARGUS_PORTABLE "Enable portable SIMD compilation targets (disables -march=native)" OFF)
-    if(ARGUS_PORTABLE)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-            set(PORTABLE_FLAGS "-march=x86-64-v3")
-        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
-            set(PORTABLE_FLAGS "-march=armv8-a+simd")
-        else()
-            set(PORTABLE_FLAGS "")
-        endif()
-        target_compile_options(argus PRIVATE -Wall -Wextra -O3 ${PORTABLE_FLAGS})
-    else()
-        target_compile_options(argus PRIVATE -Wall -Wextra -O3 -march=native)
-    endif()
-endif()
+argus_configure_target(argus)
 
 # Enable integrated unit tests
 enable_testing()
@@ -160,3 +146,30 @@ target_include_directories(test_libargus PRIVATE include)
 target_link_libraries(test_libargus PRIVATE argus)
 
 add_test(NAME test_libargus COMMAND test_libargus)
+set_tests_properties(test_libargus PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+add_executable(test_media tests/test_media.cc)
+target_link_libraries(test_media PRIVATE argus)
+add_test(NAME test_media COMMAND test_media)
+set_tests_properties(test_media PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
+option(ARGUS_MEDIA_REQUIRED "Require real FFmpeg video integration" OFF)
+if(ARGUS_MEDIA_REQUIRED)
+    find_program(ARGUS_FFMPEG ffmpeg REQUIRED)
+    find_program(ARGUS_FFPROBE ffprobe REQUIRED)
+    add_test(NAME test_video COMMAND test_media --video)
+    set_tests_properties(test_video PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
+endif()
+if(ARGUS_TESTING)
+    add_library(argus_test SHARED ${ARGUS_SOURCES} tests/native_test_hooks.cc)
+    target_compile_definitions(argus_test PRIVATE ARGUS_BUILDING_DLL ARGUS_TESTING)
+    target_include_directories(argus_test PRIVATE src tests)
+    target_link_libraries(argus_test PRIVATE llama whisper ggml mtmd)
+    target_include_directories(argus_test PUBLIC ${CMAKE_SOURCE_DIR}/include
+        ${llamacpp_SOURCE_DIR}/include ${llamacpp_SOURCE_DIR}/tools/mtmd
+        ${whispercpp_SOURCE_DIR}/include ${llamacpp_SOURCE_DIR}/ggml/include)
+    argus_configure_target(argus_test)
+    add_executable(test_concurrency tests/test_concurrency.cc)
+    target_include_directories(test_concurrency PRIVATE tests src)
+    target_link_libraries(test_concurrency PRIVATE argus_test)
+    add_test(NAME test_concurrency COMMAND test_concurrency)
+    set_tests_properties(test_concurrency PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" TIMEOUT 60)
+endif()

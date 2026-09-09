@@ -28,6 +28,10 @@ public final class ArgusBindings {
     public static final String VERSION;
     private static final SymbolLookup LOOKUP;
     public static final String EXTRACTED_DIR;
+    private static String loadedLibraryPath;
+    private static String loadedProvider;
+    public static String loadedLibraryPath() { return loadedLibraryPath; }
+    public static String loadedProvider() { return loadedProvider; }
 
     static {
         // 1. Resolve version from classpath resource
@@ -44,15 +48,19 @@ public final class ArgusBindings {
         // 2. Load native library
         String resolvedExtractedDir = null;
         String customPath = System.getProperty("cc.projectargus.libargus.path");
+        boolean verifySpi = Boolean.getBoolean("cc.projectargus.libargus.verifySpi");
+        if (verifySpi && customPath != null) throw new IllegalStateException("Verifier prohibits a native path override");
         if (customPath != null) {
             java.nio.file.Path path = Paths.get(customPath).toAbsolutePath();
             System.load(path.toString());
+            loadedLibraryPath = path.toString();
             resolvedExtractedDir = path.getParent().toString();
         } else {
             String tempExtracted = tryLoadFromSPI();
             if (tempExtracted != null) {
                 resolvedExtractedDir = tempExtracted;
             } else {
+                if (verifySpi) throw new UnsatisfiedLinkError("Verifier requires exactly one working SPI provider");
                 // 3. Try standard java.library.path / OS runtime library loader
                 boolean loaded = false;
                 try {
@@ -152,6 +160,8 @@ public final class ArgusBindings {
             }
         }
 
+        if (Boolean.getBoolean("cc.projectargus.libargus.verifySpi") && providers.size() != 1)
+            throw new IllegalStateException("Verifier requires exactly one matching provider");
         if (providers.isEmpty()) {
             return null;
         }
@@ -201,6 +211,8 @@ public final class ArgusBindings {
             try {
                 if (targetFile.exists() && targetFile.length() > 0) {
                     System.load(targetFile.getAbsolutePath());
+                    loadedLibraryPath = targetFile.getAbsolutePath();
+                    loadedProvider = provider.getClass().getName();
                     return destDir.getAbsolutePath();
                 }
 
@@ -225,6 +237,8 @@ public final class ArgusBindings {
                 }
 
                 System.load(targetFile.getAbsolutePath());
+                loadedLibraryPath = targetFile.getAbsolutePath();
+                loadedProvider = provider.getClass().getName();
                 return destDir.getAbsolutePath();
             } catch (UnsatisfiedLinkError | Exception e) {
                 System.err.println("Warning: Failed to load native library from provider [" + 
@@ -440,6 +454,13 @@ public final class ArgusBindings {
     public static final MethodHandle argus_quant_block_size = bind("argus_quant_block_size",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );
+
+    public static final MethodHandle argus_build_info_copy = bind("argus_build_info_copy",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+    public static final MethodHandle argus_decode_tokens = bind("argus_decode_tokens",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS));
 
     // Evaluation & Pruning
     public static final MethodHandle argus_decode_batch = bind("argus_decode_batch",

@@ -175,44 +175,44 @@ public final class ArgusBackend {
         if ((features & FEATURE_METAL) != 0) System.out.println("  - Metal");
 
         if (expectedTarget != null && !expectedTarget.isEmpty()) {
-            System.out.println("[ArgusBackend] Validating expected target: " + expectedTarget);
-            switch (expectedTarget.toLowerCase()) {
-                case "cpu" -> {
-                    if ((features & FEATURE_CPU) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
-                        System.err.println("FAIL: Expected CPU-only feature mask, got 0x" + Long.toHexString(features));
-                        System.exit(1);
-                    }
-                }
-                case "cuda" -> {
-                    if ((features & FEATURE_CUDA) == 0 || (features & (FEATURE_ROCM | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
-                        System.err.println("FAIL: Expected CUDA feature mask, got 0x" + Long.toHexString(features));
-                        System.exit(1);
-                    }
-                }
-                case "rocm", "hip" -> {
-                    if ((features & FEATURE_ROCM) == 0 || (features & (FEATURE_CUDA | FEATURE_VULKAN | FEATURE_METAL)) != 0) {
-                        System.err.println("FAIL: Expected ROCm feature mask, got 0x" + Long.toHexString(features));
-                        System.exit(1);
-                    }
-                }
-                case "vulkan" -> {
-                    if ((features & FEATURE_VULKAN) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_METAL)) != 0) {
-                        System.err.println("FAIL: Expected Vulkan feature mask, got 0x" + Long.toHexString(features));
-                        System.exit(1);
-                    }
-                }
-                case "metal" -> {
-                    if ((features & FEATURE_METAL) == 0 || (features & (FEATURE_CUDA | FEATURE_ROCM | FEATURE_VULKAN)) != 0) {
-                        System.err.println("FAIL: Expected Metal feature mask, got 0x" + Long.toHexString(features));
-                        System.exit(1);
-                    }
-                }
-                default -> {
-                    System.err.println("FAIL: Unknown expected target: " + expectedTarget);
-                    System.exit(1);
-                }
+            long expected = expectedFeatureMask(expectedTarget);
+            if (features != expected) {
+                System.err.println("ARGUS_FEATURE_MISMATCH expected=" + expected + " actual=" + features);
+                System.exit(3);
             }
-            System.out.println("[ArgusBackend] Target contract verified successfully for " + expectedTarget);
+        }
+    }
+
+    public static long expectedFeatureMask(String target) {
+        return switch (target.toLowerCase(java.util.Locale.ROOT)) {
+            case "cpu" -> FEATURE_CPU;
+            case "cuda" -> FEATURE_CPU | FEATURE_CUDA;
+            case "rocm", "hip" -> FEATURE_CPU | FEATURE_ROCM;
+            case "vulkan" -> FEATURE_CPU | FEATURE_VULKAN;
+            case "metal" -> FEATURE_CPU | FEATURE_METAL;
+            default -> throw new IllegalArgumentException("Unknown backend: " + target);
+        };
+    }
+
+    /** Build metadata only; does not initialize drivers or perform device execution. */
+    public static java.util.Map<String, String> getBuildInfo() {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(4096);
+            int required = (int) ArgusBindings.argus_build_info_copy.invokeExact(out, 4096);
+            if (required < 0 || required >= 4096) throw new IllegalStateException("Invalid build metadata size");
+            java.util.Map<String, String> info = new java.util.LinkedHashMap<>();
+            for (String line : out.getString(0).split("\\n")) {
+                int separator = line.indexOf('=');
+                if (separator <= 0 || info.put(line.substring(0, separator), line.substring(separator + 1)) != null)
+                    throw new IllegalStateException("Invalid build metadata");
+            }
+            info.put("features", Long.toString(getBuildFeatures()));
+            if (!cc.projectargus.libargus.internal.ArgusLayouts.diagnosticAbi().equals(info.get("abi_layouts")))
+                throw new IllegalStateException("Native ABI layout differs from Java layouts");
+            return java.util.Map.copyOf(info);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new IllegalStateException("Cannot read native build metadata", t);
         }
     }
 }

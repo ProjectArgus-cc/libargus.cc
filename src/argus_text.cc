@@ -23,6 +23,9 @@
 #endif
 
 #include "argus_internal.h"
+#include "argus_execution_lock.h"
+#include "argus_dsp.h"
+#include <limits>
 
 static void fill_hann_window(int length, bool periodic, float * output) {
     int offset = -1;
@@ -67,22 +70,7 @@ static void irfft(int n, const float * inp_cplx, float * out_real, float * scrat
     }
 }
 
-static void fold(const float * data, int64_t data_size, int64_t n_out, int64_t n_win, int64_t n_hop, int64_t n_pad, float * output) {
-    std::fill(output, output + n_out, 0.0f);
 
-    int64_t col_idx = 0;
-    for (int64_t w_col = 0; w_col < n_out; ++w_col) {
-        int64_t start = w_col * n_hop - n_pad;
-        int64_t end   = start + n_win;
-
-        for (int64_t w_im = start; w_im < end; ++w_im) {
-            if (w_im >= 0 && w_im < n_out && col_idx < data_size) {
-                output[w_im] += data[col_idx];
-            }
-            col_idx++;
-        }
-    }
-}
 
 static std::string process_text_for_outetts(const std::string & text) {
     std::string processed;
@@ -154,6 +142,9 @@ void argus_model_release(argus_model_t * model) {
         return;
     }
     if (model->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+#ifdef ARGUS_TESTING
+        argus_test_notify(8, model);
+#endif
         if (model->model) {
             llama_model_free(model->model);
             model->model = nullptr;
@@ -952,10 +943,25 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
 
 static void rebuild_slot_chain_preserving_rng(argus_context_t * ctx, int32_t seq_id);
 
+int32_t argus_decode_tokens(argus_context_t * ctx, const int32_t * tokens,
+    int32_t n_tokens, int32_t start_pos, int32_t seq_id, bool request_logits,
+    argus_abort_flag_t * abort_flag) {
+    argus_token_batch_t batch{};
+    batch.tokens = tokens;
+    batch.n_tokens = n_tokens;
+    batch.start_pos = start_pos;
+    batch.seq_id = seq_id;
+    batch.request_logits = request_logits;
+    batch.abort_flag = abort_flag;
+    return argus_decode_batch(ctx, &batch);
+}
+
 int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * batch_payload) {
     try {
         clear_last_error();
-        if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0) {
+        if (!ctx || !batch_payload || !batch_payload->tokens || batch_payload->n_tokens <= 0 ||
+            batch_payload->start_pos < 0 || batch_payload->start_pos >
+                std::numeric_limits<int32_t>::max() - batch_payload->n_tokens) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid context or batch payload");
             return -1;
         }
@@ -967,7 +973,10 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
 
         abort_flag_lease lease(batch_payload->abort_flag);
 
-        std::lock_guard<std::mutex> lock(ctx->mtx);
+        auto lock = argus_execution_lock(ctx->mtx, ctx, 2);
+#ifdef ARGUS_TESTING
+        argus_test_notify(4, ctx);
+#endif
 
         int32_t seq_id = batch_payload->seq_id;
         if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
@@ -1646,6 +1655,15 @@ int32_t argus_synthesize_speech_n(
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
     (void)voice_seed;
+#ifdef ARGUS_TESTING
+    argus_test_notify(9, wavtokenizer_model);
+#endif
+    // IRFFT below consumes 641 complex bins (1282 floats) per frame.
+    // Reject incompatible models before touching KV or allocating a workspace.
+    if (llama_model_n_embd_out(wavtokenizer_model->model) != 1282) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "vocoder must emit 1282 spectral values per frame");
+        return -1;
+    }
 
     // Clear KV cache for sequence 0 to prevent position conflicts on retries
     llama_memory_seq_rm(llama_get_memory(ctx->ctx), 0, -1, -1);
@@ -1914,8 +1932,14 @@ int32_t argus_synthesize_speech_n(
     }
 
     // Fold overlap-add matrices
-    fold(res, n_codes * n_fft, n_out, n_win, n_hop, n_pad, audio);
-    fold(hann2, n_codes * n_fft, n_out, n_win, n_hop, n_pad, env);
+    const bool audio_valid = argus_overlap_add(res, n_codes * n_fft, n_out, n_win, n_hop, n_pad, audio);
+    const bool env_valid = argus_overlap_add(hann2, n_codes * n_fft, n_out, n_win, n_hop, n_pad, env);
+    if (!audio_valid || !env_valid) {
+        llama_batch_free(vocoder_batch);
+        if (is_temporary_vocoder_ctx) llama_free(active_vocoder_ctx);
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid overlap-add dimensions");
+        return -1;
+    }
 
     int64_t final_size = n_out - 2 * n_pad;
     int32_t count_to_write = (max_samples < final_size) ? max_samples : (int32_t)final_size;

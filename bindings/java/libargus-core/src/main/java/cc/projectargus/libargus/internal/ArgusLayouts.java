@@ -172,4 +172,17 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("seed"),
         MemoryLayout.paddingLayout(4).withName("reserved_padding")
     ).withName("argus_sampler_params");
+    /** Compiler-independent expected ABI descriptor, compared with native diagnostics. */
+    public static String diagnosticAbi() {
+        var descriptors = new java.util.ArrayList<String>();
+        for (StructLayout layout : new StructLayout[]{MODEL_PARAMS, CONTEXT_PARAMS, AUDIO_PARAMS, TOKEN_BATCH, MULTIMODAL_PARAMS, LOGIT_BIAS, SAMPLER_PARAMS}) {
+            var offsets = new java.util.ArrayList<String>();
+            for (MemoryLayout member : layout.memberLayouts()) {
+                if (member instanceof java.lang.foreign.PaddingLayout) continue;
+                offsets.add(Long.toString(layout.byteOffset(MemoryLayout.PathElement.groupElement(member.name().orElseThrow()))));
+            }
+            descriptors.add(layout.byteSize() + ":" + layout.byteAlignment() + ":" + String.join(",", offsets));
+        }
+        return String.join(";", descriptors);
+    }
 }

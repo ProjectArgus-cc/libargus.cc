@@ -1,0 +1,58 @@
+name: Resume retained release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag whose original candidate must be resumed
+        required: true
+        type: string
+      original-run:
+        description: Original Release workflow run ID with a successful validation gate
+        required: true
+        type: string
+      deployment-id:
+        description: Central Portal deployment ID, only needed after an uncertain upload response
+        required: false
+        type: string
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  resolve:
+    runs-on: ubuntu-22.04
+    outputs:
+      source: ${{ steps.recover.outputs.source }}
+      candidate: ${{ steps.recover.outputs.candidate }}
+      receipts: ${{ steps.recover.outputs.receipts }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: recover
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          ORIGINAL_RUN: ${{ inputs.original-run }}
+        run: python3 scripts/release/recover.py "$TAG" "$ORIGINAL_RUN" >> "$GITHUB_OUTPUT"
+  resume:
+    needs: resolve
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    with:
+      source: ${{ needs.resolve.outputs.source }}
+      tag: ${{ inputs.tag }}
+      run-id: ${{ inputs.original-run }}
+      candidate-id: ${{ needs.resolve.outputs.candidate }}
+      receipts-id: ${{ needs.resolve.outputs.receipts }}
+      deployment-id: ${{ inputs.deployment-id }}
+    secrets:
+      MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+      MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}

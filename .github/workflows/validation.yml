@@ -1,0 +1,263 @@
+name: Candidate validation
+on:
+  workflow_call:
+    inputs:
+      source:
+        required: true
+        type: string
+      release:
+        required: true
+        type: boolean
+    secrets:
+      GPG_PRIVATE_KEY:
+        required: false
+      GPG_PASSPHRASE:
+        required: false
+    outputs:
+      candidate-id:
+        value: ${{ jobs.candidate.outputs.id }}
+      receipts-id:
+        value: ${{ jobs.gate.outputs.id }}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.catalog.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - name: Workflow and release tooling validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 scripts/release/pins.py
+          python3 -m unittest discover -s scripts/release/tests -v
+          bash scripts/release/lint_workflows.sh
+      - id: catalog
+        run: echo "matrix=$(python3 scripts/release/catalog.py)" >> "$GITHUB_OUTPUT"
+  native:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          backend: ${{ matrix.backend }}
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '22'
+      - name: Build, inspect and test native wrapper
+        env:
+          TARGET: ${{ matrix.id }}
+        run: python3 scripts/release/build_native.py "$TARGET" --testing
+      - name: Java public integration
+        if: matrix.backend == 'cpu' || matrix.backend == 'metal'
+        env:
+          SYSTEM: ${{ matrix.system }}
+          LIBRARY: ${{ matrix.library }}
+        run: |
+          NATIVE_DIR=lib
+          if [ "$SYSTEM" = windows ]; then NATIVE_DIR=bin; fi
+          ./gradlew :libargus-core:test -PskipCMake=true -PnativePath="$PWD/build/$NATIVE_DIR/$LIBRARY" --console=plain
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.id }}
+          path: staging/*
+          if-no-files-found: error
+          retention-days: 90
+  safety:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: ['22', '25']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          backend: cpu
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+      - run: python3 scripts/release/build_native.py linux-amd64-cpu --testing --media
+      - name: Direct FFM lifetime and public composite leases
+        env:
+          TEST_JDK: ${{ matrix.jdk }}
+        run: ./gradlew :libargus-core:test -PskipCMake=true -PnativeTesting=true -PnativePath="$PWD/build/lib/libargus_test.so" -PtestJdk="$TEST_JDK" --console=plain
+  sanitizer:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          backend: cpu
+      - name: Instrumented native execution
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: python3 scripts/release/build_native.py linux-amd64-cpu --testing --sanitizer "$SANITIZER"
+  select-native:
+    needs: native
+    runs-on: ubuntu-22.04
+    outputs:
+      ids: ${{ steps.select.outputs.ids }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/artifact_ids.py native >> "$GITHUB_OUTPUT"
+  candidate:
+    needs: [select-native, safety, sanitizer]
+    runs-on: ubuntu-22.04
+    outputs:
+      id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '22'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.select-native.outputs.ids }}
+          path: native-binaries
+      - run: python3 scripts/release/candidate.py stage native-binaries
+      - name: Assemble Maven payload without running native-free integration tests
+        env:
+          SOURCE: ${{ inputs.source }}
+        run: ./gradlew publishAllPublicationsToCandidateRepository -PskipCMake=true -PsourceRevision="$SOURCE" --console=plain
+      - name: Finalize and seal candidate
+        env:
+          RELEASE: ${{ inputs.release }}
+          SOURCE: ${{ inputs.source }}
+          GPG_PRIVATE_KEY: ${{ inputs.release && secrets.GPG_PRIVATE_KEY || '' }}
+          GPG_PASSPHRASE: ${{ inputs.release && secrets.GPG_PASSPHRASE || '' }}
+        run: python3 scripts/release/finalize.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: sealed-candidate
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 90
+  classifiers:
+    needs: [prepare, candidate]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          backend: ${{ matrix.backend }}
+          compile: 'false'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '22'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.id }}
+          path: candidate
+          merge-multiple: true
+      - name: Verify exact final classifier bytes in isolated JVMs
+        env:
+          TARGET: ${{ matrix.id }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          EXTRA=()
+          if [ "$RELEASE" != true ]; then EXTRA+=(--development); fi
+          python3 scripts/release/verify_classifier.py candidate "$TARGET" "receipts/$TARGET.json" "${EXTRA[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: receipt-${{ matrix.id }}
+          path: receipts/*.json
+          if-no-files-found: error
+          retention-days: 90
+  gate:
+    if: always()
+    needs: [prepare, native, safety, sanitizer, candidate, classifiers]
+    runs-on: ubuntu-22.04
+    outputs:
+      id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Require explicit success from every validation job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json,os; assert all(j["result"] == "success" for j in json.loads(os.environ["RESULTS"]).values()), "Required validation failed or skipped"'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - id: receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/artifact_ids.py receipt >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.candidate.outputs.id }}
+          path: candidate
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.receipts.outputs.ids }}
+          path: receipts
+      - name: Aggregate all eight receipts
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          EXTRA=()
+          if [ "$RELEASE" != true ]; then EXTRA+=(--development); fi
+          python3 scripts/release/verify_classifier.py candidate aggregate receipts "${EXTRA[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        id: upload
+        with:
+          name: validated-receipts
+          path: receipts/
+          if-no-files-found: error
+          retention-days: 90

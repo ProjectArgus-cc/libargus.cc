@@ -1,0 +1,71 @@
+name: Publish existing candidate
+on:
+  workflow_call:
+    inputs:
+      source:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+      run-id:
+        required: true
+        type: string
+      candidate-id:
+        required: true
+        type: string
+      receipts-id:
+        required: true
+        type: string
+      deployment-id:
+        required: false
+        default: ''
+        type: string
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        required: true
+      MAVEN_CENTRAL_PASSWORD:
+        required: true
+jobs:
+  transport:
+    runs-on: ubuntu-22.04
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.candidate-id }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+          path: candidate
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ inputs.receipts-id }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+          path: receipts
+          merge-multiple: true
+      - name: Verify and transport existing files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          TAG: ${{ inputs.tag }}
+          SOURCE: ${{ inputs.source }}
+          DEPLOYMENT: ${{ inputs.deployment-id }}
+        run: |
+          EXTRA=()
+          if [ -n "$DEPLOYMENT" ]; then EXTRA+=(--deployment-id "$DEPLOYMENT"); fi
+          python3 scripts/release/publish.py candidate receipts "$TAG" --source "$SOURCE" --state publication-state.json "${EXTRA[@]}"
+      - name: Retain destination state even after partial publication
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: publication-state-${{ github.run_attempt }}
+          path: publication-state.json
+          if-no-files-found: warn
+          retention-days: 90

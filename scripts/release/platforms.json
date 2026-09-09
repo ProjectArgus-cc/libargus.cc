@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "targets": [
+    {
+      "id": "linux-amd64-cpu",
+      "runner": "ubuntu-22.04",
+      "system": "linux",
+      "arch": "amd64",
+      "backend": "cpu",
+      "module": "libargus-native-linux-cpu",
+      "resource": "natives/linux-amd64/cpu/libargus.so",
+      "library": "libargus.so",
+      "mask": 1,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "linux-amd64-cuda",
+      "runner": "ubuntu-22.04",
+      "system": "linux",
+      "arch": "amd64",
+      "backend": "cuda",
+      "module": "libargus-native-linux-cuda",
+      "resource": "natives/linux-amd64/cuda/libargus.so",
+      "library": "libargus.so",
+      "mask": 3,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "linux-amd64-rocm",
+      "runner": "ubuntu-22.04",
+      "system": "linux",
+      "arch": "amd64",
+      "backend": "rocm",
+      "module": "libargus-native-linux-rocm",
+      "resource": "natives/linux-amd64/rocm/libargus.so",
+      "library": "libargus.so",
+      "mask": 5,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "linux-amd64-vulkan",
+      "runner": "ubuntu-22.04",
+      "system": "linux",
+      "arch": "amd64",
+      "backend": "vulkan",
+      "module": "libargus-native-linux-vulkan",
+      "resource": "natives/linux-amd64/vulkan/libargus.so",
+      "library": "libargus.so",
+      "mask": 9,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "windows-amd64-cpu",
+      "runner": "windows-2022",
+      "system": "windows",
+      "arch": "amd64",
+      "backend": "cpu",
+      "module": "libargus-native-windows-cpu",
+      "resource": "natives/windows-amd64/cpu/argus.dll",
+      "library": "argus.dll",
+      "mask": 1,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "windows-amd64-cuda",
+      "runner": "windows-2022",
+      "system": "windows",
+      "arch": "amd64",
+      "backend": "cuda",
+      "module": "libargus-native-windows-cuda",
+      "resource": "natives/windows-amd64/cuda/argus.dll",
+      "library": "argus.dll",
+      "mask": 3,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "windows-amd64-vulkan",
+      "runner": "windows-2022",
+      "system": "windows",
+      "arch": "amd64",
+      "backend": "vulkan",
+      "module": "libargus-native-windows-vulkan",
+      "resource": "natives/windows-amd64/vulkan/argus.dll",
+      "library": "argus.dll",
+      "mask": 9,
+      "baseline": "x86-64-v3"
+    },
+    {
+      "id": "macos-aarch64-metal",
+      "runner": "macos-14",
+      "system": "macos",
+      "arch": "aarch64",
+      "backend": "metal",
+      "module": "libargus-native-macos-metal",
+      "resource": "natives/macos-aarch64/metal/libargus.dylib",
+      "library": "libargus.dylib",
+      "mask": 17,
+      "baseline": "armv8-a"
+    }
+  ]
+}

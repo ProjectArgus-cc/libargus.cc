@@ -5,6 +5,7 @@
 /bindings/java/*/build
 /bindings/java/build
 test-outputs
+__pycache__/
 
 .idea
 .gradle

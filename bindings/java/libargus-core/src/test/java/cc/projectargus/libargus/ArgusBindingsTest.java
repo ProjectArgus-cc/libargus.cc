@@ -300,13 +300,13 @@ public class ArgusBindingsTest {
     @Test
     public void testLibraryVersionAssertion() {
         System.out.println("[Java Test] Validating compiled native library version...");
-        assertEquals("1.7.4", ArgusBindings.VERSION);
+        assertEquals(ArgusBindings.VERSION, ArgusBackend.getBuildInfo().get("version"));
         try {
             MemorySegment verPtr = (MemorySegment) ArgusBindings.argus_version.invokeExact();
             assertNotNull(verPtr);
             assertFalse(verPtr.equals(MemorySegment.NULL));
             String nativeVer = verPtr.reinterpret(Long.MAX_VALUE).getString(0);
-            assertEquals("1.7.4", nativeVer);
+            assertEquals(ArgusBindings.VERSION, nativeVer);
             assertEquals(ArgusBindings.VERSION, nativeVer);
             System.out.println("[Java Test] Java static version matches native compiled version: " + nativeVer);
         } catch (Throwable t) {
@@ -1429,8 +1429,13 @@ public class ArgusBindingsTest {
 
             closeWorker.start();
 
-            // Give closeWorker time to run and block on writeLock()
-            Thread.sleep(100);
+            try {
+                res.awaitQueued(closeWorker);
+            } catch (Throwable failure) {
+                res.getReleaseLatch().countDown();
+                opWorker.join(2000); closeWorker.join(2000);
+                throw failure;
+            }
 
             // Assert that while operation is active, close has NOT completed and release has NOT fired
             assertFalse(closeCompleted.get(), "Close must be blocked while public operation is executing");
@@ -1457,77 +1462,30 @@ public class ArgusBindingsTest {
     }
 
     @Test
-    public void testAbortFlagLeasedDuringDecodeBlocksClose() throws Exception {
-        System.out.println("[Java Test] Validating composite dependent-resource lease safety during active decode...");
+    public void testPublicAbortFlagDecode() throws Exception {
         ArgusBackend.init();
-        try (Arena arena = Arena.ofConfined()) {
+        try (Arena arena = Arena.ofShared()) {
             Path root = Paths.get("").toAbsolutePath();
-            while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
-                root = root.getParent();
-            }
-            assertNotNull(root, "Could not find tests/data/tiny.gguf");
-            Path modelPath = root.resolve("tests/data/tiny.gguf");
-
-            try (ArgusModel model = ArgusModel.load(arena, modelPath, 0, false);
-                 ArgusContext context = ArgusContext.init(model, ArgusContextConfig.createDefault(512))) {
-
-                ArgusAbortFlag abortFlag = new ArgusAbortFlag();
-                MemorySegment tokensSeg = arena.allocate(ValueLayout.JAVA_INT, 4);
-                for (int i = 0; i < 4; i++) {
-                    tokensSeg.setAtIndex(ValueLayout.JAVA_INT, i, (i % 8) + 1);
-                }
-
-                CountDownLatch leaseAcquired = new CountDownLatch(1);
-                CountDownLatch closeAttempted = new CountDownLatch(1);
-                AtomicBoolean decodeDone = new AtomicBoolean(false);
-                AtomicBoolean closeDone = new AtomicBoolean(false);
-                AtomicReference<Throwable> threadError = new AtomicReference<>(null);
-
-                // Hold abortFlag lease on worker thread while decoding
+            while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) root = root.getParent();
+            assertNotNull(root);
+            try (ArgusModel model = ArgusModel.load(arena, root.resolve("tests/data/tiny.gguf"), 0, false);
+                 ArgusContext context = ArgusContext.init(model, ArgusContextConfig.createDefault(512));
+                 ArgusAbortFlag abort = new ArgusAbortFlag()) {
+                MemorySegment tokens = arena.allocateFrom(ValueLayout.JAVA_INT, 1, 4, 5);
+                var failure = new AtomicReference<Throwable>();
                 Thread worker = new Thread(() -> {
-                    try {
-                        try (var lease = abortFlag.lease()) {
-                            leaseAcquired.countDown();
-                            assertTrue(closeAttempted.await(2, TimeUnit.SECONDS));
-                            int res = context.decodeBatch(tokensSeg, 4, 0, 0, false, lease.handle());
-                            assertEquals(0, res);
-                            decodeDone.set(true);
-                        }
-                    } catch (Throwable t) {
-                        threadError.set(t);
-                    }
+                    try { assertEquals(0, context.decodeBatch(tokens, 3, 0, 0, false, abort)); }
+                    catch (Throwable t) { failure.set(t); }
                 });
-
-                worker.start();
-                assertTrue(leaseAcquired.await(2, TimeUnit.SECONDS));
-
-                Thread closer = new Thread(() -> {
-                    try {
-                        closeAttempted.countDown();
-                        abortFlag.close();
-                        closeDone.set(true);
-                    } catch (Throwable t) {
-                        threadError.set(t);
-                    }
-                });
-
-                closer.start();
-                worker.join(3000);
-                closer.join(3000);
-
-                if (threadError.get() != null) {
-                    fail("Worker thread failed: " + threadError.get());
-                }
-
-                assertTrue(decodeDone.get(), "Decode must complete successfully");
-                assertTrue(closeDone.get(), "AbortFlag close must complete successfully");
-                assertTrue(abortFlag.isClosed());
+                worker.start(); worker.join(5000);
+                assertFalse(worker.isAlive()); assertNull(failure.get());
+                abort.abort();
+                int before = context.getSeqPosMax(0);
+                assertEquals(-2, context.decodeBatch(tokens, 3, 3, 0, false, abort));
+                assertEquals(before, context.getSeqPosMax(0));
             }
-        } finally {
-            ArgusBackend.free();
-        }
+        } finally { ArgusBackend.free(); }
     }
-
 
     private static boolean isFfprobeAvailable() {
         try {
@@ -1646,4 +1604,3 @@ public class ArgusBindingsTest {
         }
     }
 }
-

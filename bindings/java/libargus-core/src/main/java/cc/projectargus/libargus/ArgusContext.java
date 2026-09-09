@@ -20,9 +20,7 @@ public final class ArgusContext extends ArgusNativeResource {
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
     private final Arena contextArena;
-    private final MemorySegment batchSeg;
     private final MemorySegment samplerParamsSeg;
-    private final ReentrantLock batchLock = new ReentrantLock();
     private final ReentrantLock samplerLock = new ReentrantLock();
     private final ReentrantLock ttsLock = new ReentrantLock();
 
@@ -42,7 +40,6 @@ public final class ArgusContext extends ArgusNativeResource {
         this.modelRef = Objects.requireNonNull(modelRef);
         this.draftModelRef = draftModelRef;
         this.contextArena = Objects.requireNonNull(contextArena);
-        this.batchSeg = contextArena.allocate(ArgusLayouts.TOKEN_BATCH);
         this.samplerParamsSeg = contextArena.allocate(ArgusLayouts.SAMPLER_PARAMS);
     }
 
@@ -309,42 +306,14 @@ public final class ArgusContext extends ArgusNativeResource {
 
         long requiredBytes = ArgusValidation.multiplyExactBytes(nTokens, ValueLayout.JAVA_INT.byteSize(), "tokensSeg");
         ArgusValidation.checkReadable(tokensSeg, requiredBytes, "tokensSeg");
+        ArgusValidation.checkAlignment(tokensSeg, Integer.BYTES, "tokensSeg");
         ArgusValidation.checkNonNegative(startPos, "startPos");
         ArgusValidation.checkNonNegative(seqId, "seqId");
 
         MemorySegment ctxH = acquireReadLease();
         try {
-            batchLock.lock();
-            try {
-                batchSeg.set(ValueLayout.ADDRESS, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("tokens")), 
-                    tokensSeg
-                );
-                batchSeg.set(ValueLayout.JAVA_INT, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("n_tokens")), 
-                    nTokens
-                );
-                batchSeg.set(ValueLayout.JAVA_INT, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("start_pos")), 
-                    startPos
-                );
-                batchSeg.set(ValueLayout.JAVA_INT, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("seq_id")), 
-                    seqId
-                );
-                batchSeg.set(ValueLayout.JAVA_BOOLEAN, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("request_logits")), 
-                    requestLogits
-                );
-                batchSeg.set(ValueLayout.ADDRESS, 
-                    ArgusLayouts.TOKEN_BATCH.byteOffset(MemoryLayout.PathElement.groupElement("abort_flag")), 
-                    abortFlagSeg
-                );
-
-                return (int) ArgusBindings.argus_decode_batch.invokeExact(ctxH, batchSeg);
-            } finally {
-                batchLock.unlock();
-            }
+            return (int) ArgusBindings.argus_decode_tokens.invokeExact(
+                ctxH, tokensSeg, nTokens, startPos, seqId, requestLogits, abortFlagSeg);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to decode batch of tokens", t);

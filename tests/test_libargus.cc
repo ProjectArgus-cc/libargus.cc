@@ -44,25 +44,13 @@ int main(int argc, char ** argv) {
 
     if (!expected_target.empty()) {
         std::cout << "[Test] Validating expected feature contract for target: " << expected_target << std::endl;
-        if (expected_target == "cpu") {
-            ARGUS_CHECK((build_features & ARGUS_FEATURE_CPU) != 0);
-            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
-        } else if (expected_target == "cuda") {
-            ARGUS_CHECK((build_features & ARGUS_FEATURE_CUDA) != 0);
-            ARGUS_CHECK((build_features & (ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
-        } else if (expected_target == "rocm" || expected_target == "hip") {
-            ARGUS_CHECK((build_features & ARGUS_FEATURE_HIP) != 0);
-            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_VULKAN | ARGUS_FEATURE_METAL)) == 0);
-        } else if (expected_target == "vulkan") {
-            ARGUS_CHECK((build_features & ARGUS_FEATURE_VULKAN) != 0);
-            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_METAL)) == 0);
-        } else if (expected_target == "metal") {
-            ARGUS_CHECK((build_features & ARGUS_FEATURE_METAL) != 0);
-            ARGUS_CHECK((build_features & (ARGUS_FEATURE_CUDA | ARGUS_FEATURE_HIP | ARGUS_FEATURE_VULKAN)) == 0);
-        } else {
-            std::cerr << "[FAIL] Unknown expected target: " << expected_target << std::endl;
-            return 1;
-        }
+        uint64_t expected = ARGUS_FEATURE_CPU;
+        if (expected_target == "cuda") expected |= ARGUS_FEATURE_CUDA;
+        else if (expected_target == "rocm" || expected_target == "hip") expected |= ARGUS_FEATURE_HIP;
+        else if (expected_target == "vulkan") expected |= ARGUS_FEATURE_VULKAN;
+        else if (expected_target == "metal") expected |= ARGUS_FEATURE_METAL;
+        else if (expected_target != "cpu") return 1;
+        ARGUS_CHECK(build_features == expected);
         std::cout << "[Test] Expected feature contract verified for " << expected_target << std::endl;
         if (features_only) {
             std::cout << "[Test] --features-only specified; exiting successfully after feature probe." << std::endl;
@@ -655,7 +643,7 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_sampler_truncate(ctx, 0, cur_hist_len) == 0);
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 0);
 
-            // Multimodal evaluation automatic pending discard
+            // Explicit pending discard after a fresh decode
             ARGUS_CHECK(argus_decode_batch(ctx, &b_n) == 0);
             int32_t pend_mm = argus_sample_token_ext(ctx, 0, &seed_sparams, nullptr, 0);
             ARGUS_CHECK(pend_mm >= 0);
@@ -665,7 +653,7 @@ int main(int argc, char ** argv) {
             std::cout << "  - Ghost token elimination & canonical pending discard verified." << std::endl;
         }
 
-        // 7.15. Multimodal Context Mutex Serialization & Concurrency
+        // 7.15. Text Context Query/Decode Contention
         {
             std::atomic<bool> worker_done{false};
             std::atomic<int32_t> error_count{0};
@@ -701,7 +689,7 @@ int main(int argc, char ** argv) {
             worker.join();
             ARGUS_CHECK(error_count.load() == 0);
             ARGUS_CHECK(sync_calls.load() == 100);
-            std::cout << "  - Multimodal context mutex serialization verified under active contention (100 synchronized passes)." << std::endl;
+            std::cout << "  - Text context query/decode contention completed." << std::endl;
         }
 
         // 7.16. Sampler Lifecycle (prime, truncate, reset)

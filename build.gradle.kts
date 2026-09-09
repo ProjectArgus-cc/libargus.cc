@@ -30,13 +30,17 @@ tasks.register<Exec>("configureCMake") {
     description = "Configures the CMake build directory"
     onlyIf { !skipCMake }
     
+    inputs.properties(mapOf("cuda" to useCuda, "metal" to useMetal, "hip" to useHip,
+        "vulkan" to useVulkan, "portable" to true))
+    inputs.dir("cmake")
     inputs.file("CMakeLists.txt")
     inputs.file("version.txt")
+    inputs.dir("include")
     outputs.file("build/CMakeCache.txt")
     
     commandLine(
         "cmake", "-B", "build", 
-        "-DCMAKE_BUILD_TYPE=Release", 
+        "-DCMAKE_BUILD_TYPE=Release", "-DARGUS_PORTABLE=ON",
         "-DGGML_CUDA=${if (useCuda) "ON" else "OFF"}",
         "-DGGML_METAL=${if (useMetal) "ON" else "OFF"}",
         "-DGGML_HIP=${if (useHip) "ON" else "OFF"}",
@@ -52,6 +56,9 @@ tasks.register<Exec>("compileCMake") {
     
     inputs.dir("src")
     inputs.dir("include")
+    inputs.properties(mapOf("cuda" to useCuda, "metal" to useMetal, "hip" to useHip,
+        "vulkan" to useVulkan, "portable" to true))
+    inputs.dir("cmake")
     inputs.file("CMakeLists.txt")
     inputs.file("version.txt")
     outputs.files(possibleLibFiles)
@@ -94,6 +101,10 @@ subprojects {
             withJavadocJar()
         }
 
+        tasks.withType<AbstractArchiveTask>().configureEach {
+            isPreserveFileTimestamps = false
+            isReproducibleFileOrder = true
+        }
         tasks.withType<Javadoc> {
             (options as? StandardJavadocDocletOptions)?.apply {
                 addStringOption("Xdoclint:none", "-quiet")
@@ -110,7 +121,7 @@ subprojects {
 
                     pom {
                         name.set(artifactId)
-                        description.set("Unmanaged, zero-allocation native AI execution runtime behind Panama FFM boundary.")
+                        description.set("Native text, speech and vision execution through the Java FFM API.")
                         url.set("https://github.com/ProjectArgus-cc/libargus.cc")
 
                         licenses {
@@ -134,6 +145,10 @@ subprojects {
                 }
             }
             repositories {
+                maven {
+                    name = "Candidate"
+                    url = uri(rootProject.layout.buildDirectory.dir("maven"))
+                }
                 // 1. GitHub Packages Maven Registry
                 maven {
                     name = "GitHubPackages"
@@ -226,73 +241,17 @@ tasks.register("verifyPackagedClassifiers") {
     }
 }
 
-tasks.register("verifyClassifierRuntime") {
+tasks.register<Exec>("verifyClassifierRuntime") {
     group = "verification"
-    description = "Loads a target classifier JAR in isolation with libargus-core and verifies runtime extraction and feature mask"
-
-    doLast {
-        val targetClassifier = project.findProperty("targetClassifier")?.toString()
-            ?: project.findProperty("classifierJar")?.toString()
-        val expectedTarget = project.findProperty("expectedTarget")?.toString() ?: ""
-        val expectFailure = project.findProperty("expectFailure")?.toString()?.lowercase().let { it == "true" || it == "1" }
-
-        if (targetClassifier.isNullOrEmpty()) {
-            logger.lifecycle("No targetClassifier specified; skipping isolated classifier runtime verification.")
-            return@doLast
-        }
-
-        val coreJarProp = project.findProperty("coreJar")?.toString()
-        val coreProj = subprojects.find { it.name == "libargus-core" }
-            ?: error("Subproject 'libargus-core' not found!")
-        val defaultCoreJar = coreProj.layout.buildDirectory.dir("libs").get().asFile.resolve("${coreProj.name}-${coreProj.version}.jar")
-
-        val subJar = if (project.file(targetClassifier).exists()) {
-            project.file(targetClassifier)
-        } else {
-            val subproj = subprojects.find { it.name == targetClassifier }
-                ?: error("Subproject or jar '$targetClassifier' not found!")
-            subproj.layout.buildDirectory.dir("libs").get().asFile.resolve("${subproj.name}-${subproj.version}.jar")
-        }
-
-        val coreJar = when {
-            !coreJarProp.isNullOrEmpty() && project.file(coreJarProp).exists() -> project.file(coreJarProp)
-            defaultCoreJar.exists() -> defaultCoreJar
-            subJar.parentFile?.resolve("${coreProj.name}-${coreProj.version}.jar")?.exists() == true ->
-                subJar.parentFile.resolve("${coreProj.name}-${coreProj.version}.jar")
-            else -> subJar.parentFile?.listFiles()?.firstOrNull { it.name.startsWith("libargus-core-") && it.name.endsWith(".jar") && !it.name.contains("sources") && !it.name.contains("javadoc") }
-                ?: defaultCoreJar
-        }
-
-        if (!subJar.exists()) error("Classifier JAR missing: ${subJar.absolutePath}")
-        if (!coreJar.exists()) error("Core JAR missing: ${coreJar.absolutePath}")
-
-        val cp = listOf(subJar.absolutePath, coreJar.absolutePath).joinToString(java.io.File.pathSeparator)
-        val javaBin = java.nio.file.Paths.get(System.getProperty("java.home"), "bin", if (System.getProperty("os.name").lowercase().contains("windows")) "java.exe" else "java").toString()
-
-        logger.lifecycle("Executing isolated JVM classifier runtime test with CP: $cp (target=$expectedTarget, expectFailure=$expectFailure)")
-        val proc = ProcessBuilder(
-            javaBin,
-            "--enable-native-access=ALL-UNNAMED",
-            "-cp", cp,
-            "cc.projectargus.libargus.ArgusBackend",
-            expectedTarget
-        ).redirectErrorStream(true).start()
-
-        val output = proc.inputStream.bufferedReader().readText()
-        val exitCode = proc.waitFor()
-        logger.lifecycle("Verification output:\n$output")
-        if (expectFailure) {
-            if (exitCode == 0) {
-                error("Isolated classifier runtime test was expected to fail for target '$expectedTarget', but exited successfully!")
-            }
-            logger.lifecycle("Negative verification passed as expected (exit code $exitCode) for $targetClassifier")
-        } else {
-            if (exitCode != 0) {
-                error("Isolated classifier runtime test failed with exit code $exitCode: $output")
-            }
-            logger.lifecycle("Isolated classifier runtime test passed successfully for $targetClassifier")
-        }
+    description = "Verify an explicit sealed candidate with fresh JVMs and exact receipts"
+    doFirst {
+        val candidate = providers.gradleProperty("candidateDir").orNull
+            ?: error("Supply -PcandidateDir=<sealed candidate> and -Ptarget=<catalog id>")
+        val target = providers.gradleProperty("target").orNull
+            ?: error("Supply -Ptarget=<catalog id>, for example linux-amd64-cpu")
+        val args = mutableListOf("python3", "scripts/release/verify_classifier.py",
+            file(candidate).absolutePath, target, layout.buildDirectory.file("receipts/$target.json").get().asFile.absolutePath)
+        if (providers.gradleProperty("developmentCandidate").orNull == "true") args.add("--development")
+        commandLine(args)
     }
 }
-
-

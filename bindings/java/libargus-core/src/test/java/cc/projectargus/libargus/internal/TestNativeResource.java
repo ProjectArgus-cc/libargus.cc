@@ -33,6 +33,15 @@ public final class TestNativeResource extends ArgusNativeResource {
         releasedHandle.set(oldHandle);
     }
 
+    public void awaitQueued(Thread closer) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (!lifecycleLock.hasQueuedThread(closer)) {
+            if (!closer.isAlive() || System.nanoTime() >= deadline)
+                throw new AssertionError("Closer did not queue on the lifecycle lock");
+            Thread.onSpinWait();
+        }
+    }
+
     public int getReleaseCount() {
         return releaseCount.get();
     }

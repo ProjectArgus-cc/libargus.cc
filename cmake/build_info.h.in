@@ -1,0 +1,12 @@
+#pragma once
+static constexpr const char ARGUS_BUILD_INFO[] =
+    "version=@LIBARGUS_VERSION@\n"
+    "source=@ARGUS_SOURCE_REVISION@\n"
+    "llama=@ARGUS_LLAMA_REVISION@\n"
+    "whisper=@ARGUS_WHISPER_REVISION@\n"
+    "patches=llama-b10472-hip-bfloat16-zero-v1\n"
+    "architecture=@CMAKE_SYSTEM_PROCESSOR@\n"
+    "cpu_baseline=@ARGUS_CPU_BASELINE@\n"
+    "compiler=@CMAKE_CXX_COMPILER_ID@-@CMAKE_CXX_COMPILER_VERSION@\n"
+    "abi_schema=1\n"
+    "abi_header_sha256=@ARGUS_ABI_HEADER_SHA256@\n";

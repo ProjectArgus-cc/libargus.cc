@@ -9,6 +9,14 @@ import java.util.Objects;
 public final class ArgusValidation {
     private ArgusValidation() {}
 
+    public static void checkAlignment(MemorySegment segment, long alignment, String name) {
+        if (alignment <= 0 || (alignment & (alignment - 1)) != 0 ||
+                (segment.address() & (alignment - 1)) != 0) {
+            throw new IllegalArgumentException(name + " is not aligned to " + alignment);
+        }
+    }
+
+
     /**
      * Asserts that a segment is non-null, writable, and has at least requiredBytes available.
      *
@@ -19,7 +27,11 @@ public final class ArgusValidation {
      * @throws IllegalArgumentException if segment is read-only or smaller than requiredBytes
      */
     public static void checkWritable(MemorySegment segment, long requiredBytes, String paramName) {
-        Objects.requireNonNull(segment, paramName + " must not be null");
+        Objects.requireNonNull(segment);
+        if (!segment.isNative()) throw new IllegalArgumentException(paramName + " must be native memory");
+        if (!segment.scope().isAlive()) throw new IllegalStateException(paramName + " scope is closed");
+        if (!segment.isAccessibleBy(Thread.currentThread())) throw new WrongThreadException(paramName);
+
         if (segment.isReadOnly()) {
             throw new IllegalArgumentException(paramName + " must be writable (provided segment is read-only)");
         }
@@ -41,7 +53,11 @@ public final class ArgusValidation {
      * @throws IllegalArgumentException if segment is smaller than requiredBytes
      */
     public static void checkReadable(MemorySegment segment, long requiredBytes, String paramName) {
-        Objects.requireNonNull(segment, paramName + " must not be null");
+        Objects.requireNonNull(segment);
+        if (!segment.isNative()) throw new IllegalArgumentException(paramName + " must be native memory");
+        if (!segment.scope().isAlive()) throw new IllegalStateException(paramName + " scope is closed");
+        if (!segment.isAccessibleBy(Thread.currentThread())) throw new WrongThreadException(paramName);
+
         if (segment.byteSize() < requiredBytes) {
             throw new IllegalArgumentException(String.format(
                 "%s capacity is insufficient: requires at least %d bytes, but segment has %d bytes",
@@ -105,7 +121,11 @@ public final class ArgusValidation {
      * Asserts that a segment has positive length and contains a NUL terminator within its bounds.
      */
     public static void checkNullTerminated(MemorySegment segment, String paramName) {
-        Objects.requireNonNull(segment, paramName + " must not be null");
+        Objects.requireNonNull(segment);
+        if (!segment.isNative()) throw new IllegalArgumentException(paramName + " must be native memory");
+        if (!segment.scope().isAlive()) throw new IllegalStateException(paramName + " scope is closed");
+        if (!segment.isAccessibleBy(Thread.currentThread())) throw new WrongThreadException(paramName);
+
         long size = segment.byteSize();
         if (size <= 0) {
             throw new IllegalArgumentException(paramName + " must have positive capacity and be null-terminated");

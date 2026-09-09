@@ -12,6 +12,9 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "llama.h"
+#include "argus_abi.h"
+#include <cstddef>
+#include <algorithm>
 
 #include <atomic>
 #include <cstdio>
@@ -70,7 +73,30 @@ void argus_backend_resource_dec() {
     }
 }
 
+static_assert(sizeof(argus_model_params_t) == 16);
+static_assert(sizeof(argus_context_params_t) == 40);
+static_assert(sizeof(argus_token_batch_t) == 32);
+static_assert(offsetof(argus_token_batch_t, abort_flag) == 24);
+static_assert(sizeof(argus_multimodal_params_t) == 16);
+static_assert(sizeof(argus_logit_bias_t) == 8);
+static_assert(sizeof(argus_sampler_params_t) == 56);
+static_assert(offsetof(argus_sampler_params_t, seed) == 48);
+
 extern "C" {
+
+int32_t argus_build_info_copy(char * out, int32_t capacity) {
+    if (capacity < 0 || (!out && capacity != 0)) return -1;
+    const auto & info = argus_diagnostic_info();
+    const int32_t length = info.length;
+    if (length < 0) return -1;
+    if (capacity > 0) {
+        const int32_t count = std::min(length, capacity - 1);
+        std::memcpy(out, info.data.data(), count);
+        out[count] = '\0';
+    }
+    return length;
+}
+
 
 argus_error_code_t argus_last_error_code(void) {
     return tl_last_error.code;
