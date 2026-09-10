@@ -92,4 +92,8 @@ tasks.test {
     
     // Enable native access warning suppression for FFM downcalls in test suite
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    testLogging {
+        events("started", "failed", "skipped")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }

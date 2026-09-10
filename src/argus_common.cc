@@ -123,16 +123,16 @@ void argus_clear_error(void) {
 
 uint64_t argus_build_features(void) {
     uint64_t features = ARGUS_FEATURE_CPU;
-#if defined(GGML_USE_CUDA)
+#if defined(ARGUS_BUILD_CUDA)
     features |= ARGUS_FEATURE_CUDA;
 #endif
-#if defined(GGML_USE_HIP)
+#if defined(ARGUS_BUILD_HIP)
     features |= ARGUS_FEATURE_HIP;
 #endif
-#if defined(GGML_USE_VULKAN)
+#if defined(ARGUS_BUILD_VULKAN)
     features |= ARGUS_FEATURE_VULKAN;
 #endif
-#if defined(GGML_USE_METAL)
+#if defined(ARGUS_BUILD_METAL)
     features |= ARGUS_FEATURE_METAL;
 #endif
     return features;

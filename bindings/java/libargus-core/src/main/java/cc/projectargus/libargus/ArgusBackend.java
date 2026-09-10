@@ -24,14 +24,14 @@ public final class ArgusBackend {
     private ArgusBackend() {}
 
     public static synchronized boolean init() {
-        return init(ArgusBindings.EXTRACTED_DIR);
+        return init(null);
     }
 
     /**
      * Initializes the process-global hardware execution registry with a custom backend plugin path.
      * Must be called once before loading models or executing transcription/speech.
      *
-     * @param customPluginPath directory path to search for dynamic ggml plugin libraries (like CUDA)
+     * @param customPluginPath explicit directory to search for dynamic ggml plugin libraries, or null to use the compiled backends
      * @return true if backend registers successfully, false otherwise.
      */
     public static synchronized boolean init(String customPluginPath) {

@@ -75,6 +75,16 @@ jobs:
           NATIVE_DIR=lib
           if [ "$SYSTEM" = windows ]; then NATIVE_DIR=bin; fi
           ./gradlew :libargus-core:test -PskipCMake=true -PnativePath="$PWD/build/$NATIVE_DIR/$LIBRARY" --console=plain
+      - name: Preserve Windows JVM crash diagnostics
+        if: failure() && runner.os == 'Windows' && matrix.backend == 'cpu'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-jvm-crash-diagnostics
+          path: |
+            bindings/java/libargus-core/hs_err_pid*.log
+            bindings/java/libargus-core/hs_err_pid*.mdmp
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-${{ matrix.id }}

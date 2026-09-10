@@ -67,10 +67,11 @@ runs:
         $expected = '81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d'
         $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
         if ($actual -ne $expected) { throw "Vulkan SDK digest mismatch: $actual" }
-        $process = Start-Process -FilePath $installer -ArgumentList @('--accept-licenses', '--default-answer', '--confirm-command', 'install', 'copy_only=1') -Wait -PassThru
+        $process = Start-Process -FilePath $installer -ArgumentList @('--accept-licenses', '--default-answer', '--confirm-command', 'install') -Wait -PassThru
         if ($process.ExitCode -ne 0) { throw "Vulkan SDK installation failed: $($process.ExitCode)" }
         $sdk = "C:/VulkanSDK/$version"
         if (-not (Test-Path "$sdk/Bin/glslc.exe")) { throw 'Vulkan SDK glslc.exe was not installed' }
+        if (-not (Test-Path 'C:/Windows/System32/vulkan-1.dll')) { throw 'Vulkan runtime loader was not installed' }
         "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         "$sdk/Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
     - name: macOS tools

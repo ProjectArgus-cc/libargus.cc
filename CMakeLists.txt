@@ -30,8 +30,19 @@ option(GGML_METAL "Compile with Apple Silicon Metal acceleration" OFF)
 option(GGML_HIP "Compile with AMD ROCm/HIP acceleration" OFF)
 option(GGML_VULKAN "Compile with Vulkan acceleration" OFF)
 
+set(ARGUS_ACCELERATOR_COUNT 0)
+foreach(backend GGML_CUDA GGML_METAL GGML_HIP GGML_VULKAN)
+    if(${backend})
+        math(EXPR ARGUS_ACCELERATOR_COUNT "${ARGUS_ACCELERATOR_COUNT} + 1")
+    endif()
+endforeach()
+if(ARGUS_ACCELERATOR_COUNT GREATER 1)
+    message(FATAL_ERROR "Select at most one libargus accelerator backend")
+endif()
+
 if(GGML_CUDA)
     add_compile_definitions(GGML_USE_CUDA)
+    set(ARGUS_ACCELERATOR_DEFINITION ARGUS_BUILD_CUDA)
     # Enable explicit compiler optimizations for target GPU architectures
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -43,14 +54,17 @@ endif()
 
 if(GGML_METAL)
     add_compile_definitions(GGML_USE_METAL)
+    set(ARGUS_ACCELERATOR_DEFINITION ARGUS_BUILD_METAL)
 endif()
 
 if(GGML_HIP)
     add_compile_definitions(GGML_USE_HIP)
+    set(ARGUS_ACCELERATOR_DEFINITION ARGUS_BUILD_HIP)
 endif()
 
 if(GGML_VULKAN)
     add_compile_definitions(GGML_USE_VULKAN)
+    set(ARGUS_ACCELERATOR_DEFINITION ARGUS_BUILD_VULKAN)
 endif()
 
 # =========================================================================
@@ -110,7 +124,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 add_library(argus SHARED ${ARGUS_SOURCES})
 
 # Mark target as building the shared library to activate dllexport on MSVC
-target_compile_definitions(argus PRIVATE ARGUS_BUILDING_DLL)
+target_compile_definitions(argus PRIVATE ARGUS_BUILDING_DLL ${ARGUS_ACCELERATOR_DEFINITION})
 
 # Hide private implementation symbols from static dependencies (ggml, llama, whisper, mtmd)
 set_target_properties(argus PROPERTIES
@@ -160,7 +174,7 @@ if(ARGUS_MEDIA_REQUIRED)
 endif()
 if(ARGUS_TESTING)
     add_library(argus_test SHARED ${ARGUS_SOURCES} tests/native_test_hooks.cc)
-    target_compile_definitions(argus_test PRIVATE ARGUS_BUILDING_DLL ARGUS_TESTING)
+    target_compile_definitions(argus_test PRIVATE ARGUS_BUILDING_DLL ARGUS_TESTING ${ARGUS_ACCELERATOR_DEFINITION})
     target_include_directories(argus_test PRIVATE src tests)
     target_link_libraries(argus_test PRIVATE llama whisper ggml mtmd)
     target_include_directories(argus_test PUBLIC ${CMAKE_SOURCE_DIR}/include
