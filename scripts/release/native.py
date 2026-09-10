@@ -10,6 +10,12 @@ from pathlib import Path
 from catalog import ROOT, target
 from inventory import digest
 
+def validate_windows_dependencies(dependencies):
+    imported = '\n'.join(dependencies).upper()
+    forbidden_crt = ('MSVCP140.DLL', 'VCRUNTIME140.DLL', 'VCRUNTIME140_1.DLL')
+    if any(runtime in imported for runtime in forbidden_crt):
+        raise ValueError('Windows distribution library imports a host-provided MSVC runtime')
+
 def architecture(path):
     with Path(path).open('rb') as f:
         head = f.read(64)
@@ -72,6 +78,7 @@ def inspect(path, row):
         needed = subprocess.check_output(['otool', '-L', str(path)], text=True).splitlines()[1:]
     else:
         needed = subprocess.check_output(['dumpbin', '/DEPENDENTS', str(path)], text=True).splitlines()
+        validate_windows_dependencies(needed)
     if any(re.search(r'lib(asan|ubsan|tsan)|clang_rt\.(asan|tsan)', item, re.I) for item in needed):
         raise ValueError('Sanitizer runtime in distribution library')
     return {'target': row['id'], 'sha256': digest(path), 'features': mask, 'build': info, 'dependencies': needed}

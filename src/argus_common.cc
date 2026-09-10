@@ -149,11 +149,12 @@ bool argus_backend_init(const char * custom_plugin_path) {
             return true;
         }
 
-        // Initialize the process-wide physical and virtual device backends
+        // Compiled backends register when llama_backend_init() queries the
+        // process registry. Only scan the caller's explicit directory; default
+        // filesystem discovery is unnecessary for this statically linked build
+        // and would make initialization depend on ambient executable contents.
         if (custom_plugin_path && custom_plugin_path[0] != '\0') {
             ggml_backend_load_all_from_path(custom_plugin_path);
-        } else {
-            ggml_backend_load_all();
         }
 
         // Bootstrap primary transformer execution runtime properties

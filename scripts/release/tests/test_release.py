@@ -25,6 +25,7 @@ from artifact_ids import select
 from publish import signatures
 import preflight as preflight_module
 from ci_route import is_tagged_release
+from native import validate_windows_dependencies
 
 SOURCE = '1' * 40
 PROVIDER = 'META-INF/services/cc.projectargus.libargus.spi.NativeLibraryProvider'
@@ -130,6 +131,12 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError): signatures(self.candidate, manifest)
 
 class ContractTests(unittest.TestCase):
+    def test_windows_native_rejects_host_cpp_runtime_dependency(self):
+        validate_windows_dependencies(['KERNEL32.dll', 'VCOMP140.DLL'])
+        for runtime in ('MSVCP140.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.DLL'):
+            with self.assertRaisesRegex(ValueError, 'host-provided MSVC runtime'):
+                validate_windows_dependencies(['KERNEL32.dll', runtime])
+
     def test_exact_tag_routes_only_push_event_to_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

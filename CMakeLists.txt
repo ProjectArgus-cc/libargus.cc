@@ -10,6 +10,13 @@ project(libargus VERSION ${LIBARGUS_VERSION} LANGUAGES C CXX)
 
 add_compile_definitions(LIBARGUS_VERSION="${LIBARGUS_VERSION}")
 
+# A JVM may preload its own app-local MSVC runtime before loading argus.dll.
+# Link the release and all statically merged dependencies to the static runtime
+# so C++ objects never cross an incompatible host-runtime boundary.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Force modern C++ standards across all compiled objects
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
