@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable release tag (for example v1.7.5)
+        description: Existing immutable release tag (for example v1.7.6)
         required: true
         type: string
 concurrency:

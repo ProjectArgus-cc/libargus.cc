@@ -8,7 +8,7 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.5 development — release identity, portable builds and lifetime safety.**
+> **v1.7.6 development — release identity, portable builds and lifetime safety.**
 > The release pipeline seals one candidate and verifies its final classifiers before publication. Shared projector execution is serialized through embedding consumption. Java token buffers are direct FFM arguments. Real synthetic media fixtures and deterministic lifecycle tests cover the corresponding boundaries.
 >
 > This checkout is not evidence of a published binary release. v1.7.4's source tag/release did not establish a successful binary publication. See [release operations](docs/release.md) and [validation evidence](docs/v1.7.5-validation.md) for actual status.
@@ -24,14 +24,14 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.5</version>
+        <version>1.7.6</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.5</version>
+        <version>1.7.6</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -41,10 +41,10 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.5")
+    implementation("cc.projectargus:libargus-core:1.7.6")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.5")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.6")
 }
 ```
 

@@ -75,7 +75,7 @@ python3 -m pip install PyYAML==6.0.2
 python3 scripts/release/pins.py
 bash scripts/release/lint_workflows.sh
 python3 -m unittest discover -s scripts/release/tests -v
-python3 scripts/release/preflight.py v1.7.5
+python3 scripts/release/preflight.py v1.7.6
 # With downloaded native-<catalog-id> artifact directories:
 python3 scripts/release/candidate.py stage native-binaries
 ./gradlew publishAllPublicationsToCandidateRepository -PskipCMake=true
