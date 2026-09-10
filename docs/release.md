@@ -40,6 +40,11 @@ runs ASan/UBSan plus targeted TSan. OpenMP is disabled in sanitizer builds to ke
 the instrumented thread runtime self-contained; no race/leak suppressions are used.
 Instrumented `argus_test` libraries are never staged.
 
+When an atomic push updates `main` and creates its exact `v<version.txt>` tag,
+the lightweight CI routing job defers the expensive validation matrix to the
+Release workflow. Pull requests, manual CI runs, and untagged `main` commits
+continue to run the complete development validation matrix.
+
 The CUDA Windows build installs/selects MSVC 14.39 (compiler 19.39), matching
 [CUDA 12.4's compiler range](https://docs.nvidia.com/cuda/archive/12.4.1/cuda-installation-guide-microsoft-windows/index.html).
 It does not bypass NVCC's host-compiler check. Microsoft lists that legacy
@@ -75,7 +80,7 @@ python3 -m pip install PyYAML==6.0.2
 python3 scripts/release/pins.py
 bash scripts/release/lint_workflows.sh
 python3 -m unittest discover -s scripts/release/tests -v
-python3 scripts/release/preflight.py v1.7.8
+python3 scripts/release/preflight.py v1.7.9
 # With downloaded native-<catalog-id> artifact directories:
 python3 scripts/release/candidate.py stage native-binaries
 ./gradlew publishAllPublicationsToCandidateRepository -PskipCMake=true

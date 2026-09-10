@@ -24,6 +24,7 @@ from verify_classifier import aggregate
 from artifact_ids import select
 from publish import signatures
 import preflight as preflight_module
+from ci_route import is_tagged_release
 
 SOURCE = '1' * 40
 PROVIDER = 'META-INF/services/cc.projectargus.libargus.spi.NativeLibraryProvider'
@@ -129,6 +130,28 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError): signatures(self.candidate, manifest)
 
 class ContractTests(unittest.TestCase):
+    def test_exact_tag_routes_only_push_event_to_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args, capture=False):
+                result = subprocess.run(
+                    ['git', '-c', 'user.name=Argus fixture', '-c', 'user.email=fixture@example.invalid', *args],
+                    cwd=root, check=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True)
+                return result.stdout.strip() if capture else None
+            git('init')
+            (root / 'version.txt').write_text('1.2.3\n')
+            git('add', 'version.txt'); git('commit', '-m', 'fixture')
+            source = git('rev-parse', 'HEAD', capture=True)
+            self.assertFalse(is_tagged_release('push', source, root))
+            git('tag', 'v1.2.2')
+            self.assertFalse(is_tagged_release('push', source, root))
+            git('tag', 'v1.2.3')
+            self.assertTrue(is_tagged_release('push', source, root))
+            self.assertFalse(is_tagged_release('pull_request', source, root))
+            with self.assertRaisesRegex(ValueError, 'full source commit'):
+                is_tagged_release('push', 'HEAD', root)
+
     def test_tag_checkout_and_dirty_tree_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

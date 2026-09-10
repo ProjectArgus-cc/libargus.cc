@@ -8,7 +8,26 @@ permissions:
   contents: read
   actions: read
 jobs:
+  route:
+    runs-on: ubuntu-22.04
+    outputs:
+      tagged-release: ${{ steps.route.outputs.tagged-release }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Route an exact version tag to the release workflow
+        id: route
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE: ${{ github.sha }}
+        run: |
+          TAGGED_RELEASE=$(python3 scripts/release/ci_route.py "$EVENT_NAME" "$SOURCE")
+          echo "tagged-release=$TAGGED_RELEASE" >> "$GITHUB_OUTPUT"
   validation:
+    needs: route
+    if: needs.route.outputs.tagged-release != 'true'
     uses: ./.github/workflows/validation.yml
     with:
       source: ${{ github.sha }}
