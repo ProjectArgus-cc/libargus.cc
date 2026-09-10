@@ -2,11 +2,11 @@
 #include "argus_dsp.h"
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 #include <climits>
@@ -14,36 +14,41 @@
 
 #define CHECK(x) do { if (!(x)) { std::cerr << "Failed: " #x << " line " << __LINE__ << '\n'; std::abort(); } } while (0)
 namespace {
-std::mutex gate_mutex;
-std::condition_variable gate_cv;
 const void * held_resource = nullptr;
 int held_event = 0;
-bool entered = false, released = false, contended = false;
+std::atomic<bool> entered{false};
+std::atomic<bool> released{false};
+std::atomic<bool> contended{false};
 std::atomic<int> frees{0};
 std::atomic<int> model_frees{0};
 void observe(int event, const void * resource) {
     if (event == 6) { ++frees; return; }
     if (event == 8) { ++model_frees; return; }
-    std::unique_lock<std::mutex> lock(gate_mutex);
-    if (event >= 10) { contended = true; gate_cv.notify_all(); }
-    if (event == held_event && resource == held_resource && !entered) {
-        entered = true;
-        gate_cv.notify_all();
-        CHECK(gate_cv.wait_for(lock, std::chrono::seconds(10), [] { return released; }));
+    if (event >= 10) contended.store(true, std::memory_order_release);
+    if (event == held_event && resource == held_resource &&
+        !entered.exchange(true, std::memory_order_acq_rel)) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!released.load(std::memory_order_acquire)) {
+            CHECK(std::chrono::steady_clock::now() < deadline);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
 }
 void arm(int event, const void * resource) {
-    std::lock_guard<std::mutex> lock(gate_mutex);
     held_event = event; held_resource = resource;
-    entered = released = contended = false;
+    entered.store(false, std::memory_order_relaxed);
+    released.store(false, std::memory_order_relaxed);
+    contended.store(false, std::memory_order_relaxed);
 }
-void await(bool & condition) {
-    std::unique_lock<std::mutex> lock(gate_mutex);
-    CHECK(gate_cv.wait_for(lock, std::chrono::seconds(5), [&] { return condition; }));
+void await(const std::atomic<bool> & condition) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!condition.load(std::memory_order_acquire)) {
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 void release() {
-    std::lock_guard<std::mutex> lock(gate_mutex);
-    released = true; gate_cv.notify_all();
+    released.store(true, std::memory_order_release);
 }
 }
 int main() {

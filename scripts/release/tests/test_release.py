@@ -154,7 +154,13 @@ class ContractTests(unittest.TestCase):
         data = json.loads((ROOT / 'scripts/release/platforms.json').read_text())
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / 'catalog.json'
-            for rows in [data['targets'][:-1], data['targets'][:-1] + [data['targets'][0]], [{**r, 'mask': r['mask'] | 128} for r in data['targets']]]:
+            for rows in [
+                data['targets'][:-1],
+                data['targets'][:-1] + [data['targets'][0]],
+                [{**r, 'mask': r['mask'] | 128} for r in data['targets']],
+                [{**r, 'runner': 'ubuntu-latest'} if r['backend'] == 'vulkan' and r['system'] == 'linux' else r
+                 for r in data['targets']],
+            ]:
                 path.write_text(json.dumps({'schema': 1, 'targets': rows}))
                 with self.assertRaises(ValueError): targets(path)
     def test_archive_traversal_duplicate_and_symlink(self):

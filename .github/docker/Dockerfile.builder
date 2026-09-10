@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ccache \
     git \
     curl \
-    wget \
     ca-certificates \
     pkg-config \
     libvulkan-dev \
@@ -26,8 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nvidia-cuda-toolkit \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenJDK 22 for Project Panama (FFM) Java 22+ API compatibility
-RUN wget -q https://download.oracle.com/java/22/latest/jdk-22_linux-x64_bin.tar.gz -O /tmp/jdk22.tar.gz \
+# Install an immutable, checksum-verified JDK 22 for Panama FFM compatibility.
+ARG TEMURIN_22_SHA256=05cd9359dacb1a1730f7c54f57e0fed47942a5292eb56a3a0ee6b13b87457a43
+RUN curl --fail --location --silent --show-error \
+        https://github.com/adoptium/temurin22-binaries/releases/download/jdk-22.0.2%2B9/OpenJDK22U-jdk_x64_linux_hotspot_22.0.2_9.tar.gz \
+        -o /tmp/jdk22.tar.gz \
+    && echo "${TEMURIN_22_SHA256}  /tmp/jdk22.tar.gz" | sha256sum --check --strict \
     && mkdir -p /usr/local/jdk-22 \
     && tar -xzf /tmp/jdk22.tar.gz -C /usr/local/jdk-22 --strip-components=1 \
     && rm /tmp/jdk22.tar.gz

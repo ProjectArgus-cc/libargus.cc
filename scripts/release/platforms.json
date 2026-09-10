@@ -39,7 +39,7 @@
     },
     {
       "id": "linux-amd64-vulkan",
-      "runner": "ubuntu-22.04",
+      "runner": "ubuntu-24.04",
       "system": "linux",
       "arch": "amd64",
       "backend": "vulkan",
