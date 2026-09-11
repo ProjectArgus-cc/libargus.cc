@@ -18,7 +18,7 @@ from catalog import ROOT, modules, targets, version
 from destinations import Central, credential, packages
 from destinations import GitHub
 from http_transport import Transport, HTTPFailure
-from inventory import digest, zip_entries
+from inventory import abi_header_digest, digest, zip_entries
 from pins import validate
 from verify_classifier import aggregate
 from artifact_ids import select
@@ -131,6 +131,14 @@ class CandidateTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError): signatures(self.candidate, manifest)
 
 class ContractTests(unittest.TestCase):
+    def test_abi_header_identity_is_invariant_to_checkout_line_endings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lf = root / 'header-lf.h'; crlf = root / 'header-crlf.h'
+            lf.write_bytes(b'ARGUS_API int argus_example(void);\n')
+            crlf.write_bytes(b'ARGUS_API int argus_example(void);\r\n')
+            self.assertEqual(abi_header_digest(lf), abi_header_digest(crlf))
+
     def test_windows_native_rejects_host_cpp_runtime_dependency(self):
         validate_windows_dependencies(['KERNEL32.dll', 'VCOMP140.DLL'])
         for runtime in ('MSVCP140.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.DLL'):

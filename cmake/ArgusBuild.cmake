@@ -54,8 +54,12 @@ if(GIT_FOUND)
         set(ARGUS_SOURCE_REVISION unknown)
     endif()
 endif()
-file(SHA256 "${CMAKE_SOURCE_DIR}/include/libargus.h" ARGUS_ABI_HEADER_SHA256)
 file(READ "${CMAKE_SOURCE_DIR}/include/libargus.h" argus_header)
+# Git may materialize this public text header with CRLF on Windows. The ABI
+# identity describes declarations, not checkout line endings, so normalize
+# conventional CRLF before hashing it for every platform artifact.
+string(REPLACE "\r\n" "\n" argus_header "${argus_header}")
+string(SHA256 ARGUS_ABI_HEADER_SHA256 "${argus_header}")
 string(REGEX MATCHALL "ARGUS_API[^;]+;" argus_declarations "${argus_header}")
 set(argus_exported_symbols "")
 foreach(declaration IN LISTS argus_declarations)

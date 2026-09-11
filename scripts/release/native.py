@@ -8,7 +8,7 @@ import struct
 import subprocess
 from pathlib import Path
 from catalog import ROOT, target
-from inventory import digest
+from inventory import abi_header_digest, digest
 
 def validate_windows_dependencies(dependencies):
     imported = '\n'.join(dependencies).upper()
@@ -58,7 +58,7 @@ def inspect(path, row):
     info = dict(line.split('=', 1) for line in buffer.value.decode().splitlines())
     if info['cpu_baseline'] != row['baseline']:
         raise ValueError('Unexpected CPU baseline')
-    if info['abi_header_sha256'] != digest(ROOT / 'include/libargus.h') or info['abi_schema'] != '1':
+    if info['abi_header_sha256'] != abi_header_digest(ROOT / 'include/libargus.h') or info['abi_schema'] != '1':
         raise ValueError('Native ABI differs from checked-out public header')
     declarations = re.findall(r'ARGUS_API\s+[^;]+;', (ROOT / 'include/libargus.h').read_text())
     expected = {m.group(1) for d in declarations if (m := re.search(r'\b(argus_\w+)\s*\(', d))}

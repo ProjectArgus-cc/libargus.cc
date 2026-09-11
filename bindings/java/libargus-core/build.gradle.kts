@@ -57,7 +57,11 @@ val copyBuildInfo = tasks.register("copyBuildInfo") {
     doLast {
         val revision = source.get()
         require(revision == "local" || revision.matches(Regex("[0-9a-f]{40}"))) { "Invalid sourceRevision" }
-        val fingerprint = MessageDigest.getInstance("SHA-256").digest(header.readBytes())
+        // Git may check out the public header with CRLF on Windows. Match the
+        // native CMake fingerprint so ABI identity reflects declarations, not
+        // platform-specific line endings.
+        val canonicalHeader = header.readText(Charsets.UTF_8).replace("\r\n", "\n")
+        val fingerprint = MessageDigest.getInstance("SHA-256").digest(canonicalHeader.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         val output = destination.get().asFile
         output.parentFile.mkdirs()

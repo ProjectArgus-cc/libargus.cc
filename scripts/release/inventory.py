@@ -13,6 +13,11 @@ def digest(path, algorithm='sha256'):
     with Path(path).open('rb') as f:
         return digest_stream(f, algorithm)
 
+def abi_header_digest(path):
+    """Hash the public ABI header after canonical CRLF-to-LF normalization."""
+    data = Path(path).read_bytes().replace(b'\r\n', b'\n')
+    return hashlib.sha256(data).hexdigest()
+
 def safe_name(name):
     p = PurePosixPath(name)
     if not name or '\\' in name or ':' in name or p.is_absolute() or '..' in p.parts or str(p) != name:
