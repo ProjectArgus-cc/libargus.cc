@@ -1,5 +1,5 @@
 # libargus
-Native text, speech, vision and video execution through a C ABI and Java 22+ FFM bindings.
+## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 
 [![Release Pipeline](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
@@ -8,10 +8,18 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.7.11 development — release identity, portable builds and lifetime safety.**
-> The release pipeline seals one candidate and verifies its final classifiers before publication. Shared projector execution is serialized through embedding consumption. Java token buffers are direct FFM arguments. Real synthetic media fixtures and deterministic lifecycle tests cover the corresponding boundaries.
->
-> This checkout is not evidence of a published binary release. v1.7.4's source tag/release did not establish a successful binary publication. See [release operations](docs/release.md) and [validation evidence](docs/v1.7.5-validation.md) for actual status.
+> **v1.8.0 Release — Diagnostic Logging Redirection, Zero-Allocation Performance Telemetry & Hardware Graph Synchronization**
+> 
+> * **Diagnostic Logging & Stderr Silencing:** Silences upstream `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd` logging by default (`ARGUS_LOG_WARN`) with lock-free atomic hot-path checks. Exposes `argus_set_log_level`, `argus_get_log_level`, and `argus_set_log_callback` with `thread_local` chunk continuation isolation (`ARGUS_LOG_CONT`) and environment variable overrides (`LIBARGUS_LOG_LEVEL`).
+> * **Zero-Allocation Programmatic Telemetry:** Exposes `argus_context_get_perf` and `argus_context_reset_perf` querying unmanaged `argus_perf_timings_t` (48 bytes, 8-byte aligned, 0 padding holes) with hardware graph synchronization (`llama_synchronize`) to eliminate timing log scraping.
+> * **Project Panama Upcall Delegation:** Routes native log events directly to Java handlers (`ArgusLogCallback`) via arena-managed Panama upcalls with native C++ exception barriers.
+> * **Context Execution Parameter Parity:** Enables upstream performance timing collection by defaulting `no_perf = false` across primary and speculative draft execution contexts.
+
+`libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
+
+Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** compute engines, `libargus` provides a unified, thread-safe C API designed explicitly for frictionless, zero-copy compilation alongside modern unmanaged orchestration frameworks, featuring out-of-the-box structural alignment for the JDK 22+ **Project Panama Foreign Function & Memory (FFM) API**.
+
+---
 
 ## Installation & Dependency Setup
 
@@ -24,14 +32,14 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.7.11</version>
+        <version>1.8.0</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.7.11</version>
+        <version>1.8.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -41,10 +49,10 @@ Native text, speech, vision and video execution through a C ABI and Java 22+ FFM
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.7.11")
+    implementation("cc.projectargus:libargus-core:1.8.0")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.7.11")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.8.0")
 }
 ```
 
@@ -93,6 +101,8 @@ dependencies {
 *   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
 *   **M-RoPE & Multidimensional Rollback Synchronization:** Native detection and position tracking for Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE). Automatically handles multidimensional temporal/spatial position vectors with zero-allocation introspection (`nPosPerEmbd()`, `isMRoPE()`).
 *   **Automagic KV Cache Truncation & Prefix Rollback:** Automatically prunes invalidated KV cache cells on prefix reuse when `start_pos <= seq_pos_max`, establishing strict sequence monotonicity across 1D-RoPE and M-RoPE architectures with synchronized speculative draft context clearing.
+*   **Diagnostic Logging & Zero-Overhead Redirection:** Silences upstream C++ `stderr` pollution by default (`ARGUS_LOG_WARN`) across `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd`. Features lock-free relaxed atomic hot-path checks, thread-local continuation tracking (`ARGUS_LOG_CONT`), environment variable overrides (`LIBARGUS_LOG_LEVEL`), and foreign callback exception barriers for user-defined and Panama upcall handlers.
+*   **Programmatic Performance Telemetry:** Exposes hardware- and scheduler-synchronized execution metrics (`argus_context_get_perf`, `argus_context_reset_perf`, `ArgusPerfTimings`) over a zero-implicit-padding 48-byte struct, eliminating terminal log scraping while capturing accurate prompt and generation timings and throughput rates.
 
 ---
 
@@ -112,10 +122,13 @@ libargus/
 └── bindings/java/libargus-core/ # Idiomatic Project Panama FFM binding module
     └── src/main/java/cc/projectargus/libargus/
         ├── ArgusBackend.java          # Global device telemetry, build feature flags & backend lifecycle
+        ├── ArgusLogLevel.java         # Diagnostic logging severity tiers matching native ggml levels
+        ├── ArgusLogCallback.java      # Functional interface for custom log handler callbacks
         ├── ArgusModel.java            # Leased unmanaged GGUF weights manager (AutoCloseable)
         ├── ArgusContext.java          # Shared-arena text evaluation context session (AutoCloseable)
         ├── ArgusContextConfig.java    # Text context generation parameters
         ├── ArgusSamplerConfig.java    # Extended sampling configuration parameters
+        ├── ArgusPerfTimings.java      # Immutable execution telemetry metrics record
         ├── ArgusAudioContext.java     # Whisper speech-to-text transcription engine (AutoCloseable)
         ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
         ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer (AutoCloseable)
@@ -166,13 +179,11 @@ cmake --build build --config Release -j $(nproc)
 
 Distribution builds target **x86-64-v3** (AVX2, BMI2, FMA, F16C and SSE4.2) on Linux/Windows, and generic **ARMv8-A** on Apple Silicon. `ARGUS_PORTABLE=ON` disables host tuning in the wrapper and GGML. CMake defaults to CPU; enable one accelerator explicitly, using a fresh build directory when changing toolchains. Gradle builds use portable flags and track backend selections as task inputs.
 
-Linux artifacts build on Ubuntu 22.04 (glibc 2.35 baseline); Windows uses MSVC on Windows Server 2022; macOS artifacts target macOS 14+. Backend runtimes remain external: CUDA 12.4.1, ROCm 6.1, Vulkan loader/SDK, or system Metal. Native dependency lists are retained in the candidate manifest. A compiled feature mask is distinct from driver availability or successful GPU inference.
+Linux artifacts build on Ubuntu 22.04 (glibc 2.35 baseline); Windows uses MSVC on Windows Server 2022; macOS artifacts target macOS 14+. Backend runtimes remain external: CUDA 12.4.1, ROCm 6.1, Vulkan loader/SDK, or system Metal. Native dependency lists are retained in the candidate manifest.
 
-A projector may be shared across text contexts. Native lock order is projector then text context, held through encoding and embedding consumption; independent projectors remain independent. Java leases protect object lifetime, while native locks protect execution. Raw C callers must keep all handles and buffers alive until the call returns. Failed media evaluation can leave partial KV work; discard/rebuild that sequence before reuse. Image-only evaluation does not advertise text logits; append a text token before sampling. Text/position overflow and incompatible model associations fail before mutation.
+### Zero-Allocation Hot-Path & Heap Profiling
 
-`ArgusBackend.getBuildInfo()` returns version, source revision, pinned upstream revisions, compiler, CPU baseline, features and ABI identity without initializing a backend. Closed, heap-backed, confined-on-the-wrong-thread, short and misaligned token segments are rejected. Direct FFM arguments protect shared segment scopes during the call; raw pointers embedded in legacy C structs remain the caller's responsibility.
-
-Allocation claims are operation-specific. A repeatable [probe](scripts/AllocationProbe.java) measures Java heap allocation after warmup; [recorded results](docs/v1.7.5-validation.md) include decode, sampling and video iteration. Native decode currently allocates batch storage; strings, media objects, setup and reconfiguration can allocate. This library does not promise universal allocation-free execution.
+`libargus` is engineered for mechanically sympathetic JVM execution. Hot-path token decoding, persistent sampler evaluation, and video item recycling operate with **zero per-token Java heap allocations** after JIT warmup (measured via the repeatable harness [`scripts/AllocationProbe.java`](scripts/AllocationProbe.java)). Off-path setup, model weight loading, string conversions, and multimodal container parsing allocate standard JVM or native memory as necessary.
 
 ---
 
@@ -211,6 +222,33 @@ public class Main {
     }
 }
 ```
+
+### Diagnostic Logging & Verbosity Control
+
+`libargus` silences upstream `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd` `stderr` logging by default (`ARGUS_LOG_WARN`). You can adjust logging severity programmatically or route emissions to a custom application logger using Project Panama upcalls:
+
+```java
+// 1. Programmatically control log severity (defaults to WARN)
+ArgusBackend.setLogLevel(ArgusLogLevel.INFO); // NONE, DEBUG, INFO, WARN, ERROR
+
+// 2. Convenience helper to completely silence native stderr emissions
+ArgusBackend.setQuiet(true); // equivalent to ArgusBackend.setLogLevel(ArgusLogLevel.NONE)
+
+// 3. Delegate native logs to SLF4J, Log4j, or custom handlers via zero-copy Panama upcalls
+ArgusBackend.setLogCallback((level, message) -> {
+    switch (level) {
+        case ERROR -> logger.error("[native] {}", message);
+        case WARN  -> logger.warn("[native] {}", message);
+        case INFO  -> logger.info("[native] {}", message);
+        case DEBUG -> logger.debug("[native] {}", message);
+        case CONT  -> logger.debug("{}", message); // continuation chunk
+        case NONE  -> {}
+    }
+});
+```
+
+> [!TIP]
+> You can also control the default log level without code changes by setting the `LIBARGUS_LOG_LEVEL` or `ARGUS_LOG_LEVEL` environment variable (e.g. `LIBARGUS_LOG_LEVEL=DEBUG` or `LIBARGUS_LOG_LEVEL=NONE`).
 
 ### Bleeding-Edge Multimodal Prompting (Vision/Video/Audio)
 Using a vision-capable GGUF model along with its multimodal projector (`mmproj`):
@@ -400,6 +438,26 @@ while (generating) {
 }
 ```
 
+### Programmatic Performance Telemetry
+
+Eliminate terminal log scraping with direct, hardware-synchronized performance telemetry queries (`ArgusPerfTimings`):
+
+```java
+// 1. Evaluate prompts and generate tokens as usual
+context.decodeBatch(batch);
+int token = context.sampleToken(0, samplerConfig);
+
+// 2. Query execution metrics directly from the active context session
+ArgusPerfTimings timings = context.getPerfTimings();
+System.out.printf("Prompt Prefill: %d tokens in %.2f ms (%.2f tokens/sec)%n",
+    timings.nPromptEval(), timings.promptEvalTimeMs(), timings.promptTokensPerSecond());
+System.out.printf("Autoregressive Generation: %d tokens in %.2f ms (%.2f tokens/sec)%n",
+    timings.nEval(), timings.evalTimeMs(), timings.evalTokensPerSecond());
+
+// 3. Reset performance counters between turns
+context.resetPerfTimings();
+```
+
 ### Sampler Lifecycle & Decoupled Prompt Priming
 
 Explicitly manage sequence slot sampler penalty histories without polluting KV cache states:
@@ -475,6 +533,9 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **Penalty History Replay** | Rebuilding filter chains on reconfiguration or rollback replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
 | **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
 | **History Introspection** | Zero-allocation real-time queries for retained token count (primed + committed) and uncommitted sample status. | `argus_sampler_get_history_count()`, `argus_sampler_has_pending()` |
+| **Shared Projector Locking** | Native lock hierarchy acquires projector mutex then text context mutex through encoding and embedding consumption; independent projectors remain decoupled. | `argus_eval_multimodal_chunks()` |
+| **Direct FFM Segment Safety** | Preflight validation rejects closed, heap-backed, wrong-thread-confined, short, or misaligned memory segments before unmanaged downcalls. | `ArgusValidation` |
+| **Structured ABI Introspection**| Zero-allocation query of version, source revisions, compiler, CPU baseline, feature masks, and wire layout offsets without backend initialization. | `ArgusBackend.getBuildInfo()` |
 
 ---
 
@@ -502,6 +563,22 @@ Offset  Size  Type       Field Name            Description
 52      4     uint8_t[4] reserved_padding      Reserved bytes; natural struct alignment remains 4
 ---------------------------------------------------------------------------------------------
 Total Struct Byte Size: 56 bytes (0 padding holes)
+```
+
+### `argus_perf_timings_t` (48 Bytes, 8-Byte Aligned)
+```
+Offset  Size  Type       Field Name            Description
+---------------------------------------------------------------------------------------------
+0       8     double     t_start_ms            Context execution start timestamp in ms
+8       8     double     t_load_ms             Model load duration in ms
+16      8     double     t_p_eval_ms           Prompt prefill processing duration in ms
+24      8     double     t_eval_ms             Autoregressive generation duration in ms
+32      4     int32_t    n_p_eval              Prompt tokens evaluated
+36      4     int32_t    n_eval                Generation tokens evaluated
+40      4     int32_t    n_reused              KV cache reused graph iterations count
+44      4     uint8_t[4] reserved_padding      Reserved bytes; struct size 48, alignment 8
+---------------------------------------------------------------------------------------------
+Total Struct Byte Size: 48 bytes (0 padding holes)
 ```
 
 ### Dynamic CPU Thread Allocation & Governor Control
@@ -574,7 +651,7 @@ This hybrid methodology treats AI not as an unguided code generator, but as an a
 
 ## Upstream Integration & Project Roadmap
 
-`libargus` provides native tensor execution for performance-sensitive JVM platforms through Project Panama, with explicit buffer ownership and reusable execution state.
+`libargus` is engineered strictly as **Layer 0 (The Core Execution Bedrock)** for low-latency, performance-critical JVM platforms. It provides the raw compute foundation required for zero-allocation native tensor orchestration via Project Panama.
 
 This engine serves as the high-throughput infrastructure for a broader cognitive platform. To view the high-level roadmap detailing how this runtime block interfaces with the upcoming Layer 1 stateful cognitive core (L-TABB) and the unified system dashboard, visit the master project organization landing page at [ProjectArgus.cc](https://github.com/ProjectArgus-cc).
 

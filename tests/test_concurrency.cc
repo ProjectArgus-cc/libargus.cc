@@ -156,5 +156,60 @@ int main() {
     argus_context_free(first); argus_context_free(second); argus_model_free(model);
     CHECK(model_frees == 1);
     argus_test_set_observer(nullptr);
+
+    // Multithreaded logging continuation isolation test:
+    // Threads 0 & 2 emit WARN lines followed by CONT chunks (must be received).
+    // Threads 1 & 3 emit DEBUG lines followed by CONT chunks (must be suppressed).
+    // Zero DEBUG lines or DEBUG continuations should leak into the callback,
+    // and zero WARN lines or WARN continuations should be dropped.
+    {
+        struct LogCounters {
+            std::atomic<int> warn_lines{0};
+            std::atomic<int> warn_conts{0};
+            std::atomic<int> debug_lines{0};
+            std::atomic<int> debug_conts{0};
+        } counters;
+
+        argus_set_log_level(ARGUS_LOG_WARN);
+        argus_set_log_callback([](argus_log_level_t level, const char * text, void * user_data) {
+            auto * c = static_cast<LogCounters *>(user_data);
+            if (!text) return;
+            if (level == ARGUS_LOG_WARN) {
+                c->warn_lines.fetch_add(1, std::memory_order_relaxed);
+            } else if (level == ARGUS_LOG_CONT) {
+                c->warn_conts.fetch_add(1, std::memory_order_relaxed);
+            } else if (level == ARGUS_LOG_DEBUG) {
+                c->debug_lines.fetch_add(1, std::memory_order_relaxed);
+            }
+        }, &counters);
+
+        const int iterations = 1000;
+        std::vector<std::thread> log_workers;
+        for (int t = 0; t < 4; ++t) {
+            log_workers.emplace_back([t, iterations]() {
+                for (int i = 0; i < iterations; ++i) {
+                    if (t % 2 == 0) {
+                        // Emit WARN (level 3 in ggml) and CONT (level 5 in ggml)
+                        argus_test_emit_log(3, "Warning line from worker\n");
+                        argus_test_emit_log(5, "Continuation chunk of warning\n");
+                    } else {
+                        // Emit DEBUG (level 1 in ggml) and CONT (level 5 in ggml)
+                        argus_test_emit_log(1, "Debug line from worker\n");
+                        argus_test_emit_log(5, "Continuation chunk of debug\n");
+                    }
+                }
+            });
+        }
+        for (auto & w : log_workers) w.join();
+
+        argus_set_log_callback(nullptr, nullptr);
+
+        // Exactly 2 workers * iterations WARN lines and WARN continuation chunks
+        CHECK(counters.warn_lines.load() == 2 * iterations);
+        CHECK(counters.warn_conts.load() == 2 * iterations);
+        CHECK(counters.debug_lines.load() == 0);
+        CHECK(counters.debug_conts.load() == 0);
+    }
+
     argus_backend_free();
 }

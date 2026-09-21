@@ -2,7 +2,13 @@ package cc.projectargus.libargus;
 
 import cc.projectargus.libargus.internal.ArgusBindings;
 import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -101,6 +107,104 @@ public final class ArgusBackend {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error running argus_backend_free", t);
+        }
+    }
+
+    private static Arena logCallbackArena = null;
+
+    /**
+     * Sets the global minimum native log severity threshold.
+     * Messages below this severity tier are discarded with zero I/O overhead.
+     *
+     * @param level minimum severity tier to process. Set to {@link ArgusLogLevel#NONE} to silence completely.
+     */
+    public static void setLogLevel(ArgusLogLevel level) {
+        if (level == null) {
+            throw new IllegalArgumentException("Log level cannot be null");
+        }
+        try {
+            ArgusBindings.argus_set_log_level.invokeExact(level.getValue());
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Fatal error running argus_set_log_level", t);
+        }
+    }
+
+    /**
+     * Queries the active global minimum native log severity threshold.
+     *
+     * @return current log level threshold
+     */
+    public static ArgusLogLevel getLogLevel() {
+        try {
+            int val = (int) ArgusBindings.argus_get_log_level.invokeExact();
+            return ArgusLogLevel.fromValue(val);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Fatal error running argus_get_log_level", t);
+        }
+    }
+
+    /**
+     * Convenience method to silence or restore standard warning logging.
+     *
+     * @param quiet true to set level to NONE, false to restore WARN
+     */
+    public static void setQuiet(boolean quiet) {
+        setLogLevel(quiet ? ArgusLogLevel.NONE : ArgusLogLevel.WARN);
+    }
+
+    /**
+     * Registers a custom log handler callback for native diagnostic telemetry.
+     *
+     * @param callback target handler receiving messages, or null to restore default stderr formatting
+     */
+    public static synchronized void setLogCallback(ArgusLogCallback callback) {
+        try {
+            if (callback == null) {
+                ArgusBindings.argus_set_log_callback.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
+                if (logCallbackArena != null) {
+                    logCallbackArena.close();
+                    logCallbackArena = null;
+                }
+                return;
+            }
+
+            MethodHandle baseHandle = MethodHandles.lookup().findStatic(
+                ArgusBackend.class,
+                "dispatchNativeLog",
+                MethodType.methodType(void.class, ArgusLogCallback.class, int.class, MemorySegment.class, MemorySegment.class)
+            );
+            MethodHandle boundHandle = MethodHandles.insertArguments(baseHandle, 0, callback);
+
+            Arena newArena = Arena.ofShared();
+            MemorySegment stub = Linker.nativeLinker().upcallStub(
+                boundHandle,
+                FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS),
+                newArena
+            );
+
+            ArgusBindings.argus_set_log_callback.invokeExact(stub, MemorySegment.NULL);
+
+            if (logCallbackArena != null) {
+                logCallbackArena.close();
+            }
+            logCallbackArena = newArena;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Fatal error registering native log callback", t);
+        }
+    }
+
+    private static void dispatchNativeLog(ArgusLogCallback cb, int level, MemorySegment textPtr, MemorySegment userDataPtr) {
+        if (cb == null || textPtr.equals(MemorySegment.NULL)) {
+            return;
+        }
+        try {
+            String msg = textPtr.reinterpret(Long.MAX_VALUE).getString(0);
+            cb.onLog(ArgusLogLevel.fromValue(level), msg);
+        } catch (Throwable ignored) {
+            // Exception containment barrier: protect native callers from upcall exceptions
         }
     }
 

@@ -295,6 +295,9 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
         bool is_encoder_model = model->model && llama_model_has_encoder(model->model);
         cparams.embeddings = params->embeddings || is_encoder_model;
 
+        // Enable internal performance telemetry collection
+        cparams.no_perf = false;
+
         struct llama_context * ctx = llama_init_from_model(model->model, cparams);
         if (!ctx) {
             if (draft_model) argus_model_release(draft_model);
@@ -326,6 +329,7 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
             dparams.n_threads_batch = params->cpu_threads;
             dparams.type_k          = cparams.type_k;
             dparams.type_v          = cparams.type_v;
+            dparams.no_perf         = false;
 
             draft_ctx = llama_init_from_model(draft_model->model, dparams);
             if (!draft_ctx) {
@@ -1978,6 +1982,38 @@ int32_t argus_synthesize_speech(
     }
     return argus_synthesize_speech_n(
         ctx, wavtokenizer_model, text, std::strlen(text), voice_seed, out_pcm, max_samples, workspace, workspace_size_floats);
+}
+
+ARGUS_API bool argus_context_get_perf(const argus_context_t * ctx, argus_perf_timings_t * out_timings) {
+    if (!ctx || !ctx->ctx || !out_timings) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context or destination pointer");
+        return false;
+    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_context_get_perf", [&]() -> bool {
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        llama_synchronize(ctx->ctx);
+        struct llama_perf_context_data pdata = llama_perf_context(ctx->ctx);
+        out_timings->t_start_ms = pdata.t_start_ms;
+        out_timings->t_load_ms = pdata.t_load_ms;
+        out_timings->t_p_eval_ms = pdata.t_p_eval_ms;
+        out_timings->t_eval_ms = pdata.t_eval_ms;
+        out_timings->n_p_eval = pdata.n_p_eval;
+        out_timings->n_eval = pdata.n_eval;
+        out_timings->n_reused = pdata.n_reused;
+        std::memset(out_timings->reserved_padding, 0, sizeof(out_timings->reserved_padding));
+        return true;
+    });
+}
+
+ARGUS_API void argus_context_reset_perf(argus_context_t * ctx) {
+    if (!ctx || !ctx->ctx) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context pointer");
+        return;
+    }
+    argus_guard_void("argus_context_reset_perf", [&]() {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        llama_perf_context_reset(ctx->ctx);
+    });
 }
 
 } // extern "C"

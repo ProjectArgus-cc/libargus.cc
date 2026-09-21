@@ -14,6 +14,11 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <mutex>
+#if !defined(_WIN32)
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 
 #define ARGUS_CHECK(cond) \
     do { \
@@ -80,6 +85,53 @@ int main(int argc, char ** argv) {
         const char * backend_name = argus_backend_get_name(i);
         std::cout << "  - Backend " << i << ": " << (backend_name ? backend_name : "UNKNOWN") << std::endl;
     }
+
+    // 2.1 Diagnostic Logging API & Callback Verification
+    std::cout << "[Test] Verifying diagnostic logging API and callback delegation..." << std::endl;
+    argus_log_level_t orig_level = argus_get_log_level();
+    argus_set_log_level(ARGUS_LOG_DEBUG);
+    ARGUS_CHECK(argus_get_log_level() == ARGUS_LOG_DEBUG);
+    argus_set_log_level(ARGUS_LOG_NONE);
+    ARGUS_CHECK(argus_get_log_level() == ARGUS_LOG_NONE);
+    argus_set_log_level(ARGUS_LOG_WARN);
+    ARGUS_CHECK(argus_get_log_level() == ARGUS_LOG_WARN);
+
+    struct LogAccumulator {
+        std::vector<std::pair<argus_log_level_t, std::string>> entries;
+        std::mutex mtx;
+    };
+    LogAccumulator acc;
+    argus_set_log_callback([](argus_log_level_t level, const char * text, void * user_data) {
+        auto * a = static_cast<LogAccumulator *>(user_data);
+        std::lock_guard<std::mutex> l(a->mtx);
+        a->entries.emplace_back(level, std::string(text ? text : ""));
+    }, &acc);
+
+    argus_set_log_level(ARGUS_LOG_DEBUG);
+    argus_model_params_t bad_params = {};
+    bad_params.model_path = "non_existent_file_to_trigger_logging.gguf";
+    argus_model_t * bad_model = argus_model_load(&bad_params);
+    ARGUS_CHECK(bad_model == nullptr);
+
+    {
+        std::lock_guard<std::mutex> l(acc.mtx);
+        ARGUS_CHECK(!acc.entries.empty());
+        bool captured_expected_log = false;
+        for (const auto & e : acc.entries) {
+            if (e.second.find("non_existent_file") != std::string::npos ||
+                e.second.find("failed") != std::string::npos ||
+                e.second.find("error") != std::string::npos) {
+                captured_expected_log = true;
+                break;
+            }
+        }
+        ARGUS_CHECK(captured_expected_log);
+    }
+
+    // Reset callback and restore level
+    argus_set_log_callback(nullptr, nullptr);
+    argus_set_log_level(orig_level);
+    std::cout << "  - Diagnostic logging and callback assertions verified successfully." << std::endl;
 
     // 3. Test model loading with empty params to verify error pathways
     std::cout << "[Test] Verifying model load handling with null input..." << std::endl;
@@ -702,13 +754,84 @@ int main(int argc, char ** argv) {
         ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
         std::cout << "  - Sampler lifecycle (prime, truncate, reset) verified." << std::endl;
 
-        // 7.15. Cleanup
+        // 7.16. Performance Telemetry Metrics Verification
+        std::cout << "[Test] Verifying performance telemetry metrics (argus_context_get_perf)..." << std::endl;
+        argus_perf_timings_t timings = {};
+        ARGUS_CHECK(argus_context_get_perf(nullptr, &timings) == false);
+        ARGUS_CHECK(argus_context_get_perf(ctx, nullptr) == false);
+        bool got_perf = argus_context_get_perf(ctx, &timings);
+        ARGUS_CHECK(got_perf);
+        ARGUS_CHECK(timings.n_p_eval > 0);
+        ARGUS_CHECK(timings.t_p_eval_ms >= 0.0);
+        ARGUS_CHECK(timings.t_start_ms > 0.0);
+        std::cout << "  - Performance telemetry verified: n_p_eval=" << timings.n_p_eval
+                  << ", t_p_eval_ms=" << timings.t_p_eval_ms << " ms" << std::endl;
+
+        argus_context_reset_perf(ctx);
+        argus_perf_timings_t timings_reset = {};
+        ARGUS_CHECK(argus_context_get_perf(ctx, &timings_reset));
+        ARGUS_CHECK(timings_reset.n_p_eval < timings.n_p_eval);
+        ARGUS_CHECK(timings_reset.t_p_eval_ms == 0.0);
+        std::cout << "  - Performance telemetry reset verified: n_p_eval successfully reset from "
+                  << timings.n_p_eval << " to " << timings_reset.n_p_eval << std::endl;
+
+        // 7.17. Cleanup
         argus_context_free(ctx);
         argus_model_free(draft_model);
         argus_model_free(model);
         std::cout << "  - End-to-end model and context resources successfully released." << std::endl;
 
-        // 7.17. Build Features & Tokenize-N Verification
+        // 7.18. OS Stderr Suppression Verification (Kernel Pipe / dup2)
+#if !defined(_WIN32)
+        std::cout << "[Test] Verifying kernel stderr suppression under ARGUS_LOG_NONE..." << std::endl;
+        int pipe_fds[2];
+        ARGUS_CHECK(pipe(pipe_fds) == 0);
+        int pflags = fcntl(pipe_fds[0], F_GETFL, 0);
+        fcntl(pipe_fds[0], F_SETFL, pflags | O_NONBLOCK);
+
+        int saved_stderr = dup(STDERR_FILENO);
+        ARGUS_CHECK(saved_stderr >= 0);
+        fflush(stderr);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+
+        argus_set_log_level(ARGUS_LOG_NONE);
+        argus_set_log_callback(nullptr, nullptr);
+
+        argus_model_t * silent_model = argus_model_load(&mparams);
+        ARGUS_CHECK(silent_model != nullptr);
+        argus_context_params_t silent_cparams = {};
+        silent_cparams.context_length = 256;
+        silent_cparams.cpu_threads = 2;
+        silent_cparams.n_seq_max = 1;
+        argus_context_t * silent_ctx = argus_context_init(silent_model, &silent_cparams);
+        ARGUS_CHECK(silent_ctx != nullptr);
+        int32_t s_toks[] = { 1, 4, 5, 6 };
+        argus_token_batch_t s_b = {};
+        s_b.tokens = s_toks;
+        s_b.n_tokens = 4;
+        s_b.start_pos = 0;
+        s_b.seq_id = 0;
+        s_b.request_logits = true;
+        ARGUS_CHECK(argus_decode_batch(silent_ctx, &s_b) == 0);
+
+        fflush(stderr);
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+
+        char pipe_buf[512];
+        ssize_t n_read = read(pipe_fds[0], pipe_buf, sizeof(pipe_buf));
+        close(pipe_fds[0]);
+
+        argus_context_free(silent_ctx);
+        argus_model_free(silent_model);
+        argus_set_log_level(ARGUS_LOG_WARN); // restore default
+
+        ARGUS_CHECK(n_read <= 0);
+        std::cout << "  - Fanged verification passed: exactly 0 bytes escaped to stderr under ARGUS_LOG_NONE." << std::endl;
+#endif
+
+        // 7.19. Build Features & Tokenize-N Verification
         {
             uint64_t features = argus_build_features();
             ARGUS_CHECK((features & ARGUS_FEATURE_CPU) != 0);

@@ -172,10 +172,37 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("seed"),
         MemoryLayout.paddingLayout(4).withName("reserved_padding")
     ).withName("argus_sampler_params");
+
+    /**
+     * Memory layout for argus_perf_timings_t
+     * <pre>
+     * typedef struct argus_perf_timings {
+     *     double   t_start_ms;          // 8 bytes
+     *     double   t_load_ms;           // 8 bytes
+     *     double   t_p_eval_ms;         // 8 bytes
+     *     double   t_eval_ms;           // 8 bytes
+     *     int32_t  n_p_eval;            // 4 bytes
+     *     int32_t  n_eval;              // 4 bytes
+     *     int32_t  n_reused;            // 4 bytes
+     *     uint8_t  reserved_padding[4]; // 4 bytes padding
+     * } argus_perf_timings_t;
+     * </pre>
+     */
+    public static final StructLayout PERF_TIMINGS = MemoryLayout.structLayout(
+        ValueLayout.JAVA_DOUBLE.withName("t_start_ms"),
+        ValueLayout.JAVA_DOUBLE.withName("t_load_ms"),
+        ValueLayout.JAVA_DOUBLE.withName("t_p_eval_ms"),
+        ValueLayout.JAVA_DOUBLE.withName("t_eval_ms"),
+        ValueLayout.JAVA_INT.withName("n_p_eval"),
+        ValueLayout.JAVA_INT.withName("n_eval"),
+        ValueLayout.JAVA_INT.withName("n_reused"),
+        MemoryLayout.paddingLayout(4).withName("reserved_padding")
+    ).withName("argus_perf_timings");
+
     /** Compiler-independent expected ABI descriptor, compared with native diagnostics. */
     public static String diagnosticAbi() {
         var descriptors = new java.util.ArrayList<String>();
-        for (StructLayout layout : new StructLayout[]{MODEL_PARAMS, CONTEXT_PARAMS, AUDIO_PARAMS, TOKEN_BATCH, MULTIMODAL_PARAMS, LOGIT_BIAS, SAMPLER_PARAMS}) {
+        for (StructLayout layout : new StructLayout[]{MODEL_PARAMS, CONTEXT_PARAMS, AUDIO_PARAMS, TOKEN_BATCH, MULTIMODAL_PARAMS, LOGIT_BIAS, SAMPLER_PARAMS, PERF_TIMINGS}) {
             var offsets = new java.util.ArrayList<String>();
             for (MemoryLayout member : layout.memberLayouts()) {
                 if (member instanceof java.lang.foreign.PaddingLayout) continue;

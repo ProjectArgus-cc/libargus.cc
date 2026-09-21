@@ -12,8 +12,11 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "llama.h"
+#include "whisper.h"
+#include "mtmd.h"
 #include "argus_abi.h"
 #include <cstddef>
+#include <cstdlib>
 #include <algorithm>
 
 #include <atomic>
@@ -81,6 +84,140 @@ static_assert(sizeof(argus_multimodal_params_t) == 16);
 static_assert(sizeof(argus_logit_bias_t) == 8);
 static_assert(sizeof(argus_sampler_params_t) == 56);
 static_assert(offsetof(argus_sampler_params_t, seed) == 48);
+static_assert(sizeof(argus_perf_timings_t) == 48);
+static_assert(alignof(argus_perf_timings_t) == 8);
+static_assert(offsetof(argus_perf_timings_t, t_start_ms) == 0);
+static_assert(offsetof(argus_perf_timings_t, t_load_ms) == 8);
+static_assert(offsetof(argus_perf_timings_t, t_p_eval_ms) == 16);
+static_assert(offsetof(argus_perf_timings_t, t_eval_ms) == 24);
+static_assert(offsetof(argus_perf_timings_t, n_p_eval) == 32);
+static_assert(offsetof(argus_perf_timings_t, n_eval) == 36);
+static_assert(offsetof(argus_perf_timings_t, n_reused) == 40);
+static_assert(offsetof(argus_perf_timings_t, reserved_padding) == 44);
+
+// =========================================================================
+// Global Diagnostic Logging State & Dispatch
+// =========================================================================
+
+static std::atomic<argus_log_level_t>    g_log_level{ARGUS_LOG_WARN};
+static std::atomic<bool>                 g_log_level_explicit{false};
+static std::atomic<argus_log_callback_t> g_log_callback{nullptr};
+static std::atomic<void *>               g_log_user_data{nullptr};
+static std::mutex                        g_log_mutex;
+
+// Thread-local continuation tracking guarantees zero-race condition across concurrent worker threads
+static thread_local argus_log_level_t    tl_last_emitted_level{ARGUS_LOG_NONE};
+
+static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const char * text, void * /*user_data*/) {
+    if (!text || text[0] == '\0') {
+        return;
+    }
+
+    argus_log_level_t active_threshold = g_log_level.load(std::memory_order_relaxed);
+    if (active_threshold == ARGUS_LOG_NONE) {
+        return;
+    }
+
+    argus_log_level_t mapped_level;
+    switch (ggml_level) {
+        case GGML_LOG_LEVEL_DEBUG: mapped_level = ARGUS_LOG_DEBUG; break;
+        case GGML_LOG_LEVEL_INFO:  mapped_level = ARGUS_LOG_INFO;  break;
+        case GGML_LOG_LEVEL_WARN:  mapped_level = ARGUS_LOG_WARN;  break;
+        case GGML_LOG_LEVEL_ERROR: mapped_level = ARGUS_LOG_ERROR; break;
+        case GGML_LOG_LEVEL_CONT:  mapped_level = ARGUS_LOG_CONT;  break;
+        default:                   mapped_level = ARGUS_LOG_NONE;  break;
+    }
+
+    // Continuation chunk handling: inherit the severity of the primary line for this thread
+    if (mapped_level == ARGUS_LOG_CONT) {
+        if (tl_last_emitted_level < active_threshold || tl_last_emitted_level == ARGUS_LOG_NONE) {
+            return;
+        }
+    } else {
+        tl_last_emitted_level = mapped_level;
+        if (mapped_level < active_threshold) {
+            return;
+        }
+    }
+
+    // Message passed threshold: serialize emission to prevent torn formatting or multi-threaded callback races
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    auto cb = g_log_callback.load(std::memory_order_acquire);
+    auto ud = g_log_user_data.load(std::memory_order_acquire);
+    if (cb) {
+        try {
+            cb(mapped_level, text, ud);
+        } catch (...) {
+            // Foreign exception barrier
+        }
+    } else {
+        std::fputs(text, stderr);
+        std::fflush(stderr);
+    }
+}
+
+static void argus_init_log_level_from_env() {
+    if (g_log_level_explicit.load(std::memory_order_acquire)) {
+        return; // Programmatic configuration takes precedence
+    }
+
+    const char * env = nullptr;
+#if defined(__linux__) && defined(_GNU_SOURCE)
+    env = secure_getenv("LIBARGUS_LOG_LEVEL");
+    if (!env) env = secure_getenv("ARGUS_LOG_LEVEL");
+#else
+    env = std::getenv("LIBARGUS_LOG_LEVEL");
+    if (!env) env = std::getenv("ARGUS_LOG_LEVEL");
+#endif
+
+    if (!env || env[0] == '\0') {
+        g_log_level.store(ARGUS_LOG_WARN, std::memory_order_relaxed);
+        return;
+    }
+
+    // Case-insensitive ASCII comparison helper
+    auto iequals = [](const char * a, const char * b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == *b;
+    };
+
+    if (iequals(env, "NONE") || std::strcmp(env, "0") == 0 || iequals(env, "OFF") || iequals(env, "SILENT")) {
+        g_log_level.store(ARGUS_LOG_NONE, std::memory_order_relaxed);
+    } else if (iequals(env, "DEBUG") || std::strcmp(env, "1") == 0 || iequals(env, "TRACE")) {
+        g_log_level.store(ARGUS_LOG_DEBUG, std::memory_order_relaxed);
+    } else if (iequals(env, "INFO") || std::strcmp(env, "2") == 0) {
+        g_log_level.store(ARGUS_LOG_INFO, std::memory_order_relaxed);
+    } else if (iequals(env, "WARN") || iequals(env, "WARNING") || std::strcmp(env, "3") == 0) {
+        g_log_level.store(ARGUS_LOG_WARN, std::memory_order_relaxed);
+    } else if (iequals(env, "ERROR") || std::strcmp(env, "4") == 0 || iequals(env, "ERR")) {
+        g_log_level.store(ARGUS_LOG_ERROR, std::memory_order_relaxed);
+    }
+}
+
+static void argus_register_upstream_log_hooks() {
+    static std::once_flag s_once;
+    std::call_once(s_once, []() {
+        argus_init_log_level_from_env();
+        llama_log_set(argus_internal_log_dispatch, nullptr);
+        ggml_log_set(argus_internal_log_dispatch, nullptr);
+        whisper_log_set(argus_internal_log_dispatch, nullptr);
+        mtmd_log_set(argus_internal_log_dispatch, nullptr);
+    });
+}
+
+namespace {
+struct ArgusLogInitTrigger {
+    ArgusLogInitTrigger() {
+        argus_register_upstream_log_hooks();
+    }
+};
+static ArgusLogInitTrigger s_log_init_trigger;
+}
 
 extern "C" {
 
@@ -141,6 +278,7 @@ uint64_t argus_build_features(void) {
 bool argus_backend_init(const char * custom_plugin_path) {
     try {
         clear_last_error();
+        argus_register_upstream_log_hooks();
         std::lock_guard<std::mutex> lock(g_backend_mutex);
 
         if (g_backend_initialized) {
@@ -247,6 +385,24 @@ const char * argus_backend_get_name(int32_t index) {
 
 const char * argus_version(void) {
     return LIBARGUS_VERSION;
+}
+
+ARGUS_API void argus_set_log_level(argus_log_level_t level) {
+    argus_register_upstream_log_hooks();
+    g_log_level_explicit.store(true, std::memory_order_release);
+    g_log_level.store(level, std::memory_order_release);
+}
+
+ARGUS_API argus_log_level_t argus_get_log_level(void) {
+    argus_register_upstream_log_hooks();
+    return g_log_level.load(std::memory_order_acquire);
+}
+
+ARGUS_API void argus_set_log_callback(argus_log_callback_t callback, void * user_data) {
+    argus_register_upstream_log_hooks();
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_user_data.store(user_data, std::memory_order_release);
+    g_log_callback.store(callback, std::memory_order_release);
 }
 
 } // extern "C"

@@ -907,4 +907,49 @@ public final class ArgusContext extends ArgusNativeResource {
             releaseReadLease();
         }
     }
+
+    /**
+     * Retrieves unmanaged performance execution telemetry for this context session.
+     *
+     * @return populated {@link ArgusPerfTimings} instance
+     */
+    public ArgusPerfTimings getPerfTimings() {
+        MemorySegment ctxH = acquireReadLease();
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment outSeg = localArena.allocate(cc.projectargus.libargus.internal.ArgusLayouts.PERF_TIMINGS);
+            boolean ok = (boolean) ArgusBindings.argus_context_get_perf.invokeExact(ctxH, outSeg);
+            if (!ok) {
+                ArgusNativeException.throwLastError("argus_context_get_perf");
+            }
+            double startMs = outSeg.get(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 0);
+            double loadMs = outSeg.get(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 8);
+            double pEvalMs = outSeg.get(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 16);
+            double evalMs = outSeg.get(java.lang.foreign.ValueLayout.JAVA_DOUBLE, 24);
+            int nPromptEval = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 32);
+            int nEval = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 36);
+            int nReused = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 40);
+
+            return new ArgusPerfTimings(startMs, loadMs, pEvalMs, evalMs, nPromptEval, nEval, nReused);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query context performance timings", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Resets performance execution telemetry counters on this context session.
+     */
+    public void resetPerfTimings() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            ArgusBindings.argus_context_reset_perf.invokeExact(ctxH);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to reset context performance timings", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
 }

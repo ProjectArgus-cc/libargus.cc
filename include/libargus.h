@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.7.11
+ * @version 1.8.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -103,6 +103,57 @@ ARGUS_API int32_t argus_last_error_message_copy(char * out, int32_t capacity);
  * @brief Clears the last error state recorded on the calling thread.
  */
 ARGUS_API void argus_clear_error(void);
+
+// =========================================================================
+// Diagnostic Logging & Verbosity Control
+// =========================================================================
+
+/**
+ * @brief Diagnostic log level matching ggml severity tiers.
+ */
+typedef enum argus_log_level {
+    ARGUS_LOG_NONE  = 0, /**< Completely silent; no log emissions */
+    ARGUS_LOG_DEBUG = 1, /**< Fine-grained diagnostic and debug telemetry */
+    ARGUS_LOG_INFO  = 2, /**< Informational status (e.g. model geometry, timings) */
+    ARGUS_LOG_WARN  = 3, /**< Warning conditions */
+    ARGUS_LOG_ERROR = 4, /**< Critical errors and execution failures */
+    ARGUS_LOG_CONT  = 5  /**< Continuation chunk of previous log line */
+} argus_log_level_t;
+
+/**
+ * @brief User-defined callback signature for custom log routing.
+ *
+ * @param level Severity level of the log message.
+ * @param text Null-terminated text buffer containing the formatted log fragment.
+ * @param user_data Opaque pointer supplied during registration.
+ */
+typedef void (*argus_log_callback_t)(argus_log_level_t level, const char * text, void * user_data);
+
+/**
+ * @brief Sets the global minimum log severity threshold.
+ *
+ * Messages below this severity tier are discarded with zero I/O overhead.
+ * Defaults to ARGUS_LOG_WARN (or respects environment variable LIBARGUS_LOG_LEVEL / ARGUS_LOG_LEVEL).
+ *
+ * @param level The minimum severity tier to process. Set to ARGUS_LOG_NONE to silence completely.
+ */
+ARGUS_API void argus_set_log_level(argus_log_level_t level);
+
+/**
+ * @brief Retrieves the active global minimum log severity threshold.
+ * @return Current log level threshold.
+ */
+ARGUS_API argus_log_level_t argus_get_log_level(void);
+
+/**
+ * @brief Registers a custom log handler callback.
+ *
+ * If callback is NULL, output matching the active log level threshold is routed to stderr.
+ *
+ * @param callback Target handler function, or NULL to restore default stderr formatting.
+ * @param user_data Opaque caller context forwarded to every invocation.
+ */
+ARGUS_API void argus_set_log_callback(argus_log_callback_t callback, void * user_data);
 
 // =========================================================================
 // Compile-Time Build Capability Bitmasks
@@ -229,6 +280,20 @@ typedef struct argus_sampler_params {
     uint8_t  reserved_padding[4];  /**< Reserved bytes; struct size 56, alignment 4 (4 bytes) */
 } argus_sampler_params_t;
 
+/**
+ * @brief Performance telemetry metrics for context execution turns.
+ */
+typedef struct argus_perf_timings {
+    double   t_start_ms;          /**< Absolute start timestamp in milliseconds (8 bytes) */
+    double   t_load_ms;           /**< Model loading duration in milliseconds (8 bytes) */
+    double   t_p_eval_ms;         /**< Prompt prefill processing duration in milliseconds (8 bytes) */
+    double   t_eval_ms;           /**< Autoregressive token evaluation duration in milliseconds (8 bytes) */
+    int32_t  n_p_eval;            /**< Evaluated prompt token count (4 bytes) */
+    int32_t  n_eval;              /**< Evaluated generation token count (4 bytes) */
+    int32_t  n_reused;            /**< Reused graph compute iterations count (4 bytes) */
+    uint8_t  reserved_padding[4]; /**< Alignment padding securing 8-byte boundaries (4 bytes) */
+} argus_perf_timings_t;
+
 // =========================================================================
 // 1. Process-Global Subsystem Lifecycle Control
 // =========================================================================
@@ -347,6 +412,24 @@ ARGUS_API int32_t argus_get_n_threads(argus_context_t * ctx);
  * @return Number of allocated batch threads, or -1 if context is invalid.
  */
 ARGUS_API int32_t argus_get_n_threads_batch(argus_context_t * ctx);
+
+/**
+ * @brief Retrieves unmanaged performance execution telemetry for the active context session.
+ *
+ * Populates caller-allocated timing and token execution metrics. Thread-safe against concurrent decodes.
+ *
+ * @param ctx Target execution context.
+ * @param out_timings Caller-allocated destination struct.
+ * @return true if successfully populated, false on invalid pointer or context.
+ */
+ARGUS_API bool argus_context_get_perf(const argus_context_t * ctx, argus_perf_timings_t * out_timings);
+
+/**
+ * @brief Resets performance execution telemetry counters on the context.
+ *
+ * @param ctx Target execution context.
+ */
+ARGUS_API void argus_context_reset_perf(argus_context_t * ctx);
 
 /**
  * @brief Checks if speculative decoding draft context is initialized and active on this context session.

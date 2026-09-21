@@ -8,5 +8,6 @@ ARGUS_API argus_input_chunks_t * argus_test_chunks(void);
 ARGUS_API argus_video_t * argus_test_video(argus_multimodal_t * mctx, int count);
 ARGUS_API void argus_test_set_eval_result(int result);
 ARGUS_API void argus_test_fail_after_retain(bool fail);
+ARGUS_API void argus_test_emit_log(int ggml_level, const char * text);
 }
 void argus_test_allocation_checkpoint();

@@ -298,6 +298,19 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
 
+    // Logging & Diagnostics
+    public static final MethodHandle argus_set_log_level = bind("argus_set_log_level",
+        FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_get_log_level = bind("argus_get_log_level",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_set_log_callback = bind("argus_set_log_callback",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
+
     // Text Models
     public static final MethodHandle argus_model_load = bind("argus_model_load",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -334,6 +347,14 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_context_has_draft = bind("argus_context_has_draft",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_context_get_perf = bind("argus_context_get_perf",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_context_reset_perf = bind("argus_context_reset_perf",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
 
     // Tokenization
