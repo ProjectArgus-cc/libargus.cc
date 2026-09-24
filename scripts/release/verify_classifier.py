@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -30,18 +31,27 @@ def run(directory, row, java='java', development=False):
                        'cc.projectargus.libargus.ClassifierVerifier', expected]
             if expected == row['backend'] and row['backend'] == 'cpu':
                 command.append(str(ROOT / 'tests/data/tiny.gguf'))
-            log = root / 'verifier.log'
-            with log.open('wb') as out:
-                completed = subprocess.run(command, cwd=root, env=env, stdout=out, stderr=subprocess.STDOUT, timeout=180)
-            if log.stat().st_size > 4 * 1024**2: raise ValueError('Verifier output exceeded limit')
-            output = log.read_text(errors='replace')
-            messages = [line.removeprefix('ARGUS_RECEIPT ') for line in output.splitlines() if line.startswith('ARGUS_RECEIPT ')]
+            stdout_log = root / 'verifier_stdout.log'
+            stderr_log = root / 'verifier_stderr.log'
+            with stdout_log.open('wb') as out_f, stderr_log.open('wb') as err_f:
+                completed = subprocess.run(command, cwd=root, env=env, stdout=out_f, stderr=err_f, timeout=180)
+            if stdout_log.stat().st_size > 4 * 1024**2 or stderr_log.stat().st_size > 4 * 1024**2:
+                raise ValueError('Verifier output exceeded limit')
+            output = stdout_log.read_text(errors='replace')
+            err_output = stderr_log.read_text(errors='replace')
+            messages = []
+            for line in output.splitlines():
+                m = re.search(r'ARGUS_RECEIPT\s+(\{.*\})\s*$', line)
+                if m:
+                    messages.append(m.group(1))
             if len(messages) != 1:
-                raise ValueError('Verifier did not produce a unique receipt: ' + output[-2000:])
+                detail = f"\n--- STDOUT ---\n{output[-1500:]}\n--- STDERR ---\n{err_output[-1500:]}"
+                raise ValueError('Verifier did not produce a unique receipt: ' + detail)
             result = json.loads(messages[0])
             positive = expected == row['backend']
             if completed.returncode != (0 if positive else 3) or result['result'] != ('ok' if positive else 'feature_mismatch'):
-                raise ValueError('Verifier failed for an unexpected reason')
+                detail = f"\nReturn code: {completed.returncode}\n--- STDOUT ---\n{output[-1500:]}\n--- STDERR ---\n{err_output[-1500:]}"
+                raise ValueError('Verifier failed for an unexpected reason: ' + detail)
             if result['native_sha256'] != native['sha256'] or int(result['features']) != row['mask'] or result['provider'] != provider:
                 raise ValueError('Loaded native/provider identity mismatch')
             if not Path(result['native_path']).resolve().is_relative_to(root.resolve()):

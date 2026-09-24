@@ -106,4 +106,34 @@ class LoggingAndTelemetryTest {
             ArgusBackend.free();
         }
     }
+
+    @Test
+    void testLogLevelErrorSuppressesWarnings() {
+        record LogEntry(ArgusLogLevel level, String message) {}
+        List<LogEntry> logs = new CopyOnWriteArrayList<>();
+
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.ERROR);
+            ArgusBackend.setLogCallback((level, message) -> logs.add(new LogEntry(level, message)));
+
+            ArgusBackend.init();
+            try (Arena arena = Arena.ofConfined();
+                 ArgusModel model = ArgusModel.load(arena, modelPath(), 0, false)) {
+                assertNotNull(model);
+            } finally {
+                ArgusBackend.free();
+            }
+
+            // tiny.gguf triggers a WARN in SPM vocab loading ("SPM vocabulary, but newline token not found")
+            // With log level ERROR, zero warnings or info messages should be delivered to the callback!
+            boolean hasWarnOrInfo = logs.stream().anyMatch(e ->
+                e.level() == ArgusLogLevel.WARN || e.level() == ArgusLogLevel.INFO || e.level() == ArgusLogLevel.DEBUG
+            );
+            assertFalse(hasWarnOrInfo, "Log level ERROR must suppress SPM vocabulary warning from tiny.gguf");
+        } finally {
+            ArgusBackend.setLogCallback(null);
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
 }

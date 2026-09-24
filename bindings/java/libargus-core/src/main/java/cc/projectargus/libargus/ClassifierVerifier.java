@@ -44,6 +44,7 @@ public final class ClassifierVerifier {
         result.put("native_path", path);
         result.put("result", actual == expected ? "ok" : "feature_mismatch");
         if (actual == expected && args.length == 2) {
+            ArgusBackend.setLogLevel(ArgusLogLevel.ERROR);
             ArgusBackend.init();
             try (Arena arena = Arena.ofConfined();
                  ArgusModel model = ArgusModel.load(arena, Path.of(args[1]), 0, false);
@@ -54,9 +55,12 @@ public final class ClassifierVerifier {
                 result.put("cpu_decode", "passed");
             } finally { ArgusBackend.free(); }
         }
+        System.err.flush();
+        System.out.flush();
         System.out.println("ARGUS_RECEIPT " + result.entrySet().stream()
             .map(e -> quote(e.getKey()) + ":" + quote(e.getValue()))
             .collect(Collectors.joining(",", "{", "}")));
+        System.out.flush();
         if (actual != expected) System.exit(3);
     }
     private static String quote(String value) {

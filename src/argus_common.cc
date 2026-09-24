@@ -104,6 +104,7 @@ static std::atomic<bool>                 g_log_level_explicit{false};
 static std::atomic<argus_log_callback_t> g_log_callback{nullptr};
 static std::atomic<void *>               g_log_user_data{nullptr};
 static std::mutex                        g_log_mutex;
+static bool                              g_stderr_needs_newline{false};
 
 // Thread-local continuation tracking guarantees zero-race condition across concurrent worker threads
 static thread_local argus_log_level_t    tl_last_emitted_level{ARGUS_LOG_NONE};
@@ -151,7 +152,20 @@ static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const ch
             // Foreign exception barrier
         }
     } else {
+        if (mapped_level != ARGUS_LOG_CONT && g_stderr_needs_newline) {
+            std::fputc('\n', stderr);
+            g_stderr_needs_newline = false;
+        }
         std::fputs(text, stderr);
+        size_t len = std::strlen(text);
+        if (len > 0) {
+            if ((mapped_level == ARGUS_LOG_WARN || mapped_level == ARGUS_LOG_ERROR) && text[len - 1] != '\n') {
+                std::fputc('\n', stderr);
+                g_stderr_needs_newline = false;
+            } else {
+                g_stderr_needs_newline = (text[len - 1] != '\n');
+            }
+        }
         std::fflush(stderr);
     }
 }
@@ -336,6 +350,11 @@ void argus_backend_free(void) {
                 g_backend_teardown_pending = false;
             }
         }
+
+        {
+            std::lock_guard<std::mutex> log_lock(g_log_mutex);
+            g_stderr_needs_newline = false;
+        }
     } catch (const std::exception & e) {
         set_last_error(ARGUS_ERROR_INTERNAL, e.what());
     } catch (...) {
@@ -389,6 +408,10 @@ const char * argus_version(void) {
 
 ARGUS_API void argus_set_log_level(argus_log_level_t level) {
     argus_register_upstream_log_hooks();
+    if (level == ARGUS_LOG_NONE) {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        g_stderr_needs_newline = false;
+    }
     g_log_level_explicit.store(true, std::memory_order_release);
     g_log_level.store(level, std::memory_order_release);
 }
@@ -401,6 +424,7 @@ ARGUS_API argus_log_level_t argus_get_log_level(void) {
 ARGUS_API void argus_set_log_callback(argus_log_callback_t callback, void * user_data) {
     argus_register_upstream_log_hooks();
     std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_stderr_needs_newline = false;
     g_log_user_data.store(user_data, std::memory_order_release);
     g_log_callback.store(callback, std::memory_order_release);
 }
