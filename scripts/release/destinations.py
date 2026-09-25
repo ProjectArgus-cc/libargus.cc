@@ -27,7 +27,8 @@ class GitHub:
             batch = self.request('GET', '/releases?per_page=100&page=' + str(page)); releases += batch
             if len(batch) < 100: break
             page += 1
-        found = [r for r in releases if r['tag_name'] == tag]
+        candidates = [r for r in releases if (r.get('tag_name') == tag or r.get('name') == tag)]
+        found = [r for r in candidates if not r.get('draft')] or candidates
         if len(found) > 1: raise ValueError('Duplicate releases for tag')
         if found:
             release = found[0]
@@ -73,8 +74,10 @@ class GitHub:
             url = self.api + '/releases/assets/' + str(asset['id'])
             # Transport adds no JSON Accept header to digest reads.
             if not self.http.matches(url, meta, self.auth): raise ValueError('GitHub asset disappeared')
-    def expose(self, release, state):
-        self.request('PATCH', '/releases/' + str(release['id']), {'draft': False, 'body': self.body(state)})
+    def expose(self, release, state, tag=None):
+        payload = {'draft': False, 'body': self.body(state)}
+        if tag: payload['tag_name'] = tag
+        self.request('PATCH', '/releases/' + str(release['id']), payload)
 
 class Central:
     def __init__(self, transport, auth, wait=time.sleep, now=time.monotonic):
@@ -125,7 +128,7 @@ class Central:
                 if self.now() >= deadline: raise TimeoutError('Central payload propagation incomplete')
                 self.wait(15)
 
-def packages(transport, repository, username, token, directory, manifest):
+def packages(transport, repository, username, token, directory, manifest, wait=time.sleep, now=time.monotonic):
     auth = credential(username, token, 'Basic')
     base = 'https://maven.pkg.github.com/' + repository + '/'
     for name, meta in manifest['files'].items():
@@ -133,4 +136,12 @@ def packages(transport, repository, username, token, directory, manifest):
         url = base + quote(name.removeprefix('maven/'), safe='/')
         if not transport.matches(url, meta, auth):
             transport.upload('PUT', url, directory / name, auth)
-            if not transport.matches(url, meta, auth): raise ValueError('GitHub Packages payload not readable after upload')
+            deadline = now() + 60
+            matched = False
+            while now() < deadline:
+                if transport.matches(url, meta, auth):
+                    matched = True
+                    break
+                wait(2)
+            if not matched:
+                raise ValueError(f'GitHub Packages payload not readable after upload: {name}')

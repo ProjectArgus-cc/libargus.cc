@@ -313,5 +313,33 @@ class RecoveryTests(unittest.TestCase):
             def upload(self, *args): raise ConnectionError('incomplete upload')
         with self.assertRaises(ConnectionError):
             packages(HTTP(), 'a/b', 'user', 'token', Path('.'), {'files': {'maven/a.jar': {}}})
+    def test_packages_eventual_consistency_retry(self):
+        class HTTP:
+            def __init__(self):
+                self.calls = 0
+                self.uploaded = False
+            def matches(self, *args):
+                self.calls += 1
+                return self.uploaded and self.calls > 2
+            def upload(self, *args):
+                self.uploaded = True
+        waits = []
+        ticks = iter([0, 5, 10, 15, 20])
+        http = HTTP()
+        packages(http, 'a/b', 'user', 'token', Path('.'), {'files': {'maven/a.jar': {}}},
+                 wait=lambda s: waits.append(s), now=lambda: next(ticks))
+        self.assertTrue(http.uploaded)
+        self.assertEqual(waits, [2])
+    def test_release_matches_by_name_when_tag_is_synthetic(self):
+        class HTTP:
+            def request(self, method, url, auth=None, payload=None):
+                if method == 'GET' and '/releases?' in url:
+                    return [{'id': 42, 'name': 'v1.8.0', 'tag_name': 'untagged-abcdef123456',
+                             'draft': False, 'body': '<!-- argus-state ' + json.dumps({'candidate': SOURCE, 'source': SOURCE, 'central': 'PUBLISHED'}) + ' -->'}]
+                raise AssertionError(f'Unexpected call: {method} {url}')
+        github = GitHub(HTTP(), 'a/b', 'token')
+        release, state = github.release('v1.8.0', SOURCE, SOURCE)
+        self.assertEqual(release['id'], 42)
+        self.assertEqual(state['central'], 'PUBLISHED')
 
 if __name__ == '__main__': unittest.main()

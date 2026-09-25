@@ -47,7 +47,7 @@ def publish(directory, receipts, tag, source, state_path, deployment=None):
     state['central'] = 'PUBLISHED'; state['central_served_bytes'] = 'verified'; save()
     # Core publication can complete even if the separately reported secondary
     # destination fails. Its exception still fails the run and is resumable.
-    github.expose(release, state)
+    github.expose(release, state, tag=tag)
     try:
         packages(transport, repository, actor, token, directory, manifest)
         state['packages'] = 'verified'; save()
