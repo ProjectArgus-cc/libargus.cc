@@ -17,12 +17,20 @@ import java.util.concurrent.locks.ReentrantLock;
  * Extends {@link ArgusNativeResource} for thread-safe handle leasing and idempotent lifecycle management.
  */
 public final class ArgusContext extends ArgusNativeResource {
+    public static final int STATUS_SUCCESS = 0;
+    public static final int STATUS_ERROR = -1;
+    public static final int STATUS_CANCELLED = -2;
+    public static final int STATUS_ROLLBACK_FAILED = -3;
+
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
     private final Arena contextArena;
     private final MemorySegment samplerParamsSeg;
     private final ReentrantLock samplerLock = new ReentrantLock();
     private final ReentrantLock ttsLock = new ReentrantLock();
+
+    private final java.util.BitSet leasedSlots = new java.util.BitSet();
+    private final Object slotPoolLock = new Object();
 
     private MemorySegment ttsWorkspace = MemorySegment.NULL;
     private long ttsWorkspaceSizeFloats = 0;
@@ -41,6 +49,7 @@ public final class ArgusContext extends ArgusNativeResource {
         this.draftModelRef = draftModelRef;
         this.contextArena = Objects.requireNonNull(contextArena);
         this.samplerParamsSeg = contextArena.allocate(ArgusLayouts.SAMPLER_PARAMS);
+        this.leasedSlots.set(0); // Slot 0 is reserved as root sequence slot
     }
 
     @Override
@@ -689,17 +698,177 @@ public final class ArgusContext extends ArgusNativeResource {
      * @param seqId sequence ID (negative matches any sequence)
      * @param p0    start position (negative is [0, p1])
      * @param p1    end position (negative is [p0, inf))
+     * @return true if successfully cleared/pruned, false if rejected or invalid
      */
-    public void clearCacheSlot(int seqId, int p0, int p1) {
+    public boolean clearCacheSlot(int seqId, int p0, int p1) {
         MemorySegment ctxH = acquireReadLease();
         try {
-            ArgusBindings.argus_kv_cache_clear_slot.invokeExact(ctxH, seqId, p0, p1);
+            return (boolean) ArgusBindings.argus_kv_cache_clear_slot.invokeExact(ctxH, seqId, p0, p1);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to prune KV cache sequence slot", t);
         } finally {
             releaseReadLease();
         }
+    }
+
+    /**
+     * Copies all tokens and recurrent hidden states from a source sequence slot to a destination sequence slot,
+     * replicating the persistent sampler history and RNG distribution state machine.
+     *
+     * @param srcSeqId source sequence tracking ID
+     * @param dstSeqId destination sequence tracking ID
+     * @param p0       start position offset (negative is 0)
+     * @param p1       end position offset (negative is infinity)
+     * @return true on success, false on invalid parameters or architectural rejection
+     */
+    public boolean copySequenceSlot(int srcSeqId, int dstSeqId, int p0, int p1) {
+        ArgusValidation.checkNonNegative(srcSeqId, "srcSeqId");
+        ArgusValidation.checkNonNegative(dstSeqId, "dstSeqId");
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_kv_cache_seq_cp.invokeExact(ctxH, srcSeqId, dstSeqId, p0, p1);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to copy KV cache sequence slot", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Copies entire prefix sequence from source sequence slot to destination sequence slot [0, -1).
+     *
+     * @param srcSeqId source sequence tracking ID
+     * @param dstSeqId destination sequence tracking ID
+     * @return true on success, false on invalid parameters or architectural rejection
+     */
+    public boolean copySequenceSlot(int srcSeqId, int dstSeqId) {
+        return copySequenceSlot(srcSeqId, dstSeqId, 0, -1);
+    }
+
+    /**
+     * Checks whether the active KV cache memory supports position shifting (sliding window attention).
+     */
+    public boolean canShift() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_kv_cache_can_shift.invokeExact(ctxH);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query KV cache can_shift", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Queries the maximum number of sequence slots allocated for this execution context.
+     */
+    public int getSeqMax() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            return (int) ArgusBindings.argus_context_get_seq_max.invokeExact(ctxH);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query context seq_max", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Atomically leases an available sequence slot, copies the state from {@code srcSeqId}
+     * into the leased slot (including KV cache and persistent sampler history/RNG state),
+     * and returns the newly leased slot index.
+     *
+     * @param srcSeqId source sequence slot index to clone from (e.g. 0 for prompt template)
+     * @return leased sequence slot index
+     * @throws IllegalStateException if all allocated sequence slots are currently leased
+     */
+    public int forkSlot(int srcSeqId) {
+        ArgusValidation.checkNonNegative(srcSeqId, "srcSeqId");
+        int maxSlots = getSeqMax();
+        if (srcSeqId >= maxSlots) {
+            throw new IllegalArgumentException("srcSeqId " + srcSeqId + " exceeds max sequence slots " + maxSlots);
+        }
+        int leasedSlot;
+        synchronized (slotPoolLock) {
+            leasedSlot = -1;
+            for (int i = 1; i < maxSlots; i++) {
+                if (!leasedSlots.get(i)) {
+                    leasedSlot = i;
+                    leasedSlots.set(i);
+                    break;
+                }
+            }
+        }
+        if (leasedSlot < 0) {
+            throw new IllegalStateException("All " + maxSlots + " sequence slots are currently leased; increase cloneSlots in ArgusContextConfig");
+        }
+        boolean ok = copySequenceSlot(srcSeqId, leasedSlot);
+        if (!ok) {
+            synchronized (slotPoolLock) {
+                leasedSlots.clear(leasedSlot);
+            }
+            ArgusNativeException.throwLastError("forkSlot");
+        }
+        return leasedSlot;
+    }
+
+    /**
+     * Clears a previously leased sequence slot and returns it to the free slot pool.
+     *
+     * @param seqId sequence slot index to release
+     */
+    public void freeSlot(int seqId) {
+        ArgusValidation.checkNonNegative(seqId, "seqId");
+        if (seqId == 0) {
+            throw new IllegalArgumentException("Cannot free root sequence slot 0");
+        }
+        int maxSlots = getSeqMax();
+        if (seqId >= maxSlots) {
+            throw new IllegalArgumentException("seqId " + seqId + " exceeds max sequence slots " + maxSlots);
+        }
+        clearCacheSlot(seqId, 0, -1);
+        synchronized (slotPoolLock) {
+            leasedSlots.clear(seqId);
+        }
+    }
+
+    /**
+     * Returns the number of unleased sequence slots currently available for forking.
+     */
+    public int getAvailableSlotCount() {
+        int maxSlots = getSeqMax();
+        synchronized (slotPoolLock) {
+            int inUse = 0;
+            for (int i = 1; i < maxSlots; i++) {
+                if (leasedSlots.get(i)) inUse++;
+            }
+            return Math.max(0, (maxSlots - 1) - inUse);
+        }
+    }
+
+    /**
+     * Checks whether the underlying model uses a hybrid attention-recurrent architecture.
+     */
+    public boolean isHybrid() {
+        return modelRef.isHybrid();
+    }
+
+    /**
+     * Checks whether the underlying model uses a recurrent architecture.
+     */
+    public boolean isRecurrent() {
+        return modelRef.isRecurrent();
+    }
+
+    /**
+     * Checks whether the underlying model uses a diffusion architecture.
+     */
+    public boolean isDiffusion() {
+        return modelRef.isDiffusion();
     }
 
     /**

@@ -9,6 +9,17 @@ import java.lang.foreign.MemorySegment;
  * or sets a thread-local diagnostic error code.
  */
 public class ArgusNativeException extends RuntimeException {
+    public static final int ERROR_SUCCESS = 0;
+    public static final int ERROR_INVALID_ARGUMENT = 1;
+    public static final int ERROR_OUT_OF_MEMORY = 2;
+    public static final int ERROR_BACKEND = 3;
+    public static final int ERROR_MODEL_LOAD = 4;
+    public static final int ERROR_DECODE = 5;
+    public static final int ERROR_CANCELLED = 6;
+    public static final int ERROR_BUSY = 7;
+    public static final int ERROR_INTERNAL = 8;
+    public static final int ERROR_ROLLBACK_FAILED = 9;
+
     private final int errorCode;
 
     public ArgusNativeException(int errorCode, String message) {

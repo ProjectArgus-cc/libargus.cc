@@ -1,7 +1,7 @@
 /**
  * @file libargus.h
  * @brief Zero-allocation unified C API for Vision, Audio, Speech-to-Text, and LLM text generation.
- * @version 1.8.0
+ * @version 1.9.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -76,8 +76,14 @@ typedef enum argus_error_code {
     ARGUS_ERROR_DECODE           = 5,  /**< Compute graph evaluation failure */
     ARGUS_ERROR_CANCELLED        = 6,  /**< Evaluation was aborted via cancellation handle */
     ARGUS_ERROR_BUSY             = 7,  /**< Resource is currently locked or cannot be released */
-    ARGUS_ERROR_INTERNAL         = 8   /**< Uncaught native runtime error */
+    ARGUS_ERROR_INTERNAL         = 8,  /**< Uncaught native runtime error */
+    ARGUS_ERROR_ROLLBACK_FAILED  = 9   /**< KV cache sequence rollback rejected by model topology */
 } argus_error_code_t;
+
+#define ARGUS_DECODE_SUCCESS          0
+#define ARGUS_DECODE_ERROR           -1
+#define ARGUS_DECODE_CANCELLED       -2
+#define ARGUS_DECODE_ROLLBACK_FAILED -3
 
 /**
  * @brief Retrieves the last error code recorded on the calling thread.
@@ -438,6 +444,13 @@ ARGUS_API void argus_context_reset_perf(argus_context_t * ctx);
  */
 ARGUS_API bool argus_context_has_draft(const argus_context_t * ctx);
 
+/**
+ * @brief Queries the maximum number of sequence slots allocated for the execution context.
+ * @param ctx Target execution context.
+ * @return Number of allocated sequence slots, or -1 if context is invalid.
+ */
+ARGUS_API int32_t argus_context_get_seq_max(const argus_context_t * ctx);
+
 // =========================================================================
 // Native Atomic Cancellation Controls
 // =========================================================================
@@ -682,6 +695,27 @@ ARGUS_API int32_t argus_model_n_pos_per_embd(const argus_model_t * model);
 ARGUS_API bool argus_model_is_mrope(const argus_model_t * model);
 
 /**
+ * @brief Checks whether the loaded GGUF model uses a recurrent architecture (e.g. Mamba, RWKV).
+ * @param model Reference model weights handler.
+ * @return True if the model is recurrent, false otherwise.
+ */
+ARGUS_API bool argus_model_is_recurrent(const argus_model_t * model);
+
+/**
+ * @brief Checks whether the loaded GGUF model uses a hybrid attention-recurrent architecture (e.g. Qwen 3.5, Jamba, Granite).
+ * @param model Reference model weights handler.
+ * @return True if the model is hybrid, false otherwise.
+ */
+ARGUS_API bool argus_model_is_hybrid(const argus_model_t * model);
+
+/**
+ * @brief Checks whether the loaded GGUF model uses a diffusion architecture (e.g. LLaDA, Dream).
+ * @param model Reference model weights handler.
+ * @return True if the model is diffusion-based, false otherwise.
+ */
+ARGUS_API bool argus_model_is_diffusion(const argus_model_t * model);
+
+/**
  * @brief Retrieves total loaded memory size of model weights in bytes.
  * @param model Reference model weights handler.
  * @return Total weight footprint in bytes, or 0 on failure.
@@ -887,8 +921,30 @@ ARGUS_API int32_t argus_sampler_discard_pending(argus_context_t * ctx, int32_t s
  * @param seq_id Target sequence track context slot to alter.
  * @param p0 Starting position offset cell parameter (-1 represents infinite tracking boundary bounds).
  * @param p1 Terminating position offset cell parameter.
+ * @return True if the sequence was successfully cleared or pruned, false if rejected or invalid.
  */
-ARGUS_API void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
+ARGUS_API bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
+
+/**
+ * @brief Checks whether the active context KV cache memory supports position shifting (sliding window attention).
+ * @param ctx Reference execution context.
+ * @return True if the memory supports shifting, false otherwise.
+ */
+ARGUS_API bool argus_kv_cache_can_shift(const argus_context_t * ctx);
+
+/**
+ * @brief Copies all tokens that belong to a source sequence to a destination sequence.
+ * Synchronizes across speculative draft contexts if present and clones the persistent sampler
+ * state machine (penalty history, DRY suppression, and RNG continuity).
+ * This is a synchronized mutating context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id_src Source sequence slot.
+ * @param seq_id_dst Destination sequence slot.
+ * @param p0 Starting position offset cell parameter (-1 represents 0).
+ * @param p1 Terminating position offset cell parameter (-1 represents infinite).
+ * @return True on success, false on invalid arguments or failure.
+ */
+ARGUS_API bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t seq_id_dst, int32_t p0, int32_t p1);
 
 /**
  * @brief Queries the highest position offset currently allocated in the KV cache for a sequence slot.

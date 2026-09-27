@@ -8,12 +8,12 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.8.0 Release — Diagnostic Logging Redirection, Zero-Allocation Performance Telemetry & Hardware Graph Synchronization**
+> **v1.9.0 Release — Hybrid Recurrent Architecture Support, Zero-Rollback Slot Forking & Sampler Continuity**
 > 
-> * **Diagnostic Logging & Stderr Silencing:** Silences upstream `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd` logging by default (`ARGUS_LOG_WARN`) with lock-free atomic hot-path checks. Exposes `argus_set_log_level`, `argus_get_log_level`, and `argus_set_log_callback` with `thread_local` chunk continuation isolation (`ARGUS_LOG_CONT`) and environment variable overrides (`LIBARGUS_LOG_LEVEL`).
-> * **Zero-Allocation Programmatic Telemetry:** Exposes `argus_context_get_perf` and `argus_context_reset_perf` querying unmanaged `argus_perf_timings_t` (48 bytes, 8-byte aligned, 0 padding holes) with hardware graph synchronization (`llama_synchronize`) to eliminate timing log scraping.
-> * **Project Panama Upcall Delegation:** Routes native log events directly to Java handlers (`ArgusLogCallback`) via arena-managed Panama upcalls with native C++ exception barriers.
-> * **Context Execution Parameter Parity:** Enables upstream performance timing collection by defaulting `no_perf = false` across primary and speculative draft execution contexts.
+> * **Model Topology Introspection & Safe Rollbacks:** Adds unmanaged model topology detection (`isRecurrent()`, `isHybrid()`, `isDiffusion()`, `canShift()`) to prevent native $X < Y$ aborts on hybrid recurrent architectures (e.g. Qwen 2.5/3.5/3.8 27B `LLM_ARCH_QWEN35`, RWKV, Mamba). Signals rollback rejections cleanly via `STATUS_ROLLBACK_FAILED` (`-3`) and thread-local `ARGUS_ERROR_ROLLBACK_FAILED` (`9`) without corrupting sampler history.
+> * **Zero-Rollback Sequence Slot Forking:** Exposes `argus_kv_cache_seq_cp` and Panama FFM `copySequenceSlot` to duplicate KV cache states (primary and draft) with complete sampler state machine cloning (token history replay, DRY suppression, and RNG distribution continuity).
+> * **Zero-VRAM Dedicated Clone Slots & Pool Leasing:** Adds `.cloneSlots(int)` in `ArgusContextConfig.Builder` and dynamic context slot pool management (`forkSlot`, `freeSlot`, `getAvailableSlotCount`) in `ArgusContext`, leveraging `kv_unified = true` for zero additional VRAM allocation.
+> * **Strict Structural Validation:** Enforces non-negative bounds and sequence ceiling checks across slot copy, fork, and free operations to eliminate upstream `GGML_ASSERT` panics.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -32,14 +32,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.8.0</version>
+        <version>1.9.0</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.8.0</version>
+        <version>1.9.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -49,10 +49,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.8.0")
+    implementation("cc.projectargus:libargus-core:1.9.0")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.8.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.0")
 }
 ```
 
@@ -101,6 +101,8 @@ dependencies {
 *   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
 *   **M-RoPE & Multidimensional Rollback Synchronization:** Native detection and position tracking for Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE). Automatically handles multidimensional temporal/spatial position vectors with zero-allocation introspection (`nPosPerEmbd()`, `isMRoPE()`).
 *   **Automagic KV Cache Truncation & Prefix Rollback:** Automatically prunes invalidated KV cache cells on prefix reuse when `start_pos <= seq_pos_max`, establishing strict sequence monotonicity across 1D-RoPE and M-RoPE architectures with synchronized speculative draft context clearing.
+*   **Model Topology Introspection & Recurrent Safety:** Introspects recurrent, hybrid attention, and diffusion architectures natively (`isRecurrent`, `isHybrid`, `isDiffusion`, `canShift`) to prevent native $X < Y$ aborts, returning `STATUS_ROLLBACK_FAILED` cleanly while keeping sampler history uncorrupted.
+*   **Zero-Rollback Sequence Slot Forking & Sampler Continuity:** Clones KV cache states and active sampler distributions without partial cache rollback (`argus_kv_cache_seq_cp`, `copySequenceSlot`, `forkSlot`), enabling tree-search, speculative branching, and ReAct agent loops with zero additional VRAM overhead when `kv_unified = true`.
 *   **Diagnostic Logging & Zero-Overhead Redirection:** Silences upstream C++ `stderr` pollution by default (`ARGUS_LOG_WARN`) across `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd`. Features lock-free relaxed atomic hot-path checks, thread-local continuation tracking (`ARGUS_LOG_CONT`), environment variable overrides (`LIBARGUS_LOG_LEVEL`), and foreign callback exception barriers for user-defined and Panama upcall handlers.
 *   **Programmatic Performance Telemetry:** Exposes hardware- and scheduler-synchronized execution metrics (`argus_context_get_perf`, `argus_context_reset_perf`, `ArgusPerfTimings`) over a zero-implicit-padding 48-byte struct, eliminating terminal log scraping while capturing accurate prompt and generation timings and throughput rates.
 
@@ -535,6 +537,8 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **History Introspection** | Zero-allocation real-time queries for retained token count (primed + committed) and uncommitted sample status. | `argus_sampler_get_history_count()`, `argus_sampler_has_pending()` |
 | **Shared Projector Locking** | Native lock hierarchy acquires projector mutex then text context mutex through encoding and embedding consumption; independent projectors remain decoupled. | `argus_eval_multimodal_chunks()` |
 | **Direct FFM Segment Safety** | Preflight validation rejects closed, heap-backed, wrong-thread-confined, short, or misaligned memory segments before unmanaged downcalls. | `ArgusValidation` |
+| **Zero-Rollback Slot Forking** | KV cache replication combined with persistent sampler history replay and RNG distribution continuity across sequence tracks without native aborts. | `argus_kv_cache_seq_cp()`, `forkSlot()` |
+| **Atomic Rollback Error Signaling** | Rejects unsupported partial cache rollbacks on recurrent architectures, returning `-3` / `STATUS_ROLLBACK_FAILED` without desynchronizing sampler history. | `argus_decode_batch()`, `ARGUS_ERROR_ROLLBACK_FAILED` |
 | **Structured ABI Introspection**| Zero-allocation query of version, source revisions, compiler, CPU baseline, feature masks, and wire layout offsets without backend initialization. | `ArgusBackend.getBuildInfo()` |
 
 ---
@@ -616,6 +620,38 @@ context.clearCacheSlot(0, 128, -1);        // Synchronously clears primary & spe
 // 4. Automagic Prefix Rollback: Submitting a batch at start_pos <= seq_pos_max
 // automatically prunes [start_pos, -1) to guarantee monotonicity without manual clearing:
 int res = context.decodeBatch(newBranchTokens, branchLength, 128, 0, true);
+```
+
+### Zero-Rollback Sequence Slot Forking & Hybrid Recurrent Models
+
+Hybrid attention-recurrent architectures (such as Qwen 2.5/3.5/3.8 27B `LLM_ARCH_QWEN35`) do not support partial KV cache rollbacks ($X < Y$). `libargus` enables model topology introspection and sequence slot forking to explore divergent branches with zero additional VRAM overhead (`kv_unified = true`):
+
+```java
+// 1. Inspect model topology and KV shifting capabilities
+boolean isHybrid = model.isHybrid();       // true for hybrid recurrent architectures
+boolean canShift = context.canShift();     // true if KV cache supports sliding window shifting
+
+// 2. Configure dedicated clone slot headroom without eating into primary/draft slots
+ArgusContextConfig config = new ArgusContextConfig.Builder(4096)
+    .seqMax(1)
+    .cloneSlots(4)                         // Allocates 4 dedicated worker clone slots
+    .build();
+
+try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+    // 3. Prefill shared prompt template on root slot 0
+    ctx.decodeBatch(promptTokens, nPromptTokens, 0, 0, false);
+
+    // 4. Atomically lease an available clone slot and fork state (KV cache + sampler RNG)
+    int workerSlot = ctx.forkSlot(0);
+    System.out.println("Leased worker slot: " + workerSlot + " (" + ctx.getAvailableSlotCount() + " slots remaining)");
+
+    // 5. Decode divergent branch on worker slot; root slot 0 remains completely untouched
+    ctx.decodeBatch(branchTokens, branchLength, ctx.getSeqPosMax(0) + 1, workerSlot, true);
+    int sampledToken = ctx.sampleToken(workerSlot, samplerConfig);
+
+    // 6. Free the worker slot back to the available pool when finished
+    ctx.freeSlot(workerSlot);
+}
 ```
 
 ---

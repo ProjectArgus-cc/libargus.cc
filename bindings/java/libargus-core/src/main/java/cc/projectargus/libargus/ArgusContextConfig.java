@@ -1,5 +1,7 @@
 package cc.projectargus.libargus;
 
+import cc.projectargus.libargus.internal.ArgusValidation;
+
 /**
  * Configuration parameters for creating an active text generation context.
  *
@@ -112,6 +114,7 @@ public record ArgusContextConfig(
         private int specDraftNMax = 0;
         private int uBatch = 0;
         private int seqMax = 0;
+        private int cloneSlots = 0;
         private boolean enableDraftMtp = false;
         private boolean embeddings = false;
         private boolean kvUnified = true;
@@ -162,6 +165,18 @@ public record ArgusContextConfig(
             return this;
         }
 
+        /**
+         * Configures dedicated sequence slot headroom for prefix cloning / sequence forking.
+         * Ensures that worker clone slots do not eat into base or speculative draft slots.
+         *
+         * @param cloneSlots number of dedicated clone worker slots
+         */
+        public Builder cloneSlots(int cloneSlots) {
+            ArgusValidation.checkNonNegative(cloneSlots, "cloneSlots");
+            this.cloneSlots = cloneSlots;
+            return this;
+        }
+
         public Builder enableDraftMtp(boolean enableDraftMtp) {
             this.enableDraftMtp = enableDraftMtp;
             return this;
@@ -178,6 +193,12 @@ public record ArgusContextConfig(
         }
 
         public ArgusContextConfig build() {
+            int effectiveSeqMax = seqMax;
+            if (cloneSlots > 0) {
+                int baseRequired = (draftModel != null || specDraftNMax > 0 || enableDraftMtp) ? 4 : 1;
+                int base = seqMax > 0 ? seqMax : baseRequired;
+                effectiveSeqMax = base + cloneSlots;
+            }
             return new ArgusContextConfig(
                 draftModel,
                 contextLength,
@@ -186,7 +207,7 @@ public record ArgusContextConfig(
                 typeV,
                 specDraftNMax,
                 uBatch,
-                seqMax,
+                effectiveSeqMax,
                 enableDraftMtp,
                 embeddings,
                 kvUnified

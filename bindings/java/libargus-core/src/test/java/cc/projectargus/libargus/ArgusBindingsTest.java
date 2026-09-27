@@ -225,6 +225,19 @@ public class ArgusBindingsTest {
         assertTrue(config2.enableDraftMtp());
         assertTrue(config2.embeddings());
         assertFalse(config2.kvUnified());
+
+        ArgusContextConfig configClone = new ArgusContextConfig.Builder(1024)
+            .seqMax(2)
+            .cloneSlots(3)
+            .build();
+        assertEquals(5, configClone.seqMax());
+
+        ArgusContextConfig configDefaultClone = new ArgusContextConfig.Builder(1024)
+            .cloneSlots(2)
+            .build();
+        assertEquals(3, configDefaultClone.seqMax());
+
+        assertThrows(IllegalArgumentException.class, () -> new ArgusContextConfig.Builder().cloneSlots(-1));
     }
 
     @Test
@@ -392,11 +405,32 @@ public class ArgusBindingsTest {
             boolean isMRoPE = (boolean) ArgusBindings.argus_model_is_mrope.invokeExact(MemorySegment.NULL);
             assertFalse(isMRoPE);
 
+            boolean isRecurrent = (boolean) ArgusBindings.argus_model_is_recurrent.invokeExact(MemorySegment.NULL);
+            assertFalse(isRecurrent);
+
+            boolean isHybrid = (boolean) ArgusBindings.argus_model_is_hybrid.invokeExact(MemorySegment.NULL);
+            assertFalse(isHybrid);
+
+            boolean isDiffusion = (boolean) ArgusBindings.argus_model_is_diffusion.invokeExact(MemorySegment.NULL);
+            assertFalse(isDiffusion);
+
             int posMax = (int) ArgusBindings.argus_kv_cache_seq_pos_max.invokeExact(MemorySegment.NULL, 0);
             assertEquals(-1, posMax);
 
             int posMin = (int) ArgusBindings.argus_kv_cache_seq_pos_min.invokeExact(MemorySegment.NULL, 0);
             assertEquals(-1, posMin);
+
+            int seqMax = (int) ArgusBindings.argus_context_get_seq_max.invokeExact(MemorySegment.NULL);
+            assertEquals(-1, seqMax);
+
+            boolean canShift = (boolean) ArgusBindings.argus_kv_cache_can_shift.invokeExact(MemorySegment.NULL);
+            assertFalse(canShift);
+
+            boolean clearRes = (boolean) ArgusBindings.argus_kv_cache_clear_slot.invokeExact(MemorySegment.NULL, 0, 0, -1);
+            assertFalse(clearRes);
+
+            boolean cpRes = (boolean) ArgusBindings.argus_kv_cache_seq_cp.invokeExact(MemorySegment.NULL, 0, 1, 0, -1);
+            assertFalse(cpRes);
         } catch (Throwable t) {
             fail("Exception thrown in M-RoPE/KV cache position downcalls: " + t.getMessage());
         } finally {

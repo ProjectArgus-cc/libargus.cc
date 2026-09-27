@@ -83,6 +83,91 @@ class NativeSafetyTest {
         } finally { ArgusBackend.free(); }
     }
 
+    @Test
+    void testSequenceForkingAndSlotLeasingLifecycle() throws Exception {
+        ArgusBackend.init();
+        try (Arena setup = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(setup, modelPath(), 0, false)) {
+
+            // Topology queries on standard transformer architecture
+            assertFalse(model.isRecurrent());
+            assertFalse(model.isHybrid());
+            assertFalse(model.isDiffusion());
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(128)
+                .seqMax(1)
+                .cloneSlots(2)
+                .build();
+            assertEquals(3, config.seqMax());
+
+            try (ArgusContext ctx = ArgusContext.init(model, config)) {
+                assertEquals(3, ctx.getSeqMax());
+                assertTrue(ctx.canShift());
+                assertFalse(ctx.isRecurrent());
+                assertFalse(ctx.isHybrid());
+                assertFalse(ctx.isDiffusion());
+                assertEquals(2, ctx.getAvailableSlotCount());
+
+                // Prefill prompt on root slot 0
+                MemorySegment prompt = setup.allocateFrom(ValueLayout.JAVA_INT, 1, 4, 5);
+                assertEquals(0, ctx.decodeBatch(prompt, 3, 0, 0, false));
+                assertEquals(2, ctx.getSeqPosMax(0));
+                assertEquals(0, ctx.getSeqPosMin(0));
+
+                // Fork slot 0 into dedicated clone worker 1
+                int worker1 = ctx.forkSlot(0);
+                assertEquals(1, worker1);
+                assertEquals(1, ctx.getAvailableSlotCount());
+                assertEquals(2, ctx.getSeqPosMax(worker1));
+                assertEquals(0, ctx.getSeqPosMin(worker1));
+
+                // Decode token on worker1; verify position advances independently without mutating slot 0
+                MemorySegment tok1 = setup.allocateFrom(ValueLayout.JAVA_INT, 6);
+                assertEquals(0, ctx.decodeBatch(tok1, 1, 3, worker1, false));
+                assertEquals(3, ctx.getSeqPosMax(worker1));
+                assertEquals(2, ctx.getSeqPosMax(0));
+
+                // Fork slot 0 into dedicated clone worker 2
+                int worker2 = ctx.forkSlot(0);
+                assertEquals(2, worker2);
+                assertEquals(0, ctx.getAvailableSlotCount());
+                assertEquals(2, ctx.getSeqPosMax(worker2));
+
+                // Pool exhaustion throws IllegalStateException
+                assertThrows(IllegalStateException.class, () -> ctx.forkSlot(0));
+
+                // Free worker1 and verify slot is cleared
+                ctx.freeSlot(worker1);
+                assertEquals(1, ctx.getAvailableSlotCount());
+                assertEquals(-1, ctx.getSeqPosMax(worker1));
+
+                // Re-leasing slot succeeds and reuses worker1
+                int worker3 = ctx.forkSlot(worker2);
+                assertEquals(worker1, worker3);
+                assertEquals(0, ctx.getAvailableSlotCount());
+                assertEquals(2, ctx.getSeqPosMax(worker3));
+
+                // Bounds and invariant enforcement
+                assertThrows(IllegalArgumentException.class, () -> ctx.freeSlot(0));
+                assertThrows(IllegalArgumentException.class, () -> ctx.freeSlot(-1));
+                assertThrows(IllegalArgumentException.class, () -> ctx.freeSlot(99));
+                assertThrows(IllegalArgumentException.class, () -> ctx.forkSlot(99));
+                assertThrows(IllegalArgumentException.class, () -> ctx.forkSlot(-1));
+
+                // Direct slot copy bounds check returns false rather than native abort
+                assertFalse(ctx.copySequenceSlot(0, 99, 0, -1));
+                assertFalse(ctx.clearCacheSlot(99, 0, -1));
+                assertTrue(ctx.clearCacheSlot(worker2, 0, -1));
+
+                ctx.freeSlot(worker2);
+                ctx.freeSlot(worker3);
+                assertEquals(2, ctx.getAvailableSlotCount());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
     private static final class Gate {
         final CountDownLatch entered = new CountDownLatch(1), exit = new CountDownLatch(1);
         final AtomicReference<Throwable> failure = new AtomicReference<>();

@@ -349,6 +349,10 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_context_get_seq_max = bind("argus_context_get_seq_max",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
     public static final MethodHandle argus_context_get_perf = bind("argus_context_get_perf",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
@@ -452,6 +456,18 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_model_is_recurrent = bind("argus_model_is_recurrent",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_is_hybrid = bind("argus_model_is_hybrid",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_is_diffusion = bind("argus_model_is_diffusion",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
     public static final MethodHandle argus_model_size = bind("argus_model_size",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
@@ -534,7 +550,15 @@ public final class ArgusBindings {
     );
 
     public static final MethodHandle argus_kv_cache_clear_slot = bind("argus_kv_cache_clear_slot",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_kv_cache_can_shift = bind("argus_kv_cache_can_shift",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_kv_cache_seq_cp = bind("argus_kv_cache_seq_cp",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_kv_cache_seq_pos_max = bind("argus_kv_cache_seq_pos_max",

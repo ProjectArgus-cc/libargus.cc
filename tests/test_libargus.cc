@@ -315,6 +315,12 @@ int main(int argc, char ** argv) {
         ARGUS_CHECK(argus_model_n_layer(model) == 1);
         ARGUS_CHECK(argus_model_n_head(model) == 2);
         ARGUS_CHECK(argus_model_n_head_kv(model) == 2);
+        ARGUS_CHECK(argus_model_is_recurrent(model) == false);
+        ARGUS_CHECK(argus_model_is_hybrid(model) == false);
+        ARGUS_CHECK(argus_model_is_diffusion(model) == false);
+        ARGUS_CHECK(argus_model_is_recurrent(nullptr) == false);
+        ARGUS_CHECK(argus_model_is_hybrid(nullptr) == false);
+        ARGUS_CHECK(argus_model_is_diffusion(nullptr) == false);
 
         // 7.2. Draft Model Loading & Context Initialization
         argus_model_t * draft_model = argus_model_load(&mparams);
@@ -331,6 +337,10 @@ int main(int argc, char ** argv) {
         argus_context_t * ctx = argus_context_init(model, &cparams);
         ARGUS_CHECK(ctx != nullptr);
         ARGUS_CHECK(argus_context_has_draft(ctx) == true);
+        ARGUS_CHECK(argus_context_get_seq_max(ctx) == 2);
+        ARGUS_CHECK(argus_context_get_seq_max(nullptr) == -1);
+        ARGUS_CHECK(argus_kv_cache_can_shift(ctx) == true);
+        ARGUS_CHECK(argus_kv_cache_can_shift(nullptr) == false);
         ARGUS_CHECK(argus_context_get_model(ctx) == model);
         ARGUS_CHECK(argus_context_get_model(nullptr) == nullptr);
         std::cout << "  - Primary and Speculative Draft Context initialized." << std::endl;
@@ -422,10 +432,62 @@ int main(int argc, char ** argv) {
         // 7.7. Stale Logits Invalidation on KV Cache Mutation
         // Decode seq 0 with logits, then partially clear KV cache -> must invalidate logits (-2)
         ARGUS_CHECK(argus_decode_batch(ctx, &b_s0) == 0);
-        argus_kv_cache_clear_slot(ctx, 0, 1, -1);
+        ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 0, 1, -1) == true);
         int32_t mutated_sample = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
         ARGUS_CHECK(mutated_sample == -2);
         std::cout << "  - Stale logits invalidation verified: KV cache mutation invalidated pending logits (-2)." << std::endl;
+
+        // 7.7b. Sequence Slot Forking (seq_cp) & Sampler State Machine Cloning
+        {
+            // Decode prompt tokens on slot 0
+            int32_t fork_prompt[] = { 1, 4, 5, 6 };
+            argus_token_batch_t b_fork0 = {};
+            b_fork0.tokens = fork_prompt;
+            b_fork0.n_tokens = 4;
+            b_fork0.start_pos = 0;
+            b_fork0.seq_id = 0;
+            b_fork0.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_fork0) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == 3);
+
+            // Sample on slot 0 to populate history
+            int32_t s0_tok = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
+            ARGUS_CHECK(s0_tok >= 0);
+
+            // Fork slot 0 -> slot 1 (zero-rollback prefix cloning)
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 0, -1) == true);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == 3);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 1) == argus_sampler_get_history_count(ctx, 0));
+
+            // Continue decoding on slot 1 with a distinct token at pos 4
+            int32_t slot1_next[] = { 8 };
+            argus_token_batch_t b_fork1 = {};
+            b_fork1.tokens = slot1_next;
+            b_fork1.n_tokens = 1;
+            b_fork1.start_pos = 4;
+            b_fork1.seq_id = 1;
+            b_fork1.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_fork1) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == 4);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == 3); // slot 0 remains untouched
+
+            // Sampling on slot 1 succeeds with replicated sampler state
+            int32_t s1_tok = argus_sample_token_ext(ctx, 1, &sparams, nullptr, 0);
+            ARGUS_CHECK(s1_tok >= 0);
+
+            // Bounds safety validation (reject out of range without GGML_ASSERT abort)
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 99, 0, -1) == false);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 99, 1, 0, -1) == false);
+            ARGUS_CHECK(argus_kv_cache_seq_cp(nullptr, 0, 1, 0, -1) == false);
+
+            // Clean slot 1 and verify state reset
+            ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 1, 0, -1) == true);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == -1);
+            ARGUS_CHECK(argus_kv_cache_clear_slot(nullptr, 0, 0, -1) == false);
+            ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 99, 0, -1) == false);
+            std::cout << "  - Sequence slot forking (seq_cp) & sampler state replication verified successfully." << std::endl;
+        }
 
         // 7.8. Logit Steering Bias Enforcement
         int32_t steer_toks[] = { 1, 4 };

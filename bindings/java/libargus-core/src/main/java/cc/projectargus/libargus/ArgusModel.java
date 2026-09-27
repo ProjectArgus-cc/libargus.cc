@@ -444,6 +444,51 @@ public final class ArgusModel extends ArgusNativeResource {
     }
 
     /**
+     * Checks whether the loaded model uses a recurrent architecture (e.g. Mamba, RWKV).
+     */
+    public boolean isRecurrent() {
+        MemorySegment h = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_model_is_recurrent.invokeExact(h);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model is_recurrent", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Checks whether the loaded model uses a hybrid attention-recurrent architecture (e.g. Qwen 3.5, Jamba, Granite).
+     */
+    public boolean isHybrid() {
+        MemorySegment h = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_model_is_hybrid.invokeExact(h);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model is_hybrid", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Checks whether the loaded model uses a diffusion architecture (e.g. LLaDA, Dream).
+     */
+    public boolean isDiffusion() {
+        MemorySegment h = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_model_is_diffusion.invokeExact(h);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model is_diffusion", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
      * Returns the total memory size of model weights in bytes.
      */
     public long modelSize() {

@@ -488,6 +488,16 @@ bool argus_context_has_draft(const argus_context_t * ctx) {
     });
 }
 
+int32_t argus_context_get_seq_max(const argus_context_t * ctx) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_context_get_seq_max", [&]() -> int32_t {
+        if (!ctx) {
+            return -1;
+        }
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        return (int32_t)ctx->seq_samplers.size();
+    });
+}
+
 // =========================================================================
 // Tokenizer (Lock-Free, Read-Only Model Vocabulary Operations)
 // =========================================================================
@@ -663,6 +673,24 @@ bool argus_model_is_mrope(const argus_model_t * model) {
     });
 }
 
+bool argus_model_is_recurrent(const argus_model_t * model) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_model_is_recurrent", [&]() -> bool {
+        return (model && model->model) ? llama_model_is_recurrent(model->model) : false;
+    });
+}
+
+bool argus_model_is_hybrid(const argus_model_t * model) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_model_is_hybrid", [&]() -> bool {
+        return (model && model->model) ? llama_model_is_hybrid(model->model) : false;
+    });
+}
+
+bool argus_model_is_diffusion(const argus_model_t * model) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_model_is_diffusion", [&]() -> bool {
+        return (model && model->model) ? llama_model_is_diffusion(model->model) : false;
+    });
+}
+
 uint64_t argus_model_size(const argus_model_t * model) {
     return argus_guard(ARGUS_ERROR_INTERNAL, 0ULL, "argus_model_size", [&]() -> uint64_t {
         return model && model->model ? llama_model_size(model->model) : 0ULL;
@@ -756,18 +784,21 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 // Synchronized Context Operations
 // =========================================================================
 
-// Prunes invalidated KV cache tail if start_pos rolls back prior high-water mark
-static void prune_kv_cache_if_rollback(struct llama_context * lctx, int32_t seq_id, int32_t start_pos) {
+// Prunes invalidated KV cache tail if start_pos rolls back prior high-water mark.
+// Returns true if no rollback was needed or if llama_memory_seq_rm succeeded.
+// Returns false if sequence removal was rejected by the underlying memory module.
+static bool prune_kv_cache_if_rollback(struct llama_context * lctx, int32_t seq_id, int32_t start_pos) {
     if (!lctx) {
-        return;
+        return true;
     }
     llama_memory_t mem = llama_get_memory(lctx);
     if (mem) {
         llama_pos cur_max = llama_memory_seq_pos_max(mem, seq_id);
         if (cur_max >= 0 && start_pos <= cur_max) {
-            llama_memory_seq_rm(mem, seq_id, start_pos, -1);
+            return llama_memory_seq_rm(mem, seq_id, start_pos, -1);
         }
     }
+    return true;
 }
 
 // =========================================================================
@@ -1000,8 +1031,15 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
 
         if (is_kv_rollback) {
             // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
-            prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
-            prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+            bool prune_ok = prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
+            if (ctx->draft_ctx) {
+                prune_ok = prune_ok && prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+            }
+            if (!prune_ok) {
+                set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                    "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
+                return ARGUS_DECODE_ROLLBACK_FAILED;
+            }
 
             // Discard pending sample if targeted at or beyond rollback point
             bool pending_discarded = false;
@@ -1554,64 +1592,87 @@ int32_t argus_sampler_has_pending(const argus_context_t * ctx, int32_t seq_id) {
     return ctx->seq_samplers[seq_id].pending.valid ? 1 : 0;
 }
 
-void argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
-    if (!ctx) {
-        return;
-    }
+bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_kv_cache_clear_slot", [&]() -> bool {
+        if (!ctx) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context in argus_kv_cache_clear_slot");
+            return false;
+        }
 
-    std::lock_guard<std::mutex> lock(ctx->mtx);
+        std::lock_guard<std::mutex> lock(ctx->mtx);
 
-    // Direct binding route targeting unmanaged sequence tracking cells
-    if (ctx->ctx) {
-        llama_memory_seq_rm(llama_get_memory(ctx->ctx), seq_id, p0, p1);
-    }
-    if (ctx->draft_ctx) {
-        llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), seq_id, p0, p1);
-    }
+        if (seq_id >= (int32_t)ctx->seq_samplers.size()) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range in argus_kv_cache_clear_slot");
+            return false;
+        }
 
-    // Invalidate logits across sequence slots
-    invalidate_seq_logits(ctx, seq_id);
-
-    // Sequence-specific sampler reset / coordinate-linked pruning
-    if (seq_id < 0) {
-        for (auto & slot : ctx->seq_samplers) {
-            slot.history.clear();
-            slot.pending = {};
-            if (slot.chain) {
-                llama_sampler_reset(slot.chain);
+        bool ok = true;
+        if (ctx->ctx) {
+            llama_memory_t mem = llama_get_memory(ctx->ctx);
+            if (mem) {
+                ok = llama_memory_seq_rm(mem, seq_id, p0, p1);
             }
         }
-    } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
-        auto & slot = ctx->seq_samplers[seq_id];
-        if (p0 <= 0 && p1 < 0) {
-            // Full clear
-            slot.history.clear();
-            slot.pending = {};
-            if (slot.chain) {
-                llama_sampler_reset(slot.chain);
+        if (ctx->draft_ctx) {
+            llama_memory_t draft_mem = llama_get_memory(ctx->draft_ctx);
+            if (draft_mem) {
+                bool draft_ok = llama_memory_seq_rm(draft_mem, seq_id, p0, p1);
+                ok = ok && draft_ok;
             }
-        } else if (p0 >= 0) {
-            // Partial clear: prune entries where kv_pos >= p0 && (p1 < 0 || kv_pos < p1) && kv_pos >= 0
-            bool pending_discarded = false;
-            if (slot.pending.valid && slot.pending.kv_pos >= p0 && (p1 < 0 || slot.pending.kv_pos < p1)) {
+        }
+
+        if (!ok) {
+            set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                "KV cache sequence removal failed: partial rollback unsupported by model architecture");
+            return false;
+        }
+
+        // Invalidate logits across sequence slots
+        invalidate_seq_logits(ctx, seq_id);
+
+        // Sequence-specific sampler reset / coordinate-linked pruning
+        if (seq_id < 0) {
+            for (auto & slot : ctx->seq_samplers) {
+                slot.history.clear();
                 slot.pending = {};
-                pending_discarded = true;
-            }
-            bool history_pruned = false;
-            auto it = slot.history.begin();
-            while (it != slot.history.end()) {
-                if (it->kv_pos >= 0 && it->kv_pos >= p0 && (p1 < 0 || it->kv_pos < p1)) {
-                    it = slot.history.erase(it);
-                    history_pruned = true;
-                } else {
-                    ++it;
+                if (slot.chain) {
+                    llama_sampler_reset(slot.chain);
                 }
             }
-            if (history_pruned || pending_discarded) {
-                rebuild_slot_chain_preserving_rng(ctx, seq_id);
+        } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
+            auto & slot = ctx->seq_samplers[seq_id];
+            if (p0 <= 0 && p1 < 0) {
+                // Full clear
+                slot.history.clear();
+                slot.pending = {};
+                if (slot.chain) {
+                    llama_sampler_reset(slot.chain);
+                }
+            } else if (p0 >= 0) {
+                // Partial clear: prune entries where kv_pos >= p0 && (p1 < 0 || kv_pos < p1) && kv_pos >= 0
+                bool pending_discarded = false;
+                if (slot.pending.valid && slot.pending.kv_pos >= p0 && (p1 < 0 || slot.pending.kv_pos < p1)) {
+                    slot.pending = {};
+                    pending_discarded = true;
+                }
+                bool history_pruned = false;
+                auto it = slot.history.begin();
+                while (it != slot.history.end()) {
+                    if (it->kv_pos >= 0 && it->kv_pos >= p0 && (p1 < 0 || it->kv_pos < p1)) {
+                        it = slot.history.erase(it);
+                        history_pruned = true;
+                    } else {
+                        ++it;
+                    }
+                }
+                if (history_pruned || pending_discarded) {
+                    rebuild_slot_chain_preserving_rng(ctx, seq_id);
+                }
             }
         }
-    }
+
+        return true;
+    });
 }
 
 int32_t argus_kv_cache_seq_pos_max(const argus_context_t * ctx, int32_t seq_id) {
@@ -1633,6 +1694,116 @@ int32_t argus_kv_cache_seq_pos_min(const argus_context_t * ctx, int32_t seq_id) 
         std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
         llama_memory_t mem = llama_get_memory(ctx->ctx);
         return mem ? (int32_t)llama_memory_seq_pos_min(mem, seq_id) : -1;
+    });
+}
+
+bool argus_kv_cache_can_shift(const argus_context_t * ctx) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_kv_cache_can_shift", [&]() -> bool {
+        if (!ctx || !ctx->ctx) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        return mem ? llama_memory_can_shift(mem) : false;
+    });
+}
+
+bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t seq_id_dst, int32_t p0, int32_t p1) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_kv_cache_seq_cp", [&]() -> bool {
+        if (!ctx || !ctx->ctx) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context in argus_kv_cache_seq_cp");
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        int32_t seq_max = (int32_t)ctx->seq_samplers.size();
+        if (seq_id_src < 0 || seq_id_src >= seq_max || seq_id_dst < 0 || seq_id_dst >= seq_max) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range in argus_kv_cache_seq_cp");
+            return false;
+        }
+
+        if (seq_id_src == seq_id_dst) {
+            return true;
+        }
+
+        // Hybrid and recurrent models do not support partial sequence copies (p0 > 0)
+        if (ctx->model_ref && ctx->model_ref->model) {
+            if ((llama_model_is_hybrid(ctx->model_ref->model) || llama_model_is_recurrent(ctx->model_ref->model)) && p0 > 0) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
+                    "partial sequence copy with p0 > 0 unsupported on hybrid/recurrent architecture; copy must start at 0");
+                return false;
+            }
+        }
+
+        // Primary KV cache copy
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        if (mem) {
+            llama_memory_seq_cp(mem, seq_id_src, seq_id_dst, p0, p1);
+        }
+
+        // Speculative draft KV cache copy if active
+        if (ctx->draft_ctx) {
+            llama_memory_t draft_mem = llama_get_memory(ctx->draft_ctx);
+            if (draft_mem) {
+                llama_memory_seq_cp(draft_mem, seq_id_src, seq_id_dst, p0, p1);
+            }
+        }
+
+        // Invalidate destination logits
+        invalidate_seq_logits(ctx, seq_id_dst);
+
+        auto & slot_src = ctx->seq_samplers[seq_id_src];
+        auto & slot_dst = ctx->seq_samplers[seq_id_dst];
+
+        // Reset destination slot state
+        if (slot_dst.chain) {
+            llama_sampler_free(slot_dst.chain);
+            slot_dst.chain = nullptr;
+        }
+        slot_dst.history.clear();
+        slot_dst.pending = {};
+        slot_dst.has_logits = false;
+        slot_dst.last_logits_pos = -1;
+
+        // Clone sampler configuration from source slot
+        slot_dst.cached_sparams = slot_src.cached_sparams;
+        slot_dst.cached_biases = slot_src.cached_biases;
+        slot_dst.has_cached_chain = slot_src.has_cached_chain;
+
+        // Filter and copy history matching [p0, p1)
+        int32_t pos_start = (p0 < 0) ? 0 : p0;
+        int32_t pos_end = (p1 < 0) ? std::numeric_limits<int32_t>::max() : p1;
+
+        for (const auto & entry : slot_src.history) {
+            if (entry.kv_pos < 0 || (entry.kv_pos >= pos_start && entry.kv_pos < pos_end)) {
+                slot_dst.history.push_back(entry);
+            }
+        }
+
+        // Rebuild destination sampler chain, preserving RNG distribution state from source slot
+        if (slot_dst.has_cached_chain) {
+            struct llama_sampler * cloned_dist = nullptr;
+            if (slot_src.chain && slot_src.cached_sparams.temperature > 0.0f) {
+                cloned_dist = clone_active_dist_sampler(slot_src.chain);
+            }
+
+            slot_dst.chain = build_sampler_chain(
+                ctx,
+                &slot_dst.cached_sparams,
+                slot_dst.cached_biases.empty() ? nullptr : slot_dst.cached_biases.data(),
+                (int32_t)slot_dst.cached_biases.size(),
+                cloned_dist
+            );
+
+            if (slot_dst.chain && !slot_dst.history.empty()) {
+                for (const auto & entry : slot_dst.history) {
+                    llama_sampler_accept(slot_dst.chain, entry.token);
+                }
+            }
+        }
+
+        return true;
     });
 }
 
