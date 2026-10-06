@@ -31,6 +31,8 @@ public final class ArgusContext extends ArgusNativeResource {
 
     private final java.util.BitSet leasedSlots = new java.util.BitSet();
     private final Object slotPoolLock = new Object();
+    private final int cloneSlotStart;
+    private final int cloneSlotCount;
 
     private MemorySegment ttsWorkspace = MemorySegment.NULL;
     private long ttsWorkspaceSizeFloats = 0;
@@ -43,12 +45,16 @@ public final class ArgusContext extends ArgusNativeResource {
         return ttsWorkspaceSizeFloats;
     }
 
-    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, ArgusModel draftModelRef, Arena contextArena) {
+    private ArgusContext(MemorySegment ctxPtr, ArgusModel modelRef, ArgusModel draftModelRef, Arena contextArena, ArgusContextConfig config) {
         super(ctxPtr);
         this.modelRef = Objects.requireNonNull(modelRef);
         this.draftModelRef = draftModelRef;
         this.contextArena = Objects.requireNonNull(contextArena);
         this.samplerParamsSeg = contextArena.allocate(ArgusLayouts.SAMPLER_PARAMS);
+        int maxSlots = getSeqMax();
+        int configuredClone = (config != null) ? config.cloneSlots() : 0;
+        this.cloneSlotCount = Math.max(0, Math.min(configuredClone, maxSlots));
+        this.cloneSlotStart = Math.max(0, maxSlots - this.cloneSlotCount);
         this.leasedSlots.set(0); // Slot 0 is reserved as root sequence slot
     }
 
@@ -155,7 +161,7 @@ public final class ArgusContext extends ArgusNativeResource {
                     ArgusNativeException.throwLastError("argus_context_init");
                 }
                 try {
-                    return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena);
+                    return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena, config);
                 } catch (Throwable t) {
                     try {
                         ArgusBindings.argus_context_free.invokeExact(ctxPtr);
@@ -303,9 +309,13 @@ public final class ArgusContext extends ArgusNativeResource {
      * @param startPos      KV cache offset position
      * @param seqId         sequence tracking ID
      * @param requestLogits true to evaluate logits on the final token of the batch
-     * @param abortFlagSeg  optional memory segment (pointer targeting argus_abort_flag_t) for cancellation
+     * @param abortFlagSeg  raw memory segment targeting argus_abort_flag_t; caller is responsible
+     *                      for ensuring the underlying native struct remains valid for the downcall duration
      * @return 0 on success, -2 if aborted, non-zero on failure
+     * @deprecated Use {@link #decodeBatch(MemorySegment, int, int, int, boolean, ArgusAbortFlag)}
+     *             which enforces lease-managed lifetime safety.
      */
+    @Deprecated(since = "1.9.1")
     public int decodeBatch(MemorySegment tokensSeg, int nTokens, int startPos, int seqId, boolean requestLogits, MemorySegment abortFlagSeg) {
         Objects.requireNonNull(tokensSeg);
         Objects.requireNonNull(abortFlagSeg);
@@ -778,13 +788,14 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
-     * Atomically leases an available sequence slot, copies the state from {@code srcSeqId}
-     * into the leased slot (including KV cache and persistent sampler history/RNG state),
+     * Atomically leases an available sequence slot from the configured clone pool,
+     * copies the state from {@code srcSeqId} into the leased slot (including KV cache,
+     * persistent sampler history, pending sample state, and distribution RNG continuity),
      * and returns the newly leased slot index.
      *
      * @param srcSeqId source sequence slot index to clone from (e.g. 0 for prompt template)
      * @return leased sequence slot index
-     * @throws IllegalStateException if all allocated sequence slots are currently leased
+     * @throws IllegalStateException if the clone pool is unconfigured or all clone slots are leased
      */
     public int forkSlot(int srcSeqId) {
         ArgusValidation.checkNonNegative(srcSeqId, "srcSeqId");
@@ -792,10 +803,13 @@ public final class ArgusContext extends ArgusNativeResource {
         if (srcSeqId >= maxSlots) {
             throw new IllegalArgumentException("srcSeqId " + srcSeqId + " exceeds max sequence slots " + maxSlots);
         }
+        if (cloneSlotCount == 0) {
+            throw new IllegalStateException("Clone pool unconfigured (cloneSlots = 0); increase cloneSlots in ArgusContextConfig");
+        }
         int leasedSlot;
         synchronized (slotPoolLock) {
             leasedSlot = -1;
-            for (int i = 1; i < maxSlots; i++) {
+            for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
                 if (!leasedSlots.get(i)) {
                     leasedSlot = i;
                     leasedSlots.set(i);
@@ -804,33 +818,45 @@ public final class ArgusContext extends ArgusNativeResource {
             }
         }
         if (leasedSlot < 0) {
-            throw new IllegalStateException("All " + maxSlots + " sequence slots are currently leased; increase cloneSlots in ArgusContextConfig");
+            throw new IllegalStateException("All " + cloneSlotCount + " clone worker slots are currently leased; increase cloneSlots in ArgusContextConfig");
         }
-        boolean ok = copySequenceSlot(srcSeqId, leasedSlot);
-        if (!ok) {
-            synchronized (slotPoolLock) {
-                leasedSlots.clear(leasedSlot);
+        boolean success = false;
+        try {
+            boolean ok = copySequenceSlot(srcSeqId, leasedSlot);
+            if (!ok) {
+                ArgusNativeException.throwLastError("forkSlot");
             }
-            ArgusNativeException.throwLastError("forkSlot");
+            success = true;
+            return leasedSlot;
+        } finally {
+            if (!success) {
+                synchronized (slotPoolLock) {
+                    leasedSlots.clear(leasedSlot);
+                }
+            }
         }
-        return leasedSlot;
     }
 
     /**
-     * Clears a previously leased sequence slot and returns it to the free slot pool.
+     * Clears a previously leased clone sequence slot and returns it to the free slot pool.
      *
-     * @param seqId sequence slot index to release
+     * @param seqId sequence slot index to release (must belong to the configured clone pool)
      */
     public void freeSlot(int seqId) {
         ArgusValidation.checkNonNegative(seqId, "seqId");
-        if (seqId == 0) {
-            throw new IllegalArgumentException("Cannot free root sequence slot 0");
+        if (cloneSlotCount == 0 || seqId < cloneSlotStart || seqId >= cloneSlotStart + cloneSlotCount) {
+            throw new IllegalArgumentException("seqId " + seqId + " does not belong to the configured clone pool [" 
+                + cloneSlotStart + ", " + (cloneSlotStart + cloneSlotCount) + ")");
         }
-        int maxSlots = getSeqMax();
-        if (seqId >= maxSlots) {
-            throw new IllegalArgumentException("seqId " + seqId + " exceeds max sequence slots " + maxSlots);
+        synchronized (slotPoolLock) {
+            if (!leasedSlots.get(seqId)) {
+                throw new IllegalStateException("Slot " + seqId + " is not currently leased");
+            }
         }
-        clearCacheSlot(seqId, 0, -1);
+        boolean ok = clearCacheSlot(seqId, 0, -1);
+        if (!ok) {
+            ArgusNativeException.throwLastError("freeSlot");
+        }
         synchronized (slotPoolLock) {
             leasedSlots.clear(seqId);
         }
@@ -840,13 +866,15 @@ public final class ArgusContext extends ArgusNativeResource {
      * Returns the number of unleased sequence slots currently available for forking.
      */
     public int getAvailableSlotCount() {
-        int maxSlots = getSeqMax();
+        if (cloneSlotCount == 0) {
+            return 0;
+        }
         synchronized (slotPoolLock) {
             int inUse = 0;
-            for (int i = 1; i < maxSlots; i++) {
+            for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
                 if (leasedSlots.get(i)) inUse++;
             }
-            return Math.max(0, (maxSlots - 1) - inUse);
+            return Math.max(0, cloneSlotCount - inUse);
         }
     }
 

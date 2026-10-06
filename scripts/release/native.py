@@ -11,10 +11,11 @@ from catalog import ROOT, target
 from inventory import abi_header_digest, digest
 
 def validate_windows_dependencies(dependencies):
-    imported = '\n'.join(dependencies).upper()
-    forbidden_crt = ('MSVCP140.DLL', 'VCRUNTIME140.DLL', 'VCRUNTIME140_1.DLL')
-    if any(runtime in imported for runtime in forbidden_crt):
-        raise ValueError('Windows distribution library imports a host-provided MSVC runtime')
+    forbidden_pattern = re.compile(r'^(MSVCP|VCRUNTIME).*\.DLL$', re.IGNORECASE)
+    for dep in dependencies:
+        base = Path(dep).name
+        if forbidden_pattern.match(base):
+            raise ValueError(f'Windows distribution library imports a host-provided MSVC runtime: {base}')
 
 def architecture(path):
     with Path(path).open('rb') as f:

@@ -16,6 +16,7 @@ import cc.projectargus.libargus.internal.ArgusValidation;
  * @param enableDraftMtp   enable Multi-Token Prediction (MTP) draft head
  * @param embeddings       enable embeddings output
  * @param kvUnified        dynamic KV cache sharing across sequences
+ * @param cloneSlots       number of dedicated clone slots allocated for sequence forking
  */
 public record ArgusContextConfig(
     ArgusModel draftModel,
@@ -28,12 +29,32 @@ public record ArgusContextConfig(
     int seqMax,
     boolean enableDraftMtp,
     boolean embeddings,
-    boolean kvUnified
+    boolean kvUnified,
+    int cloneSlots
 ) {
     public static final int KV_TYPE_F16 = 0;
     public static final int KV_TYPE_Q8_0 = 8;
     public static final int KV_TYPE_Q4_0 = 2;
     public static final int KV_TYPE_Q4_1 = 3;
+
+    /**
+     * Backwards-compatible constructor without cloneSlots parameter.
+     */
+    public ArgusContextConfig(
+        ArgusModel draftModel,
+        int contextLength,
+        int cpuThreads,
+        int typeK,
+        int typeV,
+        int specDraftNMax,
+        int uBatch,
+        int seqMax,
+        boolean enableDraftMtp,
+        boolean embeddings,
+        boolean kvUnified
+    ) {
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, uBatch, seqMax, enableDraftMtp, embeddings, kvUnified, 0);
+    }
 
     /**
      * Backwards-compatible constructor without uBatch, seqMax, embeddings, or kvUnified parameters.
@@ -98,7 +119,8 @@ public record ArgusContextConfig(
             0,
             false,
             false,
-            true
+            true,
+            0
         );
     }
 
@@ -210,7 +232,8 @@ public record ArgusContextConfig(
                 effectiveSeqMax,
                 enableDraftMtp,
                 embeddings,
-                kvUnified
+                kvUnified,
+                cloneSlots
             );
         }
     }

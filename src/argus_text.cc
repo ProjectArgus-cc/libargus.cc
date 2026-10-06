@@ -1019,9 +1019,6 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
             return -1;
         }
 
-        // Invalidate existing pending logits prior to state mutation
-        invalidate_seq_logits(ctx, seq_id);
-
         // Query current max position in sequence to determine if a true KV rollback occurs
         llama_memory_t mem = llama_get_memory(ctx->ctx);
         llama_pos cur_max = mem ? llama_memory_seq_pos_max(mem, seq_id) : -1;
@@ -1030,16 +1027,38 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         auto & slot = ctx->seq_samplers[seq_id];
 
         if (is_kv_rollback) {
-            // Automagically prune invalidated KV cache tail across BOTH primary and speculative draft contexts
-            bool prune_ok = prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
-            if (ctx->draft_ctx) {
-                prune_ok = prune_ok && prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+            // Capability Preflight: Partial rollback (start_pos > 0) is fundamentally unsupported
+            // on recurrent or hybrid architectures. If either primary or draft model is recurrent/hybrid,
+            // or cannot shift, fail fast immediately before mutating any cache or state.
+            if (batch_payload->start_pos > 0) {
+                bool primary_unsupported = ctx->model_ref && ctx->model_ref->model &&
+                    (llama_model_is_recurrent(ctx->model_ref->model) || llama_model_is_hybrid(ctx->model_ref->model));
+                bool draft_unsupported = ctx->draft_ctx && ctx->draft_model_ref && ctx->draft_model_ref->model &&
+                    (llama_model_is_recurrent(ctx->draft_model_ref->model) || llama_model_is_hybrid(ctx->draft_model_ref->model));
+                if (primary_unsupported || draft_unsupported) {
+                    set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                        "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
+                    return ARGUS_DECODE_ROLLBACK_FAILED;
+                }
             }
+
+            // Ordered execution: if draft context is present, prune draft first
+            bool prune_ok = true;
+            if (ctx->draft_ctx) {
+                prune_ok = prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, batch_payload->start_pos);
+            }
+            if (prune_ok) {
+                prune_ok = prune_kv_cache_if_rollback(ctx->ctx, seq_id, batch_payload->start_pos);
+            }
+
             if (!prune_ok) {
                 set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
                     "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
                 return ARGUS_DECODE_ROLLBACK_FAILED;
             }
+
+            // Rollback confirmed successful: invalidate logits and prune state
+            invalidate_seq_logits(ctx, seq_id);
 
             // Discard pending sample if targeted at or beyond rollback point
             bool pending_discarded = false;
@@ -1103,6 +1122,9 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         bool is_matching_continuation = slot.pending.valid &&
             (batch_payload->start_pos == slot.pending.kv_pos && batch_payload->tokens[0] == slot.pending.token);
         bool is_mismatched_override = slot.pending.valid && !is_matching_continuation;
+
+        // Invalidate previous logits prior to forward token evaluation
+        invalidate_seq_logits(ctx, seq_id);
 
         int32_t n_decoded = 0;
         int32_t res = decode_tokens_chunked(
@@ -1170,30 +1192,40 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
 }
 
 int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats) {
-    if (!ctx || !out_embeddings || max_floats <= 0) {
-        return -1;
-    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_get_embeddings", [&]() -> int32_t {
+        if (!ctx || !ctx->ctx || !out_embeddings || max_floats <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid context, output buffer, or buffer capacity in argus_get_embeddings");
+            return -1;
+        }
 
-    std::lock_guard<std::mutex> lock(ctx->mtx);
+        std::lock_guard<std::mutex> lock(ctx->mtx);
 
-    float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
-    if (!embd) {
-        embd = llama_get_embeddings_ith(ctx->ctx, -1);
-    }
-    if (!embd) {
-        embd = llama_get_embeddings(ctx->ctx);
-    }
-    if (!embd) {
-        return -1;
-    }
+        if (!ctx->model_ref || !ctx->model_ref->model) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null model reference in argus_get_embeddings");
+            return -1;
+        }
 
-    int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
-    if (n_embd > max_floats) {
-        return -2;
-    }
+        float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
+        if (!embd) {
+            embd = llama_get_embeddings_ith(ctx->ctx, -1);
+        }
+        if (!embd) {
+            embd = llama_get_embeddings(ctx->ctx);
+        }
+        if (!embd) {
+            set_last_error(ARGUS_ERROR_INTERNAL, "no embeddings available for sequence in argus_get_embeddings");
+            return -1;
+        }
 
-    std::memcpy(out_embeddings, embd, n_embd * sizeof(float));
-    return n_embd;
+        int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
+        if (n_embd > max_floats) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "output buffer too small for embeddings in argus_get_embeddings");
+            return -2;
+        }
+
+        std::memcpy(out_embeddings, embd, n_embd * sizeof(float));
+        return n_embd;
+    });
 }
 
 // =========================================================================
@@ -1606,18 +1638,34 @@ bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
             return false;
         }
 
-        bool ok = true;
-        if (ctx->ctx) {
-            llama_memory_t mem = llama_get_memory(ctx->ctx);
-            if (mem) {
-                ok = llama_memory_seq_rm(mem, seq_id, p0, p1);
+        // Preflight: partial sequence removal on recurrent or hybrid architectures is fundamentally unsupported
+        if (p0 > 0 || p1 >= 0) {
+            bool primary_unsupported = (ctx->model_ref && ctx->model_ref->model &&
+                (llama_model_is_recurrent(ctx->model_ref->model) || llama_model_is_hybrid(ctx->model_ref->model)));
+            bool draft_unsupported = false;
+            if (ctx->draft_ctx && ctx->draft_model_ref && ctx->draft_model_ref->model) {
+                draft_unsupported = llama_model_is_recurrent(ctx->draft_model_ref->model) ||
+                                    llama_model_is_hybrid(ctx->draft_model_ref->model);
+            }
+            if (primary_unsupported || draft_unsupported) {
+                set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                    "KV cache sequence removal failed: partial rollback unsupported by model architecture");
+                return false;
             }
         }
+
+        bool ok = true;
+        // Ordered execution: draft context first
         if (ctx->draft_ctx) {
             llama_memory_t draft_mem = llama_get_memory(ctx->draft_ctx);
             if (draft_mem) {
-                bool draft_ok = llama_memory_seq_rm(draft_mem, seq_id, p0, p1);
-                ok = ok && draft_ok;
+                ok = llama_memory_seq_rm(draft_mem, seq_id, p0, p1);
+            }
+        }
+        if (ok && ctx->ctx) {
+            llama_memory_t mem = llama_get_memory(ctx->ctx);
+            if (mem) {
+                ok = llama_memory_seq_rm(mem, seq_id, p0, p1);
             }
         }
 
@@ -1727,26 +1775,40 @@ bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t se
             return true;
         }
 
-        // Hybrid and recurrent models do not support partial sequence copies (p0 > 0)
+        // Sequence copying is an atomic full logical snapshot operation: require p0 <= 0 and p1 < 0
+        if (p0 > 0 || p1 >= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
+                "partial sequence copy unsupported; sequence copy must be a full snapshot (p0 <= 0, p1 < 0)");
+            return false;
+        }
+
+        // Model architecture capability validation across primary and draft models
         if (ctx->model_ref && ctx->model_ref->model) {
-            if ((llama_model_is_hybrid(ctx->model_ref->model) || llama_model_is_recurrent(ctx->model_ref->model)) && p0 > 0) {
-                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
-                    "partial sequence copy with p0 > 0 unsupported on hybrid/recurrent architecture; copy must start at 0");
+            if (llama_model_is_diffusion(ctx->model_ref->model)) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence copy unsupported on diffusion architecture");
+                return false;
+            }
+        }
+        if (ctx->draft_model_ref && ctx->draft_model_ref->model) {
+            if (llama_model_is_diffusion(ctx->draft_model_ref->model)) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence copy unsupported on draft diffusion architecture");
                 return false;
             }
         }
 
-        // Primary KV cache copy
+        // Pre-clear destination KV cache before copying to prevent stale high-water cells from lingering
         llama_memory_t mem = llama_get_memory(ctx->ctx);
         if (mem) {
-            llama_memory_seq_cp(mem, seq_id_src, seq_id_dst, p0, p1);
+            llama_memory_seq_rm(mem, seq_id_dst, 0, -1);
+            llama_memory_seq_cp(mem, seq_id_src, seq_id_dst, 0, -1);
         }
 
         // Speculative draft KV cache copy if active
         if (ctx->draft_ctx) {
             llama_memory_t draft_mem = llama_get_memory(ctx->draft_ctx);
             if (draft_mem) {
-                llama_memory_seq_cp(draft_mem, seq_id_src, seq_id_dst, p0, p1);
+                llama_memory_seq_rm(draft_mem, seq_id_dst, 0, -1);
+                llama_memory_seq_cp(draft_mem, seq_id_src, seq_id_dst, 0, -1);
             }
         }
 
@@ -1761,8 +1823,6 @@ bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t se
             llama_sampler_free(slot_dst.chain);
             slot_dst.chain = nullptr;
         }
-        slot_dst.history.clear();
-        slot_dst.pending = {};
         slot_dst.has_logits = false;
         slot_dst.last_logits_pos = -1;
 
@@ -1771,15 +1831,11 @@ bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t se
         slot_dst.cached_biases = slot_src.cached_biases;
         slot_dst.has_cached_chain = slot_src.has_cached_chain;
 
-        // Filter and copy history matching [p0, p1)
-        int32_t pos_start = (p0 < 0) ? 0 : p0;
-        int32_t pos_end = (p1 < 0) ? std::numeric_limits<int32_t>::max() : p1;
+        // Full committed history copy
+        slot_dst.history = slot_src.history;
 
-        for (const auto & entry : slot_src.history) {
-            if (entry.kv_pos < 0 || (entry.kv_pos >= pos_start && entry.kv_pos < pos_end)) {
-                slot_dst.history.push_back(entry);
-            }
-        }
+        // Exact pending-state replication: preserve pending sample metadata alongside cloned RNG
+        slot_dst.pending = slot_src.pending;
 
         // Rebuild destination sampler chain, preserving RNG distribution state from source slot
         if (slot_dst.has_cached_chain) {
@@ -1800,6 +1856,9 @@ bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t se
                 for (const auto & entry : slot_dst.history) {
                     llama_sampler_accept(slot_dst.chain, entry.token);
                 }
+            }
+            if (slot_dst.chain && slot_dst.pending.valid) {
+                llama_sampler_accept(slot_dst.chain, slot_dst.pending.token);
             }
         }
 

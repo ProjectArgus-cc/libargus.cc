@@ -1,5 +1,5 @@
 # libargus
-## An unmanaged, zero-allocation native AI execution runtime consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
+## An unmanaged native AI execution runtime engineered for zero-allocation steady-state inference, consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
 
 [![Release Pipeline](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
@@ -8,12 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.9.0 Release — Hybrid Recurrent Architecture Support, Zero-Rollback Slot Forking & Sampler Continuity**
+> **v1.9.1 Release — Branch-State and Rollback Hardening, Clone-Pool Isolation & Foreign Concurrency Safety**
 > 
-> * **Model Topology Introspection & Safe Rollbacks:** Adds unmanaged model topology detection (`isRecurrent()`, `isHybrid()`, `isDiffusion()`, `canShift()`) to prevent native $X < Y$ aborts on hybrid recurrent architectures (e.g. Qwen 2.5/3.5/3.8 27B `LLM_ARCH_QWEN35`, RWKV, Mamba). Signals rollback rejections cleanly via `STATUS_ROLLBACK_FAILED` (`-3`) and thread-local `ARGUS_ERROR_ROLLBACK_FAILED` (`9`) without corrupting sampler history.
-> * **Zero-Rollback Sequence Slot Forking:** Exposes `argus_kv_cache_seq_cp` and Panama FFM `copySequenceSlot` to duplicate KV cache states (primary and draft) with complete sampler state machine cloning (token history replay, DRY suppression, and RNG distribution continuity).
-> * **Zero-VRAM Dedicated Clone Slots & Pool Leasing:** Adds `.cloneSlots(int)` in `ArgusContextConfig.Builder` and dynamic context slot pool management (`forkSlot`, `freeSlot`, `getAvailableSlotCount`) in `ArgusContext`, leveraging `kv_unified = true` for zero additional VRAM allocation.
-> * **Strict Structural Validation:** Enforces non-negative bounds and sequence ceiling checks across slot copy, fork, and free operations to eliminate upstream `GGML_ASSERT` panics.
+> * **Dedicated Clone-Pool Partitioning & Isolation:** Enforces strict $[B, B + C)$ slot boundaries (`cloneSlots(int)`) so worker forks never consume base or speculative draft sequence slots, backed by exception-safe lease recovery.
+> * **Canonical Snapshot & Pending-Token Cloning:** Implements exact snapshot replication across KV cache, committed history, pending sample tokens, sampler filters, and distribution RNG continuity, enforcing atomic full-prefix copying ($p0 \le 0 \land p1 < 0$).
+> * **Two-Phase Transactional Rollback:** Preflights memory topology capabilities and orders execution across draft and primary contexts, guaranteeing zero state mutation on rejected rollbacks or sequence removals.
+> * **Lock-Free Foreign Log Dispatch:** Eliminates callback lock-inversion deadlock hazards by snapshotting registrations and dispatching foreign callbacks outside internal mutex locks.
+> * **C ABI Exception Barriers & Multi-Modal Concurrency:** Protects `argus_get_embeddings()` with structured diagnostic boundaries and serializes multimodal tokenization with projector execution locks.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -32,14 +33,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.9.0</version>
+        <version>1.9.1</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.9.0</version>
+        <version>1.9.1</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -49,10 +50,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.9.0")
+    implementation("cc.projectargus:libargus-core:1.9.1")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.1")
 }
 ```
 
@@ -93,7 +94,7 @@ dependencies {
 *   **Persistent Sampler & Sequence Isolation:** Caches unmanaged sampler chains per sequence slot, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes while retaining reusable sampler state. Reconfiguration, rollback and upstream execution can allocate.
 *   **Deterministic Stochastic Seeding & RNG Continuity:** Exposes 32-bit RNG seeds with seamless state preservation across parameter and logit bias mutations alongside temperature, top-p, min-p, top-k, repetition, frequency, presence, and DRY penalty hyperparameter envelopes.
 *   **Coordinate-Decoupled Priming & Lifecycle:** Supports explicit priming (`primeSampler`) of penalty histories with tagged coordinate tracking to guide generation without polluting KV caches, alongside instant slot resets (`resetSampler`) and rollback replays (`truncateSampler`).
-*   **Speculative & MTP Acceleration:** Incorporates native verification loops for traditional speculative drafting and Multi-Token Prediction (`draft-mtp`) directly inside the C++ execution layer with lockstep KV cache synchronization.
+*   **Speculative & MTP Acceleration:** Provides synchronized dual-context plumbing (primary and speculative draft KV synchronization, rollback, and thread scaling) alongside Multi-Token Prediction (`draft-mtp`) acceleration directly inside the C++ execution layer.
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.

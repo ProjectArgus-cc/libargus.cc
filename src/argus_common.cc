@@ -141,32 +141,49 @@ static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const ch
         }
     }
 
-    // Message passed threshold: serialize emission to prevent torn formatting or multi-threaded callback races
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    auto cb = g_log_callback.load(std::memory_order_acquire);
-    auto ud = g_log_user_data.load(std::memory_order_acquire);
+    // Thread-local recursion barrier prevents unbounded nested callback loops
+    static thread_local bool tl_in_logging = false;
+    if (tl_in_logging) {
+        return;
+    }
+
+    argus_log_callback_t cb = nullptr;
+    void * ud = nullptr;
+
+    {
+        // Snapshot callback registration under mutex, or emit to stderr under lock
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        cb = g_log_callback.load(std::memory_order_acquire);
+        ud = g_log_user_data.load(std::memory_order_acquire);
+        if (!cb) {
+            if (mapped_level != ARGUS_LOG_CONT && g_stderr_needs_newline) {
+                std::fputc('\n', stderr);
+                g_stderr_needs_newline = false;
+            }
+            std::fputs(text, stderr);
+            size_t len = std::strlen(text);
+            if (len > 0) {
+                if ((mapped_level == ARGUS_LOG_WARN || mapped_level == ARGUS_LOG_ERROR) && text[len - 1] != '\n') {
+                    std::fputc('\n', stderr);
+                    g_stderr_needs_newline = false;
+                } else {
+                    g_stderr_needs_newline = (text[len - 1] != '\n');
+                }
+            }
+            std::fflush(stderr);
+            return;
+        }
+    }
+
+    // Invoke user callback OUTSIDE g_log_mutex to eliminate lock-inversion deadlocks
     if (cb) {
+        tl_in_logging = true;
         try {
             cb(mapped_level, text, ud);
         } catch (...) {
             // Foreign exception barrier
         }
-    } else {
-        if (mapped_level != ARGUS_LOG_CONT && g_stderr_needs_newline) {
-            std::fputc('\n', stderr);
-            g_stderr_needs_newline = false;
-        }
-        std::fputs(text, stderr);
-        size_t len = std::strlen(text);
-        if (len > 0) {
-            if ((mapped_level == ARGUS_LOG_WARN || mapped_level == ARGUS_LOG_ERROR) && text[len - 1] != '\n') {
-                std::fputc('\n', stderr);
-                g_stderr_needs_newline = false;
-            } else {
-                g_stderr_needs_newline = (text[len - 1] != '\n');
-            }
-        }
-        std::fflush(stderr);
+        tl_in_logging = false;
     }
 }
 

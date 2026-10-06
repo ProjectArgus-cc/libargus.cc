@@ -162,6 +162,91 @@ class NativeSafetyTest {
                 ctx.freeSlot(worker2);
                 ctx.freeSlot(worker3);
                 assertEquals(2, ctx.getAvailableSlotCount());
+
+                // Double free is rejected with IllegalStateException
+                assertThrows(IllegalStateException.class, () -> ctx.freeSlot(worker2));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    void testClonePoolPartitioningAndBoundaryEnforcement() throws Exception {
+        ArgusBackend.init();
+        try (Arena setup = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(setup, modelPath(), 0, false)) {
+
+            // Configuration: 2 base slots, 3 dedicated clone slots -> total 5 slots
+            ArgusContextConfig config = new ArgusContextConfig.Builder(128)
+                .seqMax(2)
+                .cloneSlots(3)
+                .build();
+            assertEquals(5, config.seqMax());
+            assertEquals(3, config.cloneSlots());
+
+            try (ArgusContext ctx = ArgusContext.init(model, config)) {
+                assertEquals(5, ctx.getSeqMax());
+                // Initially exactly 3 clone slots are available (slots 2, 3, 4)
+                assertEquals(3, ctx.getAvailableSlotCount());
+
+                // Prefill prompt on root slot 0
+                MemorySegment prompt = setup.allocateFrom(ValueLayout.JAVA_INT, 1, 2, 3);
+                assertEquals(0, ctx.decodeBatch(prompt, 3, 0, 0, false));
+
+                // First fork must lease slot 2 (preserving base slots 0 and 1)
+                int fork1 = ctx.forkSlot(0);
+                assertEquals(2, fork1);
+                assertEquals(2, ctx.getAvailableSlotCount());
+
+                // Second fork must lease slot 3
+                int fork2 = ctx.forkSlot(0);
+                assertEquals(3, fork2);
+                assertEquals(1, ctx.getAvailableSlotCount());
+
+                // Third fork must lease slot 4
+                int fork3 = ctx.forkSlot(0);
+                assertEquals(4, fork3);
+                assertEquals(0, ctx.getAvailableSlotCount());
+
+                // Fourth fork fails with pool exhaustion (base slots 0 and 1 are protected)
+                assertThrows(IllegalStateException.class, () -> ctx.forkSlot(0));
+
+                // Cannot free base slot 0 or base slot 1
+                assertThrows(IllegalArgumentException.class, () -> ctx.freeSlot(0));
+                assertThrows(IllegalArgumentException.class, () -> ctx.freeSlot(1));
+
+                // Free slot 3 (fork2)
+                ctx.freeSlot(fork2);
+                assertEquals(1, ctx.getAvailableSlotCount());
+
+                // Double-free is rejected
+                assertThrows(IllegalStateException.class, () -> ctx.freeSlot(fork2));
+
+                // Re-leasing uses slot 3
+                int fork4 = ctx.forkSlot(0);
+                assertEquals(3, fork4);
+                assertEquals(0, ctx.getAvailableSlotCount());
+
+                ctx.freeSlot(fork1);
+                ctx.freeSlot(fork3);
+                ctx.freeSlot(fork4);
+                assertEquals(3, ctx.getAvailableSlotCount());
+            }
+
+            // Zero cloneSlots configuration
+            ArgusContextConfig zeroCloneConfig = new ArgusContextConfig.Builder(128)
+                .seqMax(2)
+                .cloneSlots(0)
+                .build();
+            assertEquals(2, zeroCloneConfig.seqMax());
+            assertEquals(0, zeroCloneConfig.cloneSlots());
+
+            try (ArgusContext ctxZero = ArgusContext.init(model, zeroCloneConfig)) {
+                assertEquals(0, ctxZero.getAvailableSlotCount());
+                assertThrows(IllegalStateException.class, () -> ctxZero.forkSlot(0));
+                assertThrows(IllegalArgumentException.class, () -> ctxZero.freeSlot(0));
+                assertThrows(IllegalArgumentException.class, () -> ctxZero.freeSlot(1));
             }
         } finally {
             ArgusBackend.free();

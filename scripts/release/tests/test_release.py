@@ -141,7 +141,7 @@ class ContractTests(unittest.TestCase):
 
     def test_windows_native_rejects_host_cpp_runtime_dependency(self):
         validate_windows_dependencies(['KERNEL32.dll', 'VCOMP140.DLL'])
-        for runtime in ('MSVCP140.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.DLL'):
+        for runtime in ('MSVCP140.dll', 'VCRUNTIME140.dll', 'vcruntime140_1.DLL', 'MSVCP120.DLL', 'vcruntime140_clr0400.dll'):
             with self.assertRaisesRegex(ValueError, 'host-provided MSVC runtime'):
                 validate_windows_dependencies(['KERNEL32.dll', runtime])
 

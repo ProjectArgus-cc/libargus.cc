@@ -131,7 +131,28 @@ int main(int argc, char ** argv) {
     // Reset callback and restore level
     argus_set_log_callback(nullptr, nullptr);
     argus_set_log_level(orig_level);
-    std::cout << "  - Diagnostic logging and callback assertions verified successfully." << std::endl;
+
+    // Reentrancy verification: callback mutating log configuration must not deadlock
+    std::atomic<bool> reentrant_invoked{false};
+    argus_set_log_callback([](argus_log_level_t, const char *, void * user_data) {
+        auto * invoked = static_cast<std::atomic<bool> *>(user_data);
+        if (!invoked->exchange(true)) {
+            // Reentrant downcalls from inside foreign callback handler
+            argus_set_log_level(ARGUS_LOG_INFO);
+            argus_set_log_callback(nullptr, nullptr);
+        }
+    }, &reentrant_invoked);
+
+    argus_set_log_level(ARGUS_LOG_DEBUG);
+    argus_model_params_t bad_params_reentrant = {};
+    bad_params_reentrant.model_path = "non_existent_reentrant_test.gguf";
+    argus_model_t * bad_reentrant = argus_model_load(&bad_params_reentrant);
+    ARGUS_CHECK(bad_reentrant == nullptr);
+    ARGUS_CHECK(reentrant_invoked.load() == true);
+    argus_set_log_callback(nullptr, nullptr);
+    argus_set_log_level(orig_level);
+
+    std::cout << "  - Diagnostic logging, callback assertions & reentrancy verified successfully." << std::endl;
 
     // 3. Test model loading with empty params to verify error pathways
     std::cout << "[Test] Verifying model load handling with null input..." << std::endl;
@@ -450,14 +471,23 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_decode_batch(ctx, &b_fork0) == 0);
             ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == 3);
 
-            // Sample on slot 0 to populate history
+            // Sample on slot 0 to populate history and leave token pending
             int32_t s0_tok = argus_sample_token_ext(ctx, 0, &sparams, nullptr, 0);
             ARGUS_CHECK(s0_tok >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
 
-            // Fork slot 0 -> slot 1 (zero-rollback prefix cloning)
+            // Bounds safety validation: reject partial copies (p0 > 0 or p1 >= 0)
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 1, -1) == false);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 0, 2) == false);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // Fork slot 0 -> slot 1 (canonical full snapshot)
             ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 0, -1) == true);
             ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == 3);
             ARGUS_CHECK(argus_sampler_get_history_count(ctx, 1) == argus_sampler_get_history_count(ctx, 0));
+            // Exact pending-token snapshot verification
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 1) == 1);
 
             // Continue decoding on slot 1 with a distinct token at pos 4
             int32_t slot1_next[] = { 8 };
@@ -475,6 +505,20 @@ int main(int argc, char ** argv) {
             int32_t s1_tok = argus_sample_token_ext(ctx, 1, &sparams, nullptr, 0);
             ARGUS_CHECK(s1_tok >= 0);
 
+            // Pre-clearing verification: advance slot 1 further, then re-copy slot 0 (pos max 3) to slot 1
+            int32_t extra_tok[] = { 9 };
+            argus_token_batch_t b_extra = {};
+            b_extra.tokens = extra_tok;
+            b_extra.n_tokens = 1;
+            b_extra.start_pos = 5;
+            b_extra.seq_id = 1;
+            b_extra.request_logits = false;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_extra) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == 5);
+            // Copy slot 0 -> slot 1; pre-clear must ensure slot 1 max pos resets to slot 0's max pos (3)
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 0, -1) == true);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == 3);
+
             // Bounds safety validation (reject out of range without GGML_ASSERT abort)
             ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 99, 0, -1) == false);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
@@ -486,7 +530,21 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 1) == -1);
             ARGUS_CHECK(argus_kv_cache_clear_slot(nullptr, 0, 0, -1) == false);
             ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 99, 0, -1) == false);
-            std::cout << "  - Sequence slot forking (seq_cp) & sampler state replication verified successfully." << std::endl;
+            std::cout << "  - Sequence slot forking (seq_cp), pending-state replication & pre-clearing verified successfully." << std::endl;
+        }
+
+        // Test argus_get_embeddings exception guard and argument validation
+        {
+            float emb_buf[16];
+            ARGUS_CHECK(argus_get_embeddings(nullptr, 0, emb_buf, 16) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_get_embeddings(ctx, 0, nullptr, 16) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_get_embeddings(ctx, 0, emb_buf, -1) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_get_embeddings(ctx, 0, emb_buf, 0) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            std::cout << "  - Embeddings exception barrier and argument validation verified successfully." << std::endl;
         }
 
         // 7.8. Logit Steering Bias Enforcement

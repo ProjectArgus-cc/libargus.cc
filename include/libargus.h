@@ -933,15 +933,17 @@ ARGUS_API bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, 
 ARGUS_API bool argus_kv_cache_can_shift(const argus_context_t * ctx);
 
 /**
- * @brief Copies all tokens that belong to a source sequence to a destination sequence.
+ * @brief Copies all tokens that belong to a source sequence to a destination sequence as a full snapshot.
  * Synchronizes across speculative draft contexts if present and clones the persistent sampler
- * state machine (penalty history, DRY suppression, and RNG continuity).
+ * state machine (penalty history, DRY suppression, pending sample state, and RNG continuity).
+ * Sequence copying is an atomic full-snapshot operation: p0 must be <= 0 and p1 must be < 0.
+ * Partial range copies return false with ARGUS_ERROR_INVALID_ARGUMENT.
  * This is a synchronized mutating context operation.
  * @param ctx Reference execution context.
  * @param seq_id_src Source sequence slot.
  * @param seq_id_dst Destination sequence slot.
- * @param p0 Starting position offset cell parameter (-1 represents 0).
- * @param p1 Terminating position offset cell parameter (-1 represents infinite).
+ * @param p0 Starting position offset parameter (must be <= 0 for full snapshot).
+ * @param p1 Terminating position offset parameter (must be < 0 for full snapshot).
  * @return True on success, false on invalid arguments or failure.
  */
 ARGUS_API bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t seq_id_dst, int32_t p0, int32_t p1);

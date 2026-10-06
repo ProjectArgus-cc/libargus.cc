@@ -231,11 +231,13 @@ public class ArgusBindingsTest {
             .cloneSlots(3)
             .build();
         assertEquals(5, configClone.seqMax());
+        assertEquals(3, configClone.cloneSlots());
 
         ArgusContextConfig configDefaultClone = new ArgusContextConfig.Builder(1024)
             .cloneSlots(2)
             .build();
         assertEquals(3, configDefaultClone.seqMax());
+        assertEquals(2, configDefaultClone.cloneSlots());
 
         assertThrows(IllegalArgumentException.class, () -> new ArgusContextConfig.Builder().cloneSlots(-1));
     }

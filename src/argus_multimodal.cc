@@ -426,6 +426,8 @@ int32_t argus_multimodal_tokenize_n(
             mtmd_bitmaps[i] = reinterpret_cast<const mtmd_bitmap*>(bitmaps[i]);
         }
 
+        // Serialize tokenization with projector execution
+        auto projector_lock = argus_execution_lock(mctx->execution_mutex, mctx, 1);
         return mtmd_tokenize(mctx->ctx, output->chunks, &input_text, mtmd_bitmaps.data(), (size_t)n_bitmaps);
     } catch (const std::bad_alloc & e) {
         set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
