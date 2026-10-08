@@ -311,6 +311,14 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_log_in_flight_count = bind("argus_log_in_flight_count",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT)
+    );
+
+    public static final MethodHandle argus_test_emit_log = bind("argus_test_emit_log",
+        FunctionDescriptor.ofVoid(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
     // Text Models
     public static final MethodHandle argus_model_load = bind("argus_model_load",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)

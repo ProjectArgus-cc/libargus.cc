@@ -253,6 +253,101 @@ class NativeSafetyTest {
         }
     }
 
+    @Test
+    void testConcurrentDoubleFreeSlot() throws Exception {
+        ArgusBackend.init();
+        try (Arena setup = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(setup, modelPath(), 0, false)) {
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(128)
+                .seqMax(2)
+                .cloneSlots(2)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(model, config)) {
+                // Fork slot
+                int slot = ctx.forkSlot(0);
+                assertEquals(1, ctx.getAvailableSlotCount());
+
+                CyclicBarrier barrier = new CyclicBarrier(2);
+                java.util.concurrent.atomic.AtomicInteger successes = new java.util.concurrent.atomic.AtomicInteger(0);
+                java.util.concurrent.atomic.AtomicInteger illegalStateFailures = new java.util.concurrent.atomic.AtomicInteger(0);
+                java.util.concurrent.atomic.AtomicReference<Throwable> otherFailure = new java.util.concurrent.atomic.AtomicReference<>();
+
+                Runnable task = () -> {
+                    try {
+                        barrier.await();
+                        ctx.freeSlot(slot);
+                        successes.incrementAndGet();
+                    } catch (IllegalStateException e) {
+                        illegalStateFailures.incrementAndGet();
+                    } catch (Throwable t) {
+                        otherFailure.set(t);
+                    }
+                };
+
+                Thread t1 = new Thread(task);
+                Thread t2 = new Thread(task);
+                t1.start();
+                t2.start();
+                t1.join(5000);
+                t2.join(5000);
+
+                assertNull(otherFailure.get(), "Unexpected exception during concurrent freeSlot");
+                assertEquals(1, successes.get(), "Exactly one thread must succeed in freeing the slot");
+                assertEquals(1, illegalStateFailures.get(), "The other thread must fail with IllegalStateException");
+                assertEquals(2, ctx.getAvailableSlotCount(), "Available slot count must be restored to 2");
+
+                // Further free must fail deterministically
+                assertThrows(IllegalStateException.class, () -> ctx.freeSlot(slot));
+
+                // Slot is re-usable
+                int reLeased = ctx.forkSlot(0);
+                assertEquals(slot, reLeased);
+                assertEquals(1, ctx.getAvailableSlotCount());
+                ctx.freeSlot(reLeased);
+                assertEquals(2, ctx.getAvailableSlotCount());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    void testArgusContextConfigDirectConstructorValidation() {
+        // seqMax <= cloneSlots when cloneSlots > 0 must be rejected
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, 2, false, false, true, 3)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, 0, false, false, true, 1)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, 1, false, false, true, 1)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, -1, false, false, true, 0)
+        );
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, 4, false, false, true, -1)
+        );
+
+        // Valid direct construction must succeed
+        ArgusContextConfig valid = new ArgusContextConfig(null, 2048, 4, 0, 0, 0, 0, 5, false, false, true, 3);
+        assertEquals(5, valid.seqMax());
+        assertEquals(3, valid.cloneSlots());
+    }
+
+    @Test
+    void testArgusContextConfigBuilderOverflow() {
+        assertThrows(IllegalArgumentException.class, () ->
+            new ArgusContextConfig.Builder(2048)
+                .seqMax(Integer.MAX_VALUE - 1)
+                .cloneSlots(5)
+                .build()
+        );
+    }
+
     private static final class Gate {
         final CountDownLatch entered = new CountDownLatch(1), exit = new CountDownLatch(1);
         final AtomicReference<Throwable> failure = new AtomicReference<>();

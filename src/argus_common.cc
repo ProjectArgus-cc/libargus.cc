@@ -103,6 +103,7 @@ static std::atomic<argus_log_level_t>    g_log_level{ARGUS_LOG_WARN};
 static std::atomic<bool>                 g_log_level_explicit{false};
 static std::atomic<argus_log_callback_t> g_log_callback{nullptr};
 static std::atomic<void *>               g_log_user_data{nullptr};
+static std::atomic<int32_t>              g_log_in_flight{0};
 static std::mutex                        g_log_mutex;
 static bool                              g_stderr_needs_newline{false};
 
@@ -173,6 +174,7 @@ static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const ch
             std::fflush(stderr);
             return;
         }
+        g_log_in_flight.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Invoke user callback OUTSIDE g_log_mutex to eliminate lock-inversion deadlocks
@@ -184,6 +186,7 @@ static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const ch
             // Foreign exception barrier
         }
         tl_in_logging = false;
+        g_log_in_flight.fetch_sub(1, std::memory_order_release);
     }
 }
 
@@ -444,6 +447,14 @@ ARGUS_API void argus_set_log_callback(argus_log_callback_t callback, void * user
     g_stderr_needs_newline = false;
     g_log_user_data.store(user_data, std::memory_order_release);
     g_log_callback.store(callback, std::memory_order_release);
+}
+
+ARGUS_API int32_t argus_log_in_flight_count(void) {
+    return g_log_in_flight.load(std::memory_order_acquire);
+}
+
+ARGUS_API void argus_test_emit_log(int32_t ggml_level, const char * text) {
+    argus_internal_log_dispatch((enum ggml_log_level)ggml_level, text ? text : "", nullptr);
 }
 
 } // extern "C"

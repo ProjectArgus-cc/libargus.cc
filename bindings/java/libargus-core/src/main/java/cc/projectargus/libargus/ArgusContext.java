@@ -30,6 +30,7 @@ public final class ArgusContext extends ArgusNativeResource {
     private final ReentrantLock ttsLock = new ReentrantLock();
 
     private final java.util.BitSet leasedSlots = new java.util.BitSet();
+    private final java.util.BitSet releasingSlots = new java.util.BitSet();
     private final Object slotPoolLock = new Object();
     private final int cloneSlotStart;
     private final int cloneSlotCount;
@@ -810,7 +811,7 @@ public final class ArgusContext extends ArgusNativeResource {
         synchronized (slotPoolLock) {
             leasedSlot = -1;
             for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
-                if (!leasedSlots.get(i)) {
+                if (!leasedSlots.get(i) && !releasingSlots.get(i)) {
                     leasedSlot = i;
                     leasedSlots.set(i);
                     break;
@@ -849,16 +850,26 @@ public final class ArgusContext extends ArgusNativeResource {
                 + cloneSlotStart + ", " + (cloneSlotStart + cloneSlotCount) + ")");
         }
         synchronized (slotPoolLock) {
-            if (!leasedSlots.get(seqId)) {
-                throw new IllegalStateException("Slot " + seqId + " is not currently leased");
+            if (!leasedSlots.get(seqId) || releasingSlots.get(seqId)) {
+                throw new IllegalStateException("Slot " + seqId + " is not currently leased or is already being released");
             }
+            releasingSlots.set(seqId);
         }
-        boolean ok = clearCacheSlot(seqId, 0, -1);
-        if (!ok) {
-            ArgusNativeException.throwLastError("freeSlot");
-        }
-        synchronized (slotPoolLock) {
-            leasedSlots.clear(seqId);
+        boolean ok = false;
+        try {
+            ok = clearCacheSlot(seqId, 0, -1);
+            if (!ok) {
+                ArgusNativeException.throwLastError("freeSlot");
+            }
+        } finally {
+            synchronized (slotPoolLock) {
+                if (ok) {
+                    leasedSlots.clear(seqId);
+                    releasingSlots.clear(seqId);
+                } else {
+                    releasingSlots.clear(seqId);
+                }
+            }
         }
     }
 
@@ -872,7 +883,7 @@ public final class ArgusContext extends ArgusNativeResource {
         synchronized (slotPoolLock) {
             int inUse = 0;
             for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
-                if (leasedSlots.get(i)) inUse++;
+                if (leasedSlots.get(i) || releasingSlots.get(i)) inUse++;
             }
             return Math.max(0, cloneSlotCount - inUse);
         }

@@ -533,6 +533,81 @@ int main(int argc, char ** argv) {
             std::cout << "  - Sequence slot forking (seq_cp), pending-state replication & pre-clearing verified successfully." << std::endl;
         }
 
+        // 7.7b. Exact Stochastic Fork Continuation Verification
+        {
+            // Reset both slots to clean baseline
+            ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 0, 0, -1) == true);
+            ARGUS_CHECK(argus_kv_cache_clear_slot(ctx, 1, 0, -1) == true);
+            argus_sampler_reset(ctx, 0);
+            argus_sampler_reset(ctx, 1);
+
+            int32_t init_prompt[] = { 1, 4, 5, 6 };
+            argus_token_batch_t b_init = {};
+            b_init.tokens = init_prompt;
+            b_init.n_tokens = 4;
+            b_init.start_pos = 0;
+            b_init.seq_id = 0;
+            b_init.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(ctx, &b_init) == 0);
+
+            argus_sampler_params_t stoch_sparams = {};
+            stoch_sparams.temperature = 0.85f;
+            stoch_sparams.top_k = 15;
+            stoch_sparams.top_p = 0.90f;
+            stoch_sparams.repeat_penalty = 1.15f;
+            stoch_sparams.repeat_last_n = 16;
+            stoch_sparams.seed = 9999U;
+
+            // Sample token on slot 0 and leave it pending
+            int32_t pend_t = argus_sample_token_ext(ctx, 0, &stoch_sparams, nullptr, 0);
+            ARGUS_CHECK(pend_t >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == 1);
+
+            // Fork slot 0 -> slot 1
+            ARGUS_CHECK(argus_kv_cache_seq_cp(ctx, 0, 1, 0, -1) == true);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 1) == 1);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == argus_sampler_get_history_count(ctx, 1));
+
+            // Advance both branches identically over multiple steps and assert exact stochastic equivalence
+            int32_t cur_pos = 4;
+            int32_t next_t0 = pend_t;
+            int32_t next_t1 = pend_t;
+
+            for (int step = 0; step < 4; ++step) {
+                // Decode token into slot 0 with logits, then sample immediately
+                argus_token_batch_t b0 = {};
+                b0.tokens = &next_t0;
+                b0.n_tokens = 1;
+                b0.start_pos = cur_pos;
+                b0.seq_id = 0;
+                b0.request_logits = true;
+                ARGUS_CHECK(argus_decode_batch(ctx, &b0) == 0);
+
+                int32_t s0_step_tok = argus_sample_token_ext(ctx, 0, &stoch_sparams, nullptr, 0);
+                ARGUS_CHECK(s0_step_tok >= 0);
+
+                // Decode token into slot 1 with logits, then sample immediately
+                argus_token_batch_t b1 = {};
+                b1.tokens = &next_t1;
+                b1.n_tokens = 1;
+                b1.start_pos = cur_pos;
+                b1.seq_id = 1;
+                b1.request_logits = true;
+                ARGUS_CHECK(argus_decode_batch(ctx, &b1) == 0);
+
+                int32_t s1_step_tok = argus_sample_token_ext(ctx, 1, &stoch_sparams, nullptr, 0);
+                ARGUS_CHECK(s1_step_tok >= 0);
+
+                // Both forks must yield bit-for-bit identical stochastic output
+                ARGUS_CHECK(s0_step_tok == s1_step_tok);
+
+                next_t0 = s0_step_tok;
+                next_t1 = s1_step_tok;
+                cur_pos++;
+            }
+            std::cout << "  - Exact stochastic fork continuation verified across 4 iterations." << std::endl;
+        }
+
         // Test argus_get_embeddings exception guard and argument validation
         {
             float emb_buf[16];
@@ -739,6 +814,40 @@ int main(int argc, char ** argv) {
         // Rollback replacement tokens (2 tokens) are committed to history and accepted by sampler.
         ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 8); // 6 primed + 2 replacement tokens
         std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved & replacement tokens committed)." << std::endl;
+
+        // 7.12b. Failed Rollback Rejection Atomicity & Zero-Mutation Invariant
+        {
+            // Snapshot current state before failed rollback
+            int32_t pos_max_before = argus_kv_cache_seq_pos_max(ctx, 0);
+            int32_t pos_min_before = argus_kv_cache_seq_pos_min(ctx, 0);
+            int32_t hist_count_before = argus_sampler_get_history_count(ctx, 0);
+            int32_t has_pending_before = argus_sampler_has_pending(ctx, 0);
+
+            // Trigger forced rollback failure
+            argus_test_set_force_rollback_fail(true);
+
+            int32_t bad_branch[] = { 30, 31 };
+            argus_token_batch_t b_fail = {};
+            b_fail.tokens = bad_branch;
+            b_fail.n_tokens = 2;
+            b_fail.start_pos = 1; // Attempt partial rollback to pos 1
+            b_fail.seq_id = 0;
+            b_fail.request_logits = true;
+
+            int32_t res_fail = argus_decode_batch(ctx, &b_fail);
+            ARGUS_CHECK(res_fail == ARGUS_DECODE_ROLLBACK_FAILED);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_ROLLBACK_FAILED);
+
+            // Restore normal operation
+            argus_test_set_force_rollback_fail(false);
+
+            // Assert exact state preservation (0 mutations across KV cache, history, and pending token)
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == pos_max_before);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_min(ctx, 0) == pos_min_before);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == hist_count_before);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == has_pending_before);
+            std::cout << "  - Failed rollback rejection verified: 100% zero-mutation atomicity preserved." << std::endl;
+        }
 
         // 7.13. Transactional Decode Cancellation & Retry Invariant
         {

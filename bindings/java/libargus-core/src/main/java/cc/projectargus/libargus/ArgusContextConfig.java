@@ -32,6 +32,16 @@ public record ArgusContextConfig(
     boolean kvUnified,
     int cloneSlots
 ) {
+    public ArgusContextConfig {
+        ArgusValidation.checkNonNegative(seqMax, "seqMax");
+        ArgusValidation.checkNonNegative(cloneSlots, "cloneSlots");
+        if (cloneSlots > 0 && seqMax <= cloneSlots) {
+            throw new IllegalArgumentException(
+                "seqMax (" + seqMax + ") must exceed cloneSlots (" + cloneSlots + ") to reserve at least one base slot"
+            );
+        }
+    }
+
     public static final int KV_TYPE_F16 = 0;
     public static final int KV_TYPE_Q8_0 = 8;
     public static final int KV_TYPE_Q4_0 = 2;
@@ -219,7 +229,11 @@ public record ArgusContextConfig(
             if (cloneSlots > 0) {
                 int baseRequired = (draftModel != null || specDraftNMax > 0 || enableDraftMtp) ? 4 : 1;
                 int base = seqMax > 0 ? seqMax : baseRequired;
-                effectiveSeqMax = base + cloneSlots;
+                try {
+                    effectiveSeqMax = Math.addExact(base, cloneSlots);
+                } catch (ArithmeticException e) {
+                    throw new IllegalArgumentException("Integer overflow calculating effective seqMax (base=" + base + ", cloneSlots=" + cloneSlots + ")", e);
+                }
             }
             return new ArgusContextConfig(
                 draftModel,

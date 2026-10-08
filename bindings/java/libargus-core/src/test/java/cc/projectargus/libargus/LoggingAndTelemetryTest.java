@@ -7,6 +7,7 @@ import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import cc.projectargus.libargus.internal.ArgusBindings;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingAndTelemetryTest {
@@ -136,4 +137,95 @@ class LoggingAndTelemetryTest {
             ArgusBackend.setLogLevel(initial);
         }
     }
+
+    @Test
+    void testLogCallbackConcurrentReplacementAndStress() throws Exception {
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+            java.util.concurrent.atomic.AtomicInteger logCountA = new java.util.concurrent.atomic.AtomicInteger(0);
+            java.util.concurrent.atomic.AtomicInteger logCountB = new java.util.concurrent.atomic.AtomicInteger(0);
+            java.util.concurrent.atomic.AtomicInteger logCountC = new java.util.concurrent.atomic.AtomicInteger(0);
+            java.util.concurrent.atomic.AtomicReference<Throwable> workerError = new java.util.concurrent.atomic.AtomicReference<>();
+
+            ArgusLogCallback cbA = (level, msg) -> logCountA.incrementAndGet();
+            ArgusLogCallback cbB = (level, msg) -> logCountB.incrementAndGet();
+            ArgusLogCallback cbC = (level, msg) -> logCountC.incrementAndGet();
+
+            Thread loggerThread = new Thread(() -> {
+                try (Arena local = Arena.ofConfined()) {
+                    MemorySegment textSeg = local.allocateFrom("Worker stress log line\n");
+                    while (running.get()) {
+                        ArgusBindings.argus_test_emit_log.invokeExact(1, textSeg);
+                    }
+                } catch (Throwable t) {
+                    workerError.set(t);
+                }
+            });
+
+            loggerThread.start();
+
+            // Rapidly swap callbacks across thousands of iterations
+            for (int i = 0; i < 2000; i++) {
+                ArgusBackend.setLogCallback(cbA);
+                ArgusBackend.setLogCallback(cbB);
+                ArgusBackend.setLogCallback(null);
+                ArgusBackend.setLogCallback(cbC);
+                ArgusBackend.setLogCallback(null);
+            }
+
+            running.set(false);
+            loggerThread.join(5000);
+            assertFalse(loggerThread.isAlive(), "Logger thread should terminate cleanly");
+            assertNull(workerError.get(), "Worker thread encountered an exception");
+
+            // Final quiet check: ensure arenas drain safely once in_flight is 0
+            ArgusBackend.setLogCallback(null);
+            ArgusBackend.drainRetiredCallbackArenas();
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "All retired arenas should drain after quiescence");
+        } finally {
+            ArgusBackend.setLogCallback(null);
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testReentrantCallbackReplacement() throws Throwable {
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            java.util.concurrent.atomic.AtomicInteger countA = new java.util.concurrent.atomic.AtomicInteger(0);
+            java.util.concurrent.atomic.AtomicInteger countB = new java.util.concurrent.atomic.AtomicInteger(0);
+
+            ArgusLogCallback cbB = (level, msg) -> countB.incrementAndGet();
+
+            // cbA replaces the active callback with cbB from WITHIN its own invocation
+            ArgusLogCallback cbA = (level, msg) -> {
+                countA.incrementAndGet();
+                ArgusBackend.setLogCallback(cbB);
+            };
+
+            ArgusBackend.setLogCallback(cbA);
+
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment msg1 = arena.allocateFrom("First message triggers reentrant swap\n");
+                ArgusBindings.argus_test_emit_log.invokeExact(1, msg1);
+
+                MemorySegment msg2 = arena.allocateFrom("Second message goes to cbB\n");
+                ArgusBindings.argus_test_emit_log.invokeExact(1, msg2);
+            }
+
+            assertEquals(1, countA.get(), "cbA should execute once");
+            assertTrue(countB.get() >= 1, "cbB should receive the second message");
+
+            ArgusBackend.setLogCallback(null);
+            ArgusBackend.drainRetiredCallbackArenas();
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Retired arenas should drain cleanly");
+        } finally {
+            ArgusBackend.setLogCallback(null);
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
 }
+

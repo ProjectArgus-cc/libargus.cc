@@ -12,6 +12,7 @@ import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Handles the process-global compute backends (CUDA, CPU, Metal) registry and telemetry.
@@ -102,6 +103,35 @@ public final class ArgusBackend {
             return;
         }
         try {
+            try {
+                ArgusBindings.argus_set_log_callback.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
+            } catch (Throwable ignored) {}
+
+            if (logCallbackArena != null) {
+                retiredCallbackArenas.add(logCallbackArena);
+                logCallbackArena = null;
+            }
+
+            long deadline = System.currentTimeMillis() + 1000;
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+                    if (inFlight == 0) {
+                        break;
+                    }
+                } catch (Throwable ignored) {
+                    break;
+                }
+                Thread.onSpinWait();
+            }
+
+            Arena a;
+            while ((a = retiredCallbackArenas.poll()) != null) {
+                try {
+                    a.close();
+                } catch (Throwable ignored) {}
+            }
+
             ArgusBindings.argus_backend_free.invokeExact();
             initialized = false;
         } catch (Throwable t) {
@@ -111,6 +141,29 @@ public final class ArgusBackend {
     }
 
     private static Arena logCallbackArena = null;
+    private static final ConcurrentLinkedQueue<Arena> retiredCallbackArenas = new ConcurrentLinkedQueue<>();
+
+    private static void drainRetiredArenas() {
+        try {
+            int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+            if (inFlight == 0) {
+                Arena arena;
+                while ((arena = retiredCallbackArenas.poll()) != null) {
+                    try {
+                        arena.close();
+                    } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    static int getRetiredCallbackArenaCount() {
+        return retiredCallbackArenas.size();
+    }
+
+    static void drainRetiredCallbackArenas() {
+        drainRetiredArenas();
+    }
 
     /**
      * Sets the global minimum native log severity threshold.
@@ -164,9 +217,10 @@ public final class ArgusBackend {
             if (callback == null) {
                 ArgusBindings.argus_set_log_callback.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
                 if (logCallbackArena != null) {
-                    logCallbackArena.close();
+                    retiredCallbackArenas.add(logCallbackArena);
                     logCallbackArena = null;
                 }
+                drainRetiredArenas();
                 return;
             }
 
@@ -187,9 +241,10 @@ public final class ArgusBackend {
             ArgusBindings.argus_set_log_callback.invokeExact(stub, MemorySegment.NULL);
 
             if (logCallbackArena != null) {
-                logCallbackArena.close();
+                retiredCallbackArenas.add(logCallbackArena);
             }
             logCallbackArena = newArena;
+            drainRetiredArenas();
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Fatal error registering native log callback", t);

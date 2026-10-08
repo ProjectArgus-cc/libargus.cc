@@ -182,6 +182,22 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'dirty'): preflight_module.preflight(tag)
                 git('add', 'unexpected'); git('commit', '-m', 'different checkout')
                 with self.assertRaisesRegex(ValueError, 'tag commit'): preflight_module.preflight(tag)
+
+    def test_header_version_consistency(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'version.txt').write_text('1.9.2\n')
+            include_dir = root / 'include'
+            include_dir.mkdir(parents=True)
+            header = include_dir / 'libargus.h'
+            header.write_text('/**\n * @file libargus.h\n * @version 1.9.1\n */\n')
+            with patch.object(preflight_module, 'ROOT', root):
+                with self.assertRaisesRegex(ValueError, 'libargus.h @version'):
+                    preflight_module.validate_header_version(root)
+            header.write_text('/**\n * @file libargus.h\n * @version 1.9.2\n */\n')
+            with patch.object(preflight_module, 'ROOT', root):
+                preflight_module.validate_header_version(root)
+
     def test_immutable_artifact_selection(self):
         rows = [{'name': 'native-' + r['id'], 'id': i+1, 'expired': False} for i, r in enumerate(targets())]
         with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'a/b', 'GITHUB_RUN_ID': '123'}):

@@ -8,13 +8,12 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.9.1 Release — Branch-State and Rollback Hardening, Clone-Pool Isolation & Foreign Concurrency Safety**
+> **v1.9.2 Release — Panama Upcall Stub Quiescence, Invariant Hardening & Linearizable Slot Management**
 > 
-> * **Dedicated Clone-Pool Partitioning & Isolation:** Enforces strict $[B, B + C)$ slot boundaries (`cloneSlots(int)`) so worker forks never consume base or speculative draft sequence slots, backed by exception-safe lease recovery.
-> * **Canonical Snapshot & Pending-Token Cloning:** Implements exact snapshot replication across KV cache, committed history, pending sample tokens, sampler filters, and distribution RNG continuity, enforcing atomic full-prefix copying ($p0 \le 0 \land p1 < 0$).
-> * **Two-Phase Transactional Rollback:** Preflights memory topology capabilities and orders execution across draft and primary contexts, guaranteeing zero state mutation on rejected rollbacks or sequence removals.
-> * **Lock-Free Foreign Log Dispatch:** Eliminates callback lock-inversion deadlock hazards by snapshotting registrations and dispatching foreign callbacks outside internal mutex locks.
-> * **C ABI Exception Barriers & Multi-Modal Concurrency:** Protects `argus_get_embeddings()` with structured diagnostic boundaries and serializes multimodal tokenization with projector execution locks.
+> * **Panama Upcall Stub Quiescence & Safe Retirement:** Eliminates use-after-close race conditions between decoupled native logging dispatches and Java arena teardown via native in-flight tracking and deferred arena retirement, ensuring 100% crash-free foreign callback replacement and reentrant substitution.
+> * **Strict Structural Configuration Invariants:** Enforces clone-pool configuration boundaries ($seqMax > cloneSlots$) across both fluent builders and direct `ArgusContextConfig` record construction, hardened against integer overflow via `Math.addExact`.
+> * **Linearizable Clone-Slot Release State Machine:** Guarantees atomic ownership transitions (`FREE -> LEASED -> RELEASING -> FREE`) under concurrent execution, preventing double-free race conditions.
+> * **Behavioral Stochastic Fork & Rollback Verification:** Codifies adversarial regression invariants proving bit-for-bit stochastic continuation across sequence forks and zero state mutation across KV cache, history, and pending tokens on rejected rollbacks.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -33,14 +32,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.9.1</version>
+        <version>1.9.2</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.9.1</version>
+        <version>1.9.2</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -50,10 +49,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.9.1")
+    implementation("cc.projectargus:libargus-core:1.9.2")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.2")
 }
 ```
 

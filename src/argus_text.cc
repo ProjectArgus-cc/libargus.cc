@@ -212,6 +212,11 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
             return nullptr;
         }
 
+        if (params->context_length <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "context_length must be strictly positive");
+            return nullptr;
+        }
+
         // Retain model reference before proceeding
         if (!argus_model_retain(model)) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "failed to retain primary model");
@@ -784,6 +789,12 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 // Synchronized Context Operations
 // =========================================================================
 
+static std::atomic<bool> g_test_force_rollback_fail{false};
+
+extern "C" ARGUS_API void argus_test_set_force_rollback_fail(bool fail) {
+    g_test_force_rollback_fail.store(fail, std::memory_order_release);
+}
+
 // Prunes invalidated KV cache tail if start_pos rolls back prior high-water mark.
 // Returns true if no rollback was needed or if llama_memory_seq_rm succeeded.
 // Returns false if sequence removal was rejected by the underlying memory module.
@@ -1035,7 +1046,7 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                     (llama_model_is_recurrent(ctx->model_ref->model) || llama_model_is_hybrid(ctx->model_ref->model));
                 bool draft_unsupported = ctx->draft_ctx && ctx->draft_model_ref && ctx->draft_model_ref->model &&
                     (llama_model_is_recurrent(ctx->draft_model_ref->model) || llama_model_is_hybrid(ctx->draft_model_ref->model));
-                if (primary_unsupported || draft_unsupported) {
+                if (primary_unsupported || draft_unsupported || g_test_force_rollback_fail.load(std::memory_order_acquire)) {
                     set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
                         "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
                     return ARGUS_DECODE_ROLLBACK_FAILED;

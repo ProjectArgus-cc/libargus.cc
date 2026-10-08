@@ -9,3 +9,4 @@ media/
 *.jar
 *.tar.gz
 *.zip
+__pycache__/
