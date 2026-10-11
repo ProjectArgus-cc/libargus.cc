@@ -5,6 +5,9 @@
  */
 
 #include "libargus.h"
+#ifdef ARGUS_TESTING
+#include "native_test_hooks.h"
+#endif
 #include <iostream>
 #include <cstdlib>
 #include <string>
@@ -815,6 +818,7 @@ int main(int argc, char ** argv) {
         ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 8); // 6 primed + 2 replacement tokens
         std::cout << "  - Coordinate-decoupled rollback verified (primed tokens preserved & replacement tokens committed)." << std::endl;
 
+#ifdef ARGUS_TESTING
         // 7.12b. Failed Rollback Rejection Atomicity & Zero-Mutation Invariant
         {
             // Snapshot current state before failed rollback
@@ -822,6 +826,16 @@ int main(int argc, char ** argv) {
             int32_t pos_min_before = argus_kv_cache_seq_pos_min(ctx, 0);
             int32_t hist_count_before = argus_sampler_get_history_count(ctx, 0);
             int32_t has_pending_before = argus_sampler_has_pending(ctx, 0);
+
+            std::vector<int32_t> hist_tokens_before(hist_count_before);
+            for (int32_t i = 0; i < hist_count_before; ++i) {
+                hist_tokens_before[i] = argus_test_sampler_get_history_token(ctx, 0, i);
+                ARGUS_CHECK(hist_tokens_before[i] >= 0);
+            }
+
+            bool has_logits_before = argus_test_has_logits(ctx, 0);
+            ARGUS_CHECK(has_logits_before == true);
+            int32_t draft_pos_max_before = argus_test_draft_seq_pos_max(ctx, 0);
 
             // Trigger forced rollback failure
             argus_test_set_force_rollback_fail(true);
@@ -841,13 +855,22 @@ int main(int argc, char ** argv) {
             // Restore normal operation
             argus_test_set_force_rollback_fail(false);
 
-            // Assert exact state preservation (0 mutations across KV cache, history, and pending token)
+            // Assert exact state preservation (0 mutations across KV cache, history tokens, pending state, logits, and draft context)
             ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == pos_max_before);
             ARGUS_CHECK(argus_kv_cache_seq_pos_min(ctx, 0) == pos_min_before);
             ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == hist_count_before);
             ARGUS_CHECK(argus_sampler_has_pending(ctx, 0) == has_pending_before);
-            std::cout << "  - Failed rollback rejection verified: 100% zero-mutation atomicity preserved." << std::endl;
+
+            for (int32_t i = 0; i < hist_count_before; ++i) {
+                ARGUS_CHECK(argus_test_sampler_get_history_token(ctx, 0, i) == hist_tokens_before[i]);
+            }
+
+            ARGUS_CHECK(argus_test_has_logits(ctx, 0) == has_logits_before);
+            ARGUS_CHECK(argus_test_draft_seq_pos_max(ctx, 0) == draft_pos_max_before);
+
+            std::cout << "  - Failed rollback rejection verified: 100% zero-mutation atomicity preserved (history tokens, coordinates, logits, and draft context intact)." << std::endl;
         }
+#endif
 
         // 7.13. Transactional Decode Cancellation & Retry Invariant
         {

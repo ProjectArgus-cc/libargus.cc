@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import cc.projectargus.libargus.internal.ArgusBindings;
+import cc.projectargus.libargus.internal.ArgusTestBindings;
+import org.junit.jupiter.api.Assumptions;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LoggingAndTelemetryTest {
@@ -140,6 +142,7 @@ class LoggingAndTelemetryTest {
 
     @Test
     void testLogCallbackConcurrentReplacementAndStress() throws Exception {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required for stress test");
         ArgusLogLevel initial = ArgusBackend.getLogLevel();
         try {
             ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
@@ -157,7 +160,7 @@ class LoggingAndTelemetryTest {
                 try (Arena local = Arena.ofConfined()) {
                     MemorySegment textSeg = local.allocateFrom("Worker stress log line\n");
                     while (running.get()) {
-                        ArgusBindings.argus_test_emit_log.invokeExact(1, textSeg);
+                        ArgusTestBindings.emitLog(1, textSeg);
                     }
                 } catch (Throwable t) {
                     workerError.set(t);
@@ -192,6 +195,7 @@ class LoggingAndTelemetryTest {
 
     @Test
     void testReentrantCallbackReplacement() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required for reentrant replacement");
         ArgusLogLevel initial = ArgusBackend.getLogLevel();
         try {
             ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
@@ -210,10 +214,10 @@ class LoggingAndTelemetryTest {
 
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment msg1 = arena.allocateFrom("First message triggers reentrant swap\n");
-                ArgusBindings.argus_test_emit_log.invokeExact(1, msg1);
+                ArgusTestBindings.emitLog(1, msg1);
 
                 MemorySegment msg2 = arena.allocateFrom("Second message goes to cbB\n");
-                ArgusBindings.argus_test_emit_log.invokeExact(1, msg2);
+                ArgusTestBindings.emitLog(1, msg2);
             }
 
             assertEquals(1, countA.get(), "cbA should execute once");
@@ -224,6 +228,110 @@ class LoggingAndTelemetryTest {
             assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Retired arenas should drain cleanly");
         } finally {
             ArgusBackend.setLogCallback(null);
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testSlowCallbackExceedingShutdownTimeout() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required for slow-callback test");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            java.util.concurrent.CountDownLatch callbackEntered = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch releaseCallback = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicBoolean callbackFinished = new java.util.concurrent.atomic.AtomicBoolean(false);
+            java.util.concurrent.atomic.AtomicReference<Throwable> callbackError = new java.util.concurrent.atomic.AtomicReference<>();
+
+            ArgusBackend.setLogCallback((level, msg) -> {
+                callbackEntered.countDown();
+                try {
+                    // Block callback until latch is released
+                    releaseCallback.await(5000, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    callbackFinished.set(true);
+                } catch (Throwable t) {
+                    callbackError.set(t);
+                }
+            });
+
+            // Worker thread emits log triggering the callback
+            Thread worker = new Thread(() -> {
+                try (Arena arena = Arena.ofConfined()) {
+                    MemorySegment text = arena.allocateFrom("Slow callback trigger line\n");
+                    ArgusTestBindings.emitLog(1, text);
+                } catch (Throwable t) {
+                    callbackError.set(t);
+                }
+            });
+            worker.start();
+
+            // Wait for callback to be actively executing
+            assertTrue(callbackEntered.await(5000, java.util.concurrent.TimeUnit.MILLISECONDS), "Callback should have entered");
+
+            // Call ArgusBackend.free() from main thread while callback is still running.
+            // free() must wait for timeout (~1000ms).
+            long startFree = System.currentTimeMillis();
+            ArgusBackend.free();
+            long freeElapsed = System.currentTimeMillis() - startFree;
+
+            assertTrue(freeElapsed >= 900, "free() should wait up to deadline for in-flight callback");
+
+            // CRITICAL INVARIANT: The callback is STILL running, so in-flight count > 0.
+            // Its retired arena MUST NOT have been closed!
+            assertTrue(ArgusBackend.getRetiredCallbackArenaCount() > 0, "Retired arena must NOT be closed while callback is still executing");
+            assertFalse(callbackFinished.get(), "Callback should still be blocked");
+
+            // Release the callback so it can safely complete
+            releaseCallback.countDown();
+            worker.join(5000);
+            assertFalse(worker.isAlive(), "Worker thread should complete cleanly");
+            assertTrue(callbackFinished.get(), "Callback should finish cleanly without JVM crash");
+            assertNull(callbackError.get(), "Callback encountered error: " + callbackError.get());
+
+            // Now that callback is done and native thread decremented in-flight count to 0:
+            // Drain retired arenas safely
+            ArgusBackend.drainRetiredCallbackArenas();
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Arenas should be cleanly reclaimed after quiescence");
+        } finally {
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testReentrantFreeFromCallback() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required for reentrant free test");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            java.util.concurrent.atomic.AtomicBoolean callbackExecuted = new java.util.concurrent.atomic.AtomicBoolean(false);
+            java.util.concurrent.atomic.AtomicReference<Throwable> callbackError = new java.util.concurrent.atomic.AtomicReference<>();
+
+            ArgusBackend.setLogCallback((level, msg) -> {
+                try {
+                    callbackExecuted.set(true);
+                    // Direct reentrant invocation of free() from within the active log callback
+                    ArgusBackend.free();
+                } catch (Throwable t) {
+                    callbackError.set(t);
+                }
+            });
+
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment text = arena.allocateFrom("Reentrant free trigger\n");
+                ArgusTestBindings.emitLog(1, text);
+            }
+
+            assertTrue(callbackExecuted.get(), "Log callback should have executed");
+            assertNull(callbackError.get(), "Reentrant free should not throw: " + callbackError.get());
+
+            // After callback returns, drain retired arenas
+            ArgusBackend.drainRetiredCallbackArenas();
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Arenas should drain cleanly after reentrant free");
+        } finally {
+            ArgusBackend.free();
             ArgusBackend.setLogLevel(initial);
         }
     }

@@ -20,11 +20,20 @@ def validate_header_version(root=ROOT):
         if header_ver != ver:
             raise ValueError(f"include/libargus.h @version ({header_ver}) differs from version.txt ({ver})")
 
+def validate_header_no_test_symbols(root=ROOT):
+    header_path = root / 'include' / 'libargus.h'
+    if header_path.is_file():
+        header_text = header_path.read_text(encoding='utf-8')
+        test_symbols = re.findall(r'\b(argus_test_\w+)\b', header_text)
+        if test_symbols:
+            raise ValueError(f"Test-only symbols found in public header {header_path}: {test_symbols}")
+
 def preflight(tag):
     if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
         raise ValueError('Expected an existing vMAJOR.MINOR.PATCH release tag')
     if tag != 'v' + version(): raise ValueError('Tag differs from version.txt')
     validate_header_version(ROOT)
+    validate_header_no_test_symbols(ROOT)
     commit = git('rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}')
     if commit != git('rev-parse', 'HEAD'): raise ValueError('Checkout is not the release tag commit')
     if git('status', '--porcelain', '--untracked-files=normal'):

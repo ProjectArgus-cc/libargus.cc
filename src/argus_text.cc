@@ -789,11 +789,32 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 // Synchronized Context Operations
 // =========================================================================
 
+#ifdef ARGUS_TESTING
 static std::atomic<bool> g_test_force_rollback_fail{false};
 
 extern "C" ARGUS_API void argus_test_set_force_rollback_fail(bool fail) {
     g_test_force_rollback_fail.store(fail, std::memory_order_release);
 }
+
+extern "C" ARGUS_API int32_t argus_test_sampler_get_history_token(const argus_context_t * ctx, int32_t seq_id, int32_t idx) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) return -1;
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    const auto & hist = ctx->seq_samplers[seq_id].history;
+    if (idx < 0 || idx >= (int32_t)hist.size()) return -1;
+    return hist[idx].token;
+}
+
+extern "C" ARGUS_API int32_t argus_test_draft_seq_pos_max(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || !ctx->draft_ctx) return -1;
+    return llama_memory_seq_pos_max(llama_get_memory(ctx->draft_ctx), seq_id);
+}
+
+extern "C" ARGUS_API bool argus_test_has_logits(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) return false;
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    return ctx->last_decoded_seq_id == seq_id && ctx->seq_samplers[seq_id].has_logits;
+}
+#endif
 
 // Prunes invalidated KV cache tail if start_pos rolls back prior high-water mark.
 // Returns true if no rollback was needed or if llama_memory_seq_rm succeeded.
@@ -1046,7 +1067,12 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                     (llama_model_is_recurrent(ctx->model_ref->model) || llama_model_is_hybrid(ctx->model_ref->model));
                 bool draft_unsupported = ctx->draft_ctx && ctx->draft_model_ref && ctx->draft_model_ref->model &&
                     (llama_model_is_recurrent(ctx->draft_model_ref->model) || llama_model_is_hybrid(ctx->draft_model_ref->model));
-                if (primary_unsupported || draft_unsupported || g_test_force_rollback_fail.load(std::memory_order_acquire)) {
+#ifdef ARGUS_TESTING
+                bool force_fail = g_test_force_rollback_fail.load(std::memory_order_acquire);
+#else
+                bool force_fail = false;
+#endif
+                if (primary_unsupported || draft_unsupported || force_fail) {
                     set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
                         "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
                     return ARGUS_DECODE_ROLLBACK_FAILED;

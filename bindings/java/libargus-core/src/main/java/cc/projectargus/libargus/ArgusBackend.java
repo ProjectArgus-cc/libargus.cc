@@ -112,24 +112,41 @@ public final class ArgusBackend {
                 logCallbackArena = null;
             }
 
-            long deadline = System.currentTimeMillis() + 1000;
-            while (System.currentTimeMillis() < deadline) {
-                try {
-                    int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
-                    if (inFlight == 0) {
+            boolean reentrant = Boolean.TRUE.equals(IN_LOG_CALLBACK.get());
+            if (!reentrant) {
+                long deadline = System.currentTimeMillis() + 1000;
+                while (System.currentTimeMillis() < deadline) {
+                    try {
+                        int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+                        if (inFlight == 0) {
+                            break;
+                        }
+                    } catch (Throwable ignored) {
                         break;
                     }
-                } catch (Throwable ignored) {
-                    break;
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
-                Thread.onSpinWait();
-            }
 
-            Arena a;
-            while ((a = retiredCallbackArenas.poll()) != null) {
+                // Strict Quiescence Invariant: Never close retired callback arenas unless in-flight count is confirmed 0.
+                // A timeout must NEVER authorize destroying executable memory while native callers may still be executing.
+                int inFlight = -1;
                 try {
-                    a.close();
+                    inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
                 } catch (Throwable ignored) {}
+
+                if (inFlight == 0) {
+                    Arena a;
+                    while ((a = retiredCallbackArenas.poll()) != null) {
+                        try {
+                            a.close();
+                        } catch (Throwable ignored) {}
+                    }
+                }
             }
 
             ArgusBindings.argus_backend_free.invokeExact();
@@ -251,15 +268,21 @@ public final class ArgusBackend {
         }
     }
 
+    private static final ThreadLocal<Boolean> IN_LOG_CALLBACK = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
     private static void dispatchNativeLog(ArgusLogCallback cb, int level, MemorySegment textPtr, MemorySegment userDataPtr) {
         if (cb == null || textPtr.equals(MemorySegment.NULL)) {
             return;
         }
+        IN_LOG_CALLBACK.set(Boolean.TRUE);
         try {
             String msg = textPtr.reinterpret(Long.MAX_VALUE).getString(0);
             cb.onLog(ArgusLogLevel.fromValue(level), msg);
         } catch (Throwable ignored) {
             // Exception containment barrier: protect native callers from upcall exceptions
+        } finally {
+            IN_LOG_CALLBACK.set(Boolean.FALSE);
+            drainRetiredArenas();
         }
     }
 

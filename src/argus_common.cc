@@ -179,14 +179,23 @@ static void argus_internal_log_dispatch(enum ggml_log_level ggml_level, const ch
 
     // Invoke user callback OUTSIDE g_log_mutex to eliminate lock-inversion deadlocks
     if (cb) {
-        tl_in_logging = true;
+        struct log_in_flight_decrement_guard {
+            ~log_in_flight_decrement_guard() {
+                g_log_in_flight.fetch_sub(1, std::memory_order_release);
+            }
+        } in_flight_guard;
+
+        struct recursion_guard {
+            bool & flag;
+            explicit recursion_guard(bool & f) : flag(f) { flag = true; }
+            ~recursion_guard() { flag = false; }
+        } rec_guard(tl_in_logging);
+
         try {
             cb(mapped_level, text, ud);
         } catch (...) {
             // Foreign exception barrier
         }
-        tl_in_logging = false;
-        g_log_in_flight.fetch_sub(1, std::memory_order_release);
     }
 }
 
@@ -453,8 +462,10 @@ ARGUS_API int32_t argus_log_in_flight_count(void) {
     return g_log_in_flight.load(std::memory_order_acquire);
 }
 
+#ifdef ARGUS_TESTING
 ARGUS_API void argus_test_emit_log(int32_t ggml_level, const char * text) {
     argus_internal_log_dispatch((enum ggml_log_level)ggml_level, text ? text : "", nullptr);
 }
+#endif
 
 } // extern "C"

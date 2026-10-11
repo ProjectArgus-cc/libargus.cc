@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 1.9.2
+ * @version 1.9.3
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -1293,24 +1293,6 @@ ARGUS_API int32_t argus_eval_multimodal_chunks(
     int32_t n_batch,
     bool logits_last,
     int32_t * out_new_n_past);
-
-/**
- * @brief Test hook to deterministically force KV cache rollback failure.
- *
- * When enabled, argus_decode_batch preflight immediately rejects partial rollbacks
- * (start_pos > 0) with ARGUS_DECODE_ROLLBACK_FAILED without mutating state.
- *
- * @param fail True to force rollback failure, false for normal execution.
- */
-ARGUS_API void argus_test_set_force_rollback_fail(bool fail);
-
-/**
- * @brief Test hook to directly dispatch a diagnostic log event through the native logging pipeline.
- *
- * @param ggml_level The native ggml log severity level.
- * @param text The log message string.
- */
-ARGUS_API void argus_test_emit_log(int32_t ggml_level, const char * text);
 
 #ifdef __cplusplus
 }

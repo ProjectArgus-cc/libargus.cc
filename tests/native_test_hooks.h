@@ -9,5 +9,9 @@ ARGUS_API argus_video_t * argus_test_video(argus_multimodal_t * mctx, int count)
 ARGUS_API void argus_test_set_eval_result(int result);
 ARGUS_API void argus_test_fail_after_retain(bool fail);
 ARGUS_API void argus_test_emit_log(int ggml_level, const char * text);
+ARGUS_API void argus_test_set_force_rollback_fail(bool fail);
+ARGUS_API int32_t argus_test_sampler_get_history_token(const argus_context_t * ctx, int32_t seq_id, int32_t idx);
+ARGUS_API int32_t argus_test_draft_seq_pos_max(const argus_context_t * ctx, int32_t seq_id);
+ARGUS_API bool argus_test_has_logits(const argus_context_t * ctx, int32_t seq_id);
 }
 void argus_test_allocation_checkpoint();

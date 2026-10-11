@@ -47,7 +47,11 @@ def inspect(path, row):
     mask = lib.argus_build_features()
     if mask != row['mask']:
         raise ValueError(f'Feature mismatch: {mask} != {row["mask"]}')
-    for symbol in ('argus_test_set_observer', 'argus_test_projector', 'mtmd_test_create_input_chunks'):
+    for symbol in ('argus_test_set_observer', 'argus_test_projector', 'mtmd_test_create_input_chunks',
+                   'argus_test_set_force_rollback_fail', 'argus_test_emit_log', 'argus_test_fail_after_retain',
+                   'argus_test_set_eval_result', 'argus_test_video', 'argus_test_chunks',
+                   'argus_test_sampler_get_history_token', 'argus_test_draft_seq_pos_max',
+                   'argus_test_has_logits'):
         if hasattr(lib, symbol):
             raise ValueError(f'Test/internal symbol exported: {symbol}')
     lib.argus_build_info_copy.argtypes = (ctypes.c_void_p, ctypes.c_int32)

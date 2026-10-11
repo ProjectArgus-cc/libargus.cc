@@ -198,6 +198,20 @@ class ContractTests(unittest.TestCase):
             with patch.object(preflight_module, 'ROOT', root):
                 preflight_module.validate_header_version(root)
 
+    def test_header_no_test_symbols(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            include_dir = root / 'include'
+            include_dir.mkdir(parents=True)
+            header = include_dir / 'libargus.h'
+            header.write_text('/**\n * @file libargus.h\n */\nARGUS_API void argus_test_hook(void);\n')
+            with patch.object(preflight_module, 'ROOT', root):
+                with self.assertRaisesRegex(ValueError, 'Test-only symbols found in public header'):
+                    preflight_module.validate_header_no_test_symbols(root)
+            header.write_text('/**\n * @file libargus.h\n */\nARGUS_API void argus_clean_api(void);\n')
+            with patch.object(preflight_module, 'ROOT', root):
+                preflight_module.validate_header_no_test_symbols(root)
+
     def test_immutable_artifact_selection(self):
         rows = [{'name': 'native-' + r['id'], 'id': i+1, 'expired': False} for i, r in enumerate(targets())]
         with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'a/b', 'GITHUB_RUN_ID': '123'}):
