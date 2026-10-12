@@ -289,10 +289,14 @@ class LoggingAndTelemetryTest {
             assertTrue(callbackFinished.get(), "Callback should finish cleanly without JVM crash");
             assertNull(callbackError.get(), "Callback encountered error: " + callbackError.get());
 
-            // Now that callback is done and native thread decremented in-flight count to 0:
-            // Drain retired arenas safely
-            ArgusBackend.drainRetiredCallbackArenas();
-            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Arenas should be cleanly reclaimed after quiescence");
+            // Do NOT call drainRetiredCallbackArenas() manually!
+            // Wait for automatic post-quiescence virtual thread reaper to reclaim the retired arenas
+            long reaperDeadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < reaperDeadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Retired arenas must be reclaimed automatically by post-quiescence reaper without manual drain");
         } finally {
             ArgusBackend.free();
             ArgusBackend.setLogLevel(initial);
@@ -327,9 +331,44 @@ class LoggingAndTelemetryTest {
             assertTrue(callbackExecuted.get(), "Log callback should have executed");
             assertNull(callbackError.get(), "Reentrant free should not throw: " + callbackError.get());
 
-            // After callback returns, drain retired arenas
-            ArgusBackend.drainRetiredCallbackArenas();
-            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "Arenas should drain cleanly after reentrant free");
+            // Do NOT call drainRetiredCallbackArenas() manually!
+            long reaperDeadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < reaperDeadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Arenas should drain automatically via reaper after reentrant free");
+        } finally {
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testRepeatedInitAndCallbackRetirementStress() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required for stress test");
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            // Run 100+ rapid cycles of init -> setLogCallback -> emit log -> free
+            for (int cycle = 0; cycle < 120; cycle++) {
+                ArgusBackend.init();
+                java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger(0);
+                ArgusBackend.setLogCallback((lvl, msg) -> count.incrementAndGet());
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Cycle " + cycle + "\n"));
+                }
+                assertTrue(count.get() >= 1, "Log should be received in cycle " + cycle);
+                ArgusBackend.free();
+            }
+
+            // Assert retired queue remains strictly bounded and drops to 0 automatically
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Retired arena count must return to 0 after repeated lifecycle stress without accumulation");
         } finally {
             ArgusBackend.free();
             ArgusBackend.setLogLevel(initial);

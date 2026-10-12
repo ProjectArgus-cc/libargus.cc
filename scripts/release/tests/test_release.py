@@ -25,7 +25,7 @@ from artifact_ids import select
 from publish import signatures
 import preflight as preflight_module
 from ci_route import is_tagged_release
-from native import validate_windows_dependencies
+from native import validate_windows_dependencies, parse_windows_exports
 
 SOURCE = '1' * 40
 PROVIDER = 'META-INF/services/cc.projectargus.libargus.spi.NativeLibraryProvider'
@@ -211,6 +211,44 @@ class ContractTests(unittest.TestCase):
             header.write_text('/**\n * @file libargus.h\n */\nARGUS_API void argus_clean_api(void);\n')
             with patch.object(preflight_module, 'ROOT', root):
                 preflight_module.validate_header_no_test_symbols(root)
+
+    def test_windows_export_parsing_and_escape_detection(self):
+        dumpbin_sample = """
+Microsoft (R) COFF/PE Dumper Version 14.38.33135.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file build\\bin\\argus.dll
+
+File Type: DLL
+
+  Section contains the following exports for argus.dll
+
+    00000000 characteristics
+    FFFFFFFF time date stamp
+        0.00 version
+           1 ordinal base
+           3 number of functions
+           3 number of names
+
+    ordinal hint RVA      name
+
+          1    0 00010000 argus_backend_free
+          2    1 00010050 argus_backend_init
+          3    2 000100A0 argus_test_fake_escape
+
+  Summary
+
+        1000 .data
+        2000 .rdata
+        5000 .text
+"""
+        exports = parse_windows_exports(dumpbin_sample)
+        self.assertEqual(exports, {'argus_backend_free', 'argus_backend_init', 'argus_test_fake_escape'})
+        argus_exports = {name for name in exports if name.startswith('argus_')}
+        expected = {'argus_backend_free', 'argus_backend_init'}
+        self.assertNotEqual(argus_exports, expected)
+        self.assertTrue(any(name.startswith('argus_test_') for name in exports))
 
     def test_immutable_artifact_selection(self):
         rows = [{'name': 'native-' + r['id'], 'id': i+1, 'expired': False} for i, r in enumerate(targets())]

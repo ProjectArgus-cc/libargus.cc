@@ -211,5 +211,65 @@ int main() {
         CHECK(counters.debug_conts.load() == 0);
     }
 
+    // Test 6: Asynchronous callback replacement lifetime contract & user_data integrity
+    {
+        std::atomic<bool> a_entered{false};
+        std::atomic<bool> a_release{false};
+        std::atomic<bool> a_completed{false};
+        std::atomic<int> b_count{0};
+
+        struct CallbackAData {
+            std::atomic<bool> * entered;
+            std::atomic<bool> * release;
+            std::atomic<bool> * completed;
+            int sentinel = 0x12345678;
+        } data_a{&a_entered, &a_release, &a_completed};
+
+        // 1. Register callback A with user_data containing a verification sentinel
+        argus_set_log_callback([](argus_log_level_t level, const char * text, void * user_data) {
+            auto * d = static_cast<CallbackAData *>(user_data);
+            CHECK(d != nullptr);
+            CHECK(d->sentinel == 0x12345678);
+            d->entered->store(true, std::memory_order_release);
+            while (!d->release->load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            CHECK(d->sentinel == 0x12345678);
+            d->completed->store(true, std::memory_order_release);
+        }, &data_a);
+
+        // 2. Worker thread emits log, capturing callback A and entering it
+        std::thread worker([&]() {
+            argus_test_emit_log(3, "Message dispatched to callback A\n");
+        });
+
+        // 3. Wait until callback A is actively executing in worker thread
+        while (!a_entered.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+
+        // 4. Concurrently replace callback A with callback B while A is still executing
+        argus_set_log_callback([](argus_log_level_t level, const char * text, void * user_data) {
+            auto * count = static_cast<std::atomic<int> *>(user_data);
+            count->fetch_add(1, std::memory_order_relaxed);
+        }, &b_count);
+
+        // 5. Assert replacement returned while callback A is STILL executing in worker
+        CHECK(!a_completed.load(std::memory_order_acquire));
+        CHECK(argus_log_in_flight_count() > 0);
+
+        // 6. Release callback A and wait for it to complete
+        a_release.store(true, std::memory_order_release);
+        worker.join();
+
+        CHECK(a_completed.load(std::memory_order_acquire));
+
+        // 7. Subsequent log dispatches must route to callback B
+        argus_test_emit_log(3, "Message dispatched to callback B\n");
+        CHECK(b_count.load() == 1);
+
+        argus_set_log_callback(nullptr, nullptr);
+    }
+
     argus_backend_free();
 }

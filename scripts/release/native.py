@@ -17,6 +17,25 @@ def validate_windows_dependencies(dependencies):
         if forbidden_pattern.match(base):
             raise ValueError(f'Windows distribution library imports a host-provided MSVC runtime: {base}')
 
+def parse_windows_exports(dumpbin_output):
+    exports = set()
+    in_exports = False
+    for line in dumpbin_output.splitlines():
+        if re.search(r'\border\s+hint\s+RVA\s+name\b', line, re.I) or ('ordinal' in line.lower() and 'hint' in line.lower() and 'rva' in line.lower() and 'name' in line.lower()):
+            in_exports = True
+            continue
+        if in_exports:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith('Summary') or stripped.startswith('Section'):
+                break
+            parts = stripped.split()
+            # typical format: <ordinal> <hint> <RVA> <name> [ = <forwarder> ]
+            if len(parts) >= 4 and parts[0].isdigit():
+                exports.add(parts[3])
+    return exports
+
 def architecture(path):
     with Path(path).open('rb') as f:
         head = f.read(64)
@@ -82,6 +101,14 @@ def inspect(path, row):
         if exports != expected: raise ValueError('macOS export surface differs from public ABI')
         needed = subprocess.check_output(['otool', '-L', str(path)], text=True).splitlines()[1:]
     else:
+        exports_raw = subprocess.check_output(['dumpbin', '/EXPORTS', str(path)], text=True)
+        exports = parse_windows_exports(exports_raw)
+        argus_exports = {name for name in exports if name.startswith('argus_')}
+        if argus_exports != expected:
+            diff = argus_exports.symmetric_difference(expected)
+            raise ValueError(f'Windows DLL export surface differs from public ABI: {diff}')
+        if any(name.startswith(('argus_test_', 'mtmd_', 'llama_', 'whisper_', 'ggml_')) for name in exports):
+            raise ValueError('Internal/test symbols escaped the release boundary')
         needed = subprocess.check_output(['dumpbin', '/DEPENDENTS', str(path)], text=True).splitlines()
         validate_windows_dependencies(needed)
     if any(re.search(r'lib(asan|ubsan|tsan)|clang_rt\.(asan|tsan)', item, re.I) for item in needed):

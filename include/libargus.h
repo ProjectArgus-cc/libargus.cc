@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 1.9.3
+ * @version 1.9.4
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -158,16 +158,26 @@ ARGUS_API argus_log_level_t argus_get_log_level(void);
  *
  * If callback is NULL, output matching the active log level threshold is routed to stderr.
  *
+ * @note Asynchronous Replacement Contract:
+ * Replacing or unregistering a callback does not act as a synchronous quiescence barrier
+ * for concurrent native dispatch. Log dispatch snapshots the active callback and user_data
+ * under internal mutex synchronization and invokes the handler outside the mutex.
+ * Consequently, invocations that captured the prior registration may continue executing
+ * after this function returns. The caller must guarantee that the previous callback code
+ * (or foreign-function upcall stub trampoline) and user_data context memory remain valid
+ * until argus_log_in_flight_count() reaches 0.
+ *
  * @param callback Target handler function, or NULL to restore default stderr formatting.
  * @param user_data Opaque caller context forwarded to every invocation.
  */
 ARGUS_API void argus_set_log_callback(argus_log_callback_t callback, void * user_data);
 
 /**
- * @brief Returns the number of log callback invocations currently in flight in native threads.
+ * @brief Returns the number of log callback invocations currently in flight across native threads.
  *
- * Used by foreign-function bridges (e.g. Java Panama) to ensure executable upcall stubs
- * remain valid until native invocation has completely quiesced.
+ * Used by foreign-function bridges (e.g. Java Project Panama FFM) and unmanaged callers to ensure
+ * executable upcall stubs, unmanaged closures, and user_data allocations remain valid until
+ * native execution has completely quiesced.
  *
  * @return Count of concurrent callback executions actively in progress.
  */

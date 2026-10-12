@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Handles the process-global compute backends (CUDA, CPU, Metal) registry and telemetry.
@@ -45,6 +46,7 @@ public final class ArgusBackend {
         if (initialized) {
             return true;
         }
+        drainRetiredArenas();
         try (Arena localArena = Arena.ofConfined()) {
             MemorySegment pathSeg = (customPluginPath != null && !customPluginPath.isEmpty())
                 ? localArena.allocateFrom(customPluginPath)
@@ -146,7 +148,11 @@ public final class ArgusBackend {
                             a.close();
                         } catch (Throwable ignored) {}
                     }
+                } else {
+                    scheduleReaperIfNeeded();
                 }
+            } else {
+                scheduleReaperIfNeeded();
             }
 
             ArgusBindings.argus_backend_free.invokeExact();
@@ -159,6 +165,47 @@ public final class ArgusBackend {
 
     private static Arena logCallbackArena = null;
     private static final ConcurrentLinkedQueue<Arena> retiredCallbackArenas = new ConcurrentLinkedQueue<>();
+    private static final AtomicBoolean REAPER_RUNNING = new AtomicBoolean(false);
+
+    private static void scheduleReaperIfNeeded() {
+        if (retiredCallbackArenas.isEmpty()) {
+            return;
+        }
+        if (REAPER_RUNNING.compareAndSet(false, true)) {
+            Thread.ofVirtual().name("argus-callback-reaper").start(() -> {
+                try {
+                    long deadline = System.currentTimeMillis() + 10_000;
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+                            if (inFlight == 0) {
+                                Arena a;
+                                while ((a = retiredCallbackArenas.poll()) != null) {
+                                    try {
+                                        a.close();
+                                    } catch (Throwable ignored) {}
+                                }
+                                return;
+                            }
+                        } catch (Throwable ignored) {
+                            return;
+                        }
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
+                } finally {
+                    REAPER_RUNNING.set(false);
+                    if (!retiredCallbackArenas.isEmpty()) {
+                        scheduleReaperIfNeeded();
+                    }
+                }
+            });
+        }
+    }
 
     private static void drainRetiredArenas() {
         try {
@@ -170,6 +217,8 @@ public final class ArgusBackend {
                         arena.close();
                     } catch (Throwable ignored) {}
                 }
+            } else {
+                scheduleReaperIfNeeded();
             }
         } catch (Throwable ignored) {}
     }
