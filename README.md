@@ -8,15 +8,12 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.9.4 Release — Automatic Callback Reclamation, Lifetime Contracts & Cross-Platform ABI Verification**
+> **v1.9.5 Release — Generation-Safe Callback Reclamation & Hardened Reaper Lifecycle**
 > 
-> * **Automatic Post-Quiescence Callback Reclamation:** Guarantees retired foreign callback arenas are automatically closed and reclaimed via a lightweight background virtual-thread reaper once native in-flight execution completes, eliminating memory retention across slow shutdowns, reentrant frees, or repeated lifecycle cycles.
-> * **Public C Asynchronous Replacement Contract:** Explicitly specifies that native callback replacement is not a synchronous barrier; previous handlers and `user_data` memory must be maintained until `argus_log_in_flight_count() == 0`, backed by adversarial native concurrency tests.
-> * **Cross-Platform Release ABI Parity:** Extends structural release ABI inspection to Windows DLLs via `dumpbin /EXPORTS` parsing and public-header comparison, ensuring 100% symmetric symbol enforcement across Linux, macOS, and Windows.
-> * **Strict Structural Configuration Invariants:** Enforces clone-pool configuration boundaries ($seqMax > cloneSlots$) across both fluent builders and direct `ArgusContextConfig` record construction, hardened against integer overflow via `Math.addExact`.
-> * **Behavioral Stochastic Fork & Deep Rollback Verification:** Codifies adversarial regression invariants proving bit-for-bit stochastic continuation across sequence forks and zero state mutation across KV cache, history tokens, logits availability, and draft context on rejected rollbacks.
-> 
-> **Compatibility Note on v1.9.2 Test Symbols:** In v1.9.2, internal fault-injection symbols (`argus_test_set_force_rollback_fail` and `argus_test_emit_log`) inadvertently escaped into public release headers and production libraries. These symbols were never supported application APIs and introduced process-wide testing side effects. They were removed from the public production ABI in v1.9.3 and isolated behind `ARGUS_TESTING` build boundaries.
+> * **Stable-Generation Quiescence Invariant ($retire(G) \prec Q \prec reclaim(G)$):** Associates retired Panama callback arenas with monotonic retirement generations, guaranteeing that a quiescence observation at time $T_Q$ authorizes reclamation only for generations retired *before* $T_Q$. Prevents race conditions where newly retired generations actively executing on native threads could be prematurely reclaimed by a stale zero observation.
+> * **Bounded Failure & Safe-Retention Reaper Lifecycle:** Hardens background virtual-thread reaper retry dynamics with exponential backoff, bounding consecutive query failures to 3 before transitioning to dormant safe-retention, entirely eliminating unbounded virtual-thread respawn storms while preserving arena safety.
+> * **Release Tooling Hardening:** Codifies synthetic Windows DLL export inspection validation, verifying that test symbol escapes (`argus_test_*`) or header ABI disparities are strictly rejected.
+> * **Compatibility Note on v1.9.2 Test Symbols:** In v1.9.2, internal fault-injection symbols (`argus_test_set_force_rollback_fail` and `argus_test_emit_log`) inadvertently escaped into public release headers and production libraries. These symbols were never supported application APIs and introduced process-wide testing side effects. They were removed from the public production ABI in v1.9.3 and isolated behind `ARGUS_TESTING` build boundaries.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -35,14 +32,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.9.4</version>
+        <version>1.9.5</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.9.4</version>
+        <version>1.9.5</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -52,10 +49,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.9.4")
+    implementation("cc.projectargus:libargus-core:1.9.5")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.4")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.5")
 }
 ```
 

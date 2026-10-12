@@ -7,6 +7,11 @@ import java.lang.foreign.ValueLayout;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import cc.projectargus.libargus.internal.ArgusBindings;
 import cc.projectargus.libargus.internal.ArgusTestBindings;
 import org.junit.jupiter.api.Assumptions;
@@ -370,6 +375,344 @@ class LoggingAndTelemetryTest {
             assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
                 "Retired arena count must return to 0 after repeated lifecycle stress without accumulation");
         } finally {
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testStaleZeroObservationRace() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+
+            // Step 1: Register initial callback X and execute it on a worker thread
+            CountDownLatch xEntered = new CountDownLatch(1);
+            CountDownLatch xRelease = new CountDownLatch(1);
+            CountDownLatch xDone = new CountDownLatch(1);
+
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                if (msg.contains("Message invoking X")) {
+                    xEntered.countDown();
+                    try {
+                        xRelease.await();
+                    } catch (InterruptedException ignored) {}
+                    xDone.countDown();
+                }
+            });
+
+            Thread workerX = Thread.ofPlatform().start(() -> {
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Message invoking X\n"));
+                } catch (Throwable ignored) {}
+            });
+            assertTrue(xEntered.await(5, TimeUnit.SECONDS), "Callback X should enter");
+
+            // Step 2: Register callback A while X is still running.
+            // This retires callback X into retiredCallbacks (Gen 1) while in_flight == 1.
+            CountDownLatch aEntered = new CountDownLatch(1);
+            CountDownLatch aRelease = new CountDownLatch(1);
+            AtomicBoolean aFinished = new AtomicBoolean(false);
+            AtomicReference<Throwable> aError = new AtomicReference<>();
+
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                if (msg.contains("Message invoking A")) {
+                    try {
+                        aEntered.countDown();
+                        if (!aRelease.await(5, TimeUnit.SECONDS)) {
+                            throw new RuntimeException("Timed out waiting for callback A release");
+                        }
+                        aFinished.set(true);
+                    } catch (Throwable t) {
+                        aError.set(t);
+                    }
+                }
+            });
+
+            // At this point:
+            // Callback X is retired (Gen 1) and reaper is running.
+            // Callback A is active.
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(), "Generation X should be in retired queue");
+
+            // Step 3: Setup deterministic hook to pause the reaper between quiescence check and drainage
+            CountDownLatch hookTriggered = new CountDownLatch(1);
+            CountDownLatch workerStarted = new CountDownLatch(1);
+
+            ArgusBackend.testReaperPostQuiescenceHook = (eligibleGen) -> {
+                try {
+                    if (hookTriggered.getCount() > 0) {
+                        hookTriggered.countDown();
+                        // 1. Launch native log invocation in worker thread to execute Callback A
+                        Thread workerA = Thread.ofPlatform().start(() -> {
+                            workerStarted.countDown();
+                            try (Arena a = Arena.ofConfined()) {
+                                ArgusTestBindings.emitLog(1, a.allocateFrom("Message invoking A\n"));
+                            } catch (Throwable t) {
+                                aError.set(t);
+                            }
+                        });
+
+                        // 2. Wait until Callback A is actively executing inside the upcall
+                        assertTrue(aEntered.await(5, TimeUnit.SECONDS), "Callback A should enter");
+
+                        // 3. Concurrently replace Callback A with Callback B!
+                        // This retires Callback A into retiredCallbacks as Gen 2 while it is STILL executing!
+                        ArgusBackend.setLogCallback((lvl, msg) -> {});
+
+                        // Callback A is now in retiredCallbacks (Gen 2), while reaper has snapshot eligibleGen == 1!
+                    }
+                } catch (Throwable t) {
+                    throw new RuntimeException(t);
+                }
+            };
+
+            // Step 4: Release Callback X so native in_flight drops to 0, causing reaper to observe quiescence
+            xRelease.countDown();
+            workerX.join(5000);
+            assertTrue(xDone.await(5, TimeUnit.SECONDS), "Callback X should complete");
+
+            // Step 5: Wait for the hook to trigger and inject the race
+            assertTrue(hookTriggered.await(5, TimeUnit.SECONDS), "Reaper hook should be invoked on quiescence");
+
+            // Step 6: Reaper proceeds to reclaimGenerationsUpTo(1).
+            // CRITICAL INVARIANT:
+            // Gen 1 (Callback X) is reclaimed.
+            // Gen 2 (Callback A) MUST NOT be reclaimed because it was retired AFTER the quiescence point and is still running!
+            Thread.sleep(100);
+
+            // Assert: Arena A is still alive and in retiredCallbacks!
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Arena A must NOT be destroyed by the reaper pass that captured quiescence before A was retired!");
+            assertFalse(aFinished.get(), "Callback A should still be actively blocked inside native call");
+
+            // Step 7: Release Callback A so it completes cleanly
+            aRelease.countDown();
+
+            // Step 8: Wait for quiescence and subsequent reaper pass to reclaim Gen 2 (Callback A)
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+
+            assertTrue(aFinished.get(), "Callback A should finish cleanly without arena closure exception");
+            assertNull(aError.get(), "Callback A encountered error: " + aError.get());
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "All generations must eventually be reclaimed once native execution quiesces");
+        } finally {
+            ArgusBackend.testReaperPostQuiescenceHook = null;
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testGenerationOrderingDuringReclamation() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+
+            // Register initial callback X and start it executing on a worker thread
+            CountDownLatch xEntered = new CountDownLatch(1);
+            CountDownLatch xRelease = new CountDownLatch(1);
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                if (msg.contains("Message X")) {
+                    xEntered.countDown();
+                    try {
+                        xRelease.await();
+                    } catch (InterruptedException ignored) {}
+                }
+            });
+
+            Thread workerX = Thread.ofPlatform().start(() -> {
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Message X\n"));
+                } catch (Throwable ignored) {}
+            });
+            assertTrue(xEntered.await(5, TimeUnit.SECONDS), "Callback X should enter");
+
+            // While X is running, replace with G1, then replace with G2
+            ArgusBackend.setLogCallback((lvl, msg) -> {}); // X retired (Gen 1)
+            ArgusBackend.setLogCallback((lvl, msg) -> {}); // G1 retired (Gen 2)
+
+            // Setup hook: When reaper reaches quiescence for Gen 2, retire G2 by registering G3!
+            CountDownLatch hookFired = new CountDownLatch(1);
+            ArgusBackend.testReaperPostQuiescenceHook = (eligibleGen) -> {
+                if (eligibleGen >= 2 && hookFired.getCount() > 0) {
+                    hookFired.countDown();
+                    // Concurrently retire G2 by registering G3 (Gen 3)
+                    ArgusBackend.setLogCallback((lvl, msg) -> {});
+                }
+            };
+
+            // Release X so in_flight drops to 0 and reaper observes quiescence for Gen 2
+            xRelease.countDown();
+            workerX.join(5000);
+
+            assertTrue(hookFired.await(5, TimeUnit.SECONDS), "Hook should fire during quiescence");
+
+            // Give reaper a moment to finish reclaiming up to eligibleGen (Gen 2)
+            Thread.sleep(100);
+
+            // G1 and G2 must be reclaimed, and then G3 on subsequent quiescence
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(), "All generations cleanly reclaimed");
+        } finally {
+            ArgusBackend.testReaperPostQuiescenceHook = null;
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testMultipleActiveConcurrentGenerations() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+
+            CountDownLatch aEntered = new CountDownLatch(1);
+            CountDownLatch aRelease = new CountDownLatch(1);
+            CountDownLatch aDone = new CountDownLatch(1);
+
+            CountDownLatch bEntered = new CountDownLatch(1);
+            CountDownLatch bRelease = new CountDownLatch(1);
+            CountDownLatch bDone = new CountDownLatch(1);
+
+            // Register Callback A
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                if (msg.contains("Log A")) {
+                    aEntered.countDown();
+                    try {
+                        aRelease.await();
+                    } catch (InterruptedException ignored) {}
+                    aDone.countDown();
+                }
+            });
+
+            // Start thread 1 emitting Log A
+            Thread t1 = Thread.ofPlatform().start(() -> {
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Log A\n"));
+                } catch (Throwable ignored) {}
+            });
+            assertTrue(aEntered.await(5, TimeUnit.SECONDS), "Callback A should enter");
+
+            // While A is running, replace with Callback B (retiring A)
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                if (msg.contains("Log B")) {
+                    bEntered.countDown();
+                    try {
+                        bRelease.await();
+                    } catch (InterruptedException ignored) {}
+                    bDone.countDown();
+                }
+            });
+
+            // Start thread 2 emitting Log B
+            Thread t2 = Thread.ofPlatform().start(() -> {
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Log B\n"));
+                } catch (Throwable ignored) {}
+            });
+            assertTrue(bEntered.await(5, TimeUnit.SECONDS), "Callback B should enter");
+
+            // While both A and B are running, replace with Callback C (retiring B)
+            ArgusBackend.setLogCallback((lvl, msg) -> {});
+
+            // Now both A and B are retired, but both are actively executing
+            assertEquals(2, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Both A and B arenas must be retained while in-flight count > 0");
+
+            // Release A only
+            aRelease.countDown();
+            t1.join(5000);
+            assertTrue(aDone.await(5, TimeUnit.SECONDS), "Callback A should complete");
+
+            // B is STILL running, so neither A nor B should be closed yet because global inFlight > 0
+            Thread.sleep(100);
+            assertEquals(2, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Arenas must remain retained while thread B is still executing");
+
+            // Release B
+            bRelease.countDown();
+            t2.join(5000);
+            assertTrue(bDone.await(5, TimeUnit.SECONDS), "Callback B should complete");
+
+            // Now both are finished; wait for reaper to reclaim all
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "All retired arenas should be cleanly reclaimed once all threads quiesce");
+        } finally {
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
+
+    @Test
+    void testReaperQueryFailureSafeRetention() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+
+            // Register initial callback
+            ArgusBackend.setLogCallback((lvl, msg) -> {});
+
+            // Simulate persistent native query failure BEFORE replacing callback
+            AtomicInteger queryAttempts = new AtomicInteger(0);
+            ArgusBackend.testInFlightCountOverride = () -> {
+                queryAttempts.incrementAndGet();
+                throw new RuntimeException("Simulated native query linker failure");
+            };
+
+            // Replacing callback now attempts synchronous drain, which fails query and retains arena safely
+            ArgusBackend.setLogCallback((lvl, msg) -> {}); // retires previous
+
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(), "One arena should be retired");
+
+            // Explicitly ensure reaper is scheduled if not already
+            ArgusBackend.drainRetiredCallbackArenas();
+
+            // Wait for reaper to fail 3 times and terminate cleanly into safe retention
+            long deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.isReaperRunning()) {
+                Thread.sleep(20);
+            }
+
+            // Invariants:
+            // 1. Reaper must have stopped running (bounded retry, no infinite virtual-thread respawning)
+            assertFalse(ArgusBackend.isReaperRunning(), "Reaper must terminate after consecutive failures");
+            assertTrue(queryAttempts.get() >= 3, "Reaper should have attempted at least 3 queries with backoff");
+
+            // 2. The retired arena MUST NOT have been closed or destroyed (Safe Retention invariant)
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Retired arena must be safely retained in memory when quiescence cannot be verified");
+
+            // Restore healthy query operation
+            ArgusBackend.testInFlightCountOverride = null;
+
+            // Subsequent drain/reaper now successfully reclaims the arena
+            ArgusBackend.drainRetiredCallbackArenas();
+            deadline = System.currentTimeMillis() + 3000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Arena must be reclaimed once healthy query capability is restored");
+        } finally {
+            ArgusBackend.testInFlightCountOverride = null;
             ArgusBackend.free();
             ArgusBackend.setLogLevel(initial);
         }

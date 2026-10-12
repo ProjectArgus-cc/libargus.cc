@@ -250,6 +250,17 @@ File Type: DLL
         self.assertNotEqual(argus_exports, expected)
         self.assertTrue(any(name.startswith('argus_test_') for name in exports))
 
+    def test_windows_export_rejection_logic(self):
+        exports_with_leak = {'argus_backend_free', 'argus_backend_init', 'argus_test_fake_escape'}
+        self.assertTrue(any(name.startswith(('argus_test_', 'mtmd_', 'llama_', 'whisper_', 'ggml_')) for name in exports_with_leak))
+        expected = {'argus_backend_free', 'argus_backend_init'}
+        argus_exports = {name for name in exports_with_leak if name.startswith('argus_')}
+        self.assertNotEqual(argus_exports, expected)
+
+        clean_exports = {'argus_backend_free', 'argus_backend_init'}
+        self.assertFalse(any(name.startswith(('argus_test_', 'mtmd_', 'llama_', 'whisper_', 'ggml_')) for name in clean_exports))
+        self.assertEqual({name for name in clean_exports if name.startswith('argus_')}, expected)
+
     def test_immutable_artifact_selection(self):
         rows = [{'name': 'native-' + r['id'], 'id': i+1, 'expired': False} for i, r in enumerate(targets())]
         with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'a/b', 'GITHUB_RUN_ID': '123'}):

@@ -14,6 +14,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 
 /**
  * Handles the process-global compute backends (CUDA, CPU, Metal) registry and telemetry.
@@ -110,7 +113,8 @@ public final class ArgusBackend {
             } catch (Throwable ignored) {}
 
             if (logCallbackArena != null) {
-                retiredCallbackArenas.add(logCallbackArena);
+                long gen = RETIREMENT_SEQUENCE.incrementAndGet();
+                retiredCallbacks.add(new RetiredCallback(gen, logCallbackArena));
                 logCallbackArena = null;
             }
 
@@ -119,7 +123,7 @@ public final class ArgusBackend {
                 long deadline = System.currentTimeMillis() + 1000;
                 while (System.currentTimeMillis() < deadline) {
                     try {
-                        int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+                        int inFlight = getInFlightCount();
                         if (inFlight == 0) {
                             break;
                         }
@@ -134,23 +138,7 @@ public final class ArgusBackend {
                     }
                 }
 
-                // Strict Quiescence Invariant: Never close retired callback arenas unless in-flight count is confirmed 0.
-                // A timeout must NEVER authorize destroying executable memory while native callers may still be executing.
-                int inFlight = -1;
-                try {
-                    inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
-                } catch (Throwable ignored) {}
-
-                if (inFlight == 0) {
-                    Arena a;
-                    while ((a = retiredCallbackArenas.poll()) != null) {
-                        try {
-                            a.close();
-                        } catch (Throwable ignored) {}
-                    }
-                } else {
-                    scheduleReaperIfNeeded();
-                }
+                drainRetiredArenas();
             } else {
                 scheduleReaperIfNeeded();
             }
@@ -163,33 +151,67 @@ public final class ArgusBackend {
         }
     }
 
+    record RetiredCallback(long generation, Arena arena) {}
+
     private static Arena logCallbackArena = null;
-    private static final ConcurrentLinkedQueue<Arena> retiredCallbackArenas = new ConcurrentLinkedQueue<>();
+    private static final AtomicLong RETIREMENT_SEQUENCE = new AtomicLong(0);
+    private static final ConcurrentLinkedQueue<RetiredCallback> retiredCallbacks = new ConcurrentLinkedQueue<>();
+    private static final Object RECLAMATION_LOCK = new Object();
     private static final AtomicBoolean REAPER_RUNNING = new AtomicBoolean(false);
 
+    // Testing hooks for deterministic synchronization and fault injection
+    static volatile Consumer<Long> testReaperPostQuiescenceHook = null;
+    static volatile IntSupplier testInFlightCountOverride = null;
+
+    private static int getInFlightCount() throws Throwable {
+        var override = testInFlightCountOverride;
+        if (override != null) {
+            return override.getAsInt();
+        }
+        return (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
+    }
+
     private static void scheduleReaperIfNeeded() {
-        if (retiredCallbackArenas.isEmpty()) {
+        if (retiredCallbacks.isEmpty()) {
             return;
         }
         if (REAPER_RUNNING.compareAndSet(false, true)) {
             Thread.ofVirtual().name("argus-callback-reaper").start(() -> {
+                int consecutiveFailures = 0;
+                long deadline = System.currentTimeMillis() + 10_000;
                 try {
-                    long deadline = System.currentTimeMillis() + 10_000;
-                    while (System.currentTimeMillis() < deadline) {
+                    while (System.currentTimeMillis() < deadline && !retiredCallbacks.isEmpty()) {
+                        long eligibleGen = RETIREMENT_SEQUENCE.get();
+                        int inFlight;
                         try {
-                            int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
-                            if (inFlight == 0) {
-                                Arena a;
-                                while ((a = retiredCallbackArenas.poll()) != null) {
-                                    try {
-                                        a.close();
-                                    } catch (Throwable ignored) {}
-                                }
+                            inFlight = getInFlightCount();
+                            consecutiveFailures = 0;
+                        } catch (Throwable t) {
+                            consecutiveFailures++;
+                            if (consecutiveFailures >= 3) {
+                                // Query failure barrier: safe retention without task churn
                                 return;
                             }
-                        } catch (Throwable ignored) {
-                            return;
+                            try {
+                                Thread.sleep(50L * consecutiveFailures);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                            continue;
                         }
+
+                        if (inFlight == 0) {
+                            var hook = testReaperPostQuiescenceHook;
+                            if (hook != null) {
+                                hook.accept(eligibleGen);
+                            }
+                            reclaimGenerationsUpTo(eligibleGen);
+                            if (retiredCallbacks.isEmpty()) {
+                                return;
+                            }
+                        }
+
                         try {
                             Thread.sleep(10);
                         } catch (InterruptedException e) {
@@ -199,7 +221,8 @@ public final class ArgusBackend {
                     }
                 } finally {
                     REAPER_RUNNING.set(false);
-                    if (!retiredCallbackArenas.isEmpty()) {
+                    // Bounded reschedule: only reschedule if work remains AND we did not experience query failure or loop timeout
+                    if (!retiredCallbacks.isEmpty() && consecutiveFailures == 0 && System.currentTimeMillis() < deadline) {
                         scheduleReaperIfNeeded();
                     }
                 }
@@ -207,28 +230,49 @@ public final class ArgusBackend {
         }
     }
 
-    private static void drainRetiredArenas() {
-        try {
-            int inFlight = (int) ArgusBindings.argus_log_in_flight_count.invokeExact();
-            if (inFlight == 0) {
-                Arena arena;
-                while ((arena = retiredCallbackArenas.poll()) != null) {
-                    try {
-                        arena.close();
-                    } catch (Throwable ignored) {}
+    private static void reclaimGenerationsUpTo(long eligibleGen) {
+        synchronized (RECLAMATION_LOCK) {
+            RetiredCallback item;
+            while ((item = retiredCallbacks.peek()) != null) {
+                if (item.generation() > eligibleGen) {
+                    break;
                 }
-            } else {
-                scheduleReaperIfNeeded();
+                retiredCallbacks.poll();
+                try {
+                    item.arena().close();
+                } catch (Throwable ignored) {}
             }
-        } catch (Throwable ignored) {}
+        }
+    }
+
+    private static void drainRetiredArenas() {
+        if (retiredCallbacks.isEmpty()) {
+            return;
+        }
+        long eligibleGen = RETIREMENT_SEQUENCE.get();
+        int inFlight = -1;
+        try {
+            inFlight = getInFlightCount();
+        } catch (Throwable ignored) {
+            // Cannot verify quiescence synchronously; delegate to reaper for bounded retry & safe retention
+        }
+        if (inFlight == 0) {
+            reclaimGenerationsUpTo(eligibleGen);
+        } else {
+            scheduleReaperIfNeeded();
+        }
     }
 
     static int getRetiredCallbackArenaCount() {
-        return retiredCallbackArenas.size();
+        return retiredCallbacks.size();
     }
 
     static void drainRetiredCallbackArenas() {
         drainRetiredArenas();
+    }
+
+    static boolean isReaperRunning() {
+        return REAPER_RUNNING.get();
     }
 
     /**
@@ -283,7 +327,8 @@ public final class ArgusBackend {
             if (callback == null) {
                 ArgusBindings.argus_set_log_callback.invokeExact(MemorySegment.NULL, MemorySegment.NULL);
                 if (logCallbackArena != null) {
-                    retiredCallbackArenas.add(logCallbackArena);
+                    long gen = RETIREMENT_SEQUENCE.incrementAndGet();
+                    retiredCallbacks.add(new RetiredCallback(gen, logCallbackArena));
                     logCallbackArena = null;
                 }
                 drainRetiredArenas();
@@ -307,7 +352,8 @@ public final class ArgusBackend {
             ArgusBindings.argus_set_log_callback.invokeExact(stub, MemorySegment.NULL);
 
             if (logCallbackArena != null) {
-                retiredCallbackArenas.add(logCallbackArena);
+                long gen = RETIREMENT_SEQUENCE.incrementAndGet();
+                retiredCallbacks.add(new RetiredCallback(gen, logCallbackArena));
             }
             logCallbackArena = newArena;
             drainRetiredArenas();
