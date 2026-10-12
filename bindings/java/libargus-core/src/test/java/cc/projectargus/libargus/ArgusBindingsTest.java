@@ -1639,4 +1639,139 @@ public class ArgusBindingsTest {
             ArgusBackend.free();
         }
     }
+
+    @Test
+    public void testCausalAttentionAndEmbeddingPipeline() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "Could not locate project root containing tests/data/tiny.gguf");
+        Path modelPath = root.resolve("tests/data/tiny.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, modelPath, 0, false)) {
+
+            // 1. Default config (causalAttn not explicitly set)
+            ArgusContextConfig defaultConfig = new ArgusContextConfig.Builder(512)
+                .cpuThreads(2)
+                .build();
+            assertNull(defaultConfig.causalAttn(), "causalAttn should be null when not set in builder");
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, defaultConfig)) {
+                assertTrue(ctx.isCausalAttn(), "Default context should default to causal attention (true)");
+            }
+
+            // 2. Explicit non-causal config and state mutations
+            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
+                .cpuThreads(2)
+                .causalAttn(false)
+                .build();
+            assertEquals(Boolean.FALSE, config.causalAttn());
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                assertFalse(ctx.isCausalAttn(), "Context should be non-causal as configured");
+
+                ctx.setCausalAttn(true);
+                assertTrue(ctx.isCausalAttn(), "Context should be causal after mutation");
+
+                ctx.setCausalAttn(false);
+                assertFalse(ctx.isCausalAttn(), "Context should be non-causal after mutation");
+
+                // Verify perf timings reallocation fields
+                ArgusPerfTimings timings = ctx.getPerfTimings();
+                assertNotNull(timings);
+                assertTrue(timings.nReallocsSame() >= 0, "nReallocsSame should be non-negative");
+                assertTrue(timings.nReallocsDiff() >= 0, "nReallocsDiff should be non-negative");
+
+                // Verify post-close throws
+                ctx.close();
+                assertThrows(IllegalStateException.class, ctx::isCausalAttn);
+                assertThrows(IllegalStateException.class, () -> ctx.setCausalAttn(true));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testExtractEmbeddingsHelper() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf"))) {
+            root = root.getParent();
+        }
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "Project root not found");
+        Path jinaPath = root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf");
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            Files.exists(jinaPath),
+            "Skipping: models/jina-embeddings-v3-Q4_K_M.gguf not found"
+        );
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, jinaPath, 0, false)) {
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
+                .cpuThreads(4)
+                .embeddings(true)
+                .causalAttn(false)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                assertSame(model, ctx.getModel(), "ArgusContext.getModel() must return underlying ArgusModel");
+                int dim = model.nEmbd();
+                assertTrue(dim > 0, "Embedding dimension must be positive");
+
+                MemorySegment outSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+                String prompt = "text-matching: Testing libargus high-level zero-allocation embedding extraction helper.";
+                int written = ctx.extractEmbeddings(arena, prompt, outSeg);
+                assertEquals(dim, written, "Written floats must equal model dimension");
+
+                // Check L2 norm is positive and non-zero
+                double sumSq = 0.0;
+                for (int i = 0; i < dim; i++) {
+                    float val = outSeg.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+                    sumSq += val * val;
+                }
+                assertTrue(sumSq > 0.0, "Embedding vector must not be all zeros");
+
+                // Convenience float[] overload
+                float[] floats = ctx.extractEmbeddings(prompt);
+                assertNotNull(floats);
+                assertEquals(dim, floats.length);
+
+                // Check dot product between segment and array extraction
+                double dot = 0.0;
+                for (int i = 0; i < dim; i++) {
+                    dot += floats[i] * outSeg.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+                }
+                assertTrue(dot > 0.0, "Array and segment embeddings should correlate");
+
+                // Test exception on closed context
+                ctx.close();
+                assertThrows(IllegalStateException.class, () -> ctx.extractEmbeddings(prompt));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testBitmapMergeable() {
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment rgbData = arena.allocate(16 * 16 * 3);
+            try (ArgusBitmap bitmap = ArgusBitmap.fromRgb(16, 16, rgbData)) {
+                assertNotNull(bitmap);
+                assertDoesNotThrow(() -> bitmap.setMergeable(true));
+                assertDoesNotThrow(() -> bitmap.setMergeable(false));
+            }
+            try (ArgusVideoItem item = new ArgusVideoItem()) {
+                assertDoesNotThrow(() -> item.setMergeable(true));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
 }

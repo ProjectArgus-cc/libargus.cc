@@ -8,12 +8,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v1.9.5 Release — Generation-Safe Callback Reclamation & Hardened Reaper Lifecycle**
+> **v2.0.0 Release — Upstream Sync (llama.cpp b11576 / whisper.cpp v1.9.5), EmbeddingGemma2 & Telemetry ABI Elevation**
 > 
-> * **Stable-Generation Quiescence Invariant ($retire(G) \prec Q \prec reclaim(G)$):** Associates retired Panama callback arenas with monotonic retirement generations, guaranteeing that a quiescence observation at time $T_Q$ authorizes reclamation only for generations retired *before* $T_Q$. Prevents race conditions where newly retired generations actively executing on native threads could be prematurely reclaimed by a stale zero observation.
-> * **Bounded Failure & Safe-Retention Reaper Lifecycle:** Hardens background virtual-thread reaper retry dynamics with exponential backoff, bounding consecutive query failures to 3 before transitioning to dormant safe-retention, entirely eliminating unbounded virtual-thread respawn storms while preserving arena safety.
+> * **Next-Gen Embedding Bedrock (`embeddinggemma2`):** Synchronizes upstream computational primitives to `llama.cpp` `b11576` and `whisper.cpp` `v1.9.5`, bringing native support for Google's 24-layer `embeddinggemma2` architecture with symmetric sliding-window attention ($\text{SWA}=6$) and CUDA Flash Attention 256-cell KV padding on no-cache graphs.
+> * **Causal Attention Control:** Exposes thread-safe native downcalls (`argus_context_set_causal_attn` / `argus_context_get_causal_attn`) and `ArgusContextConfig.Builder.causalAttn(boolean)`, enabling dynamic switching between autoregressive causal masking and bidirectional embeddings.
+> * **Temporal Video Frame Merging:** Exposes `argus_bitmap_set_mergeable` (`ArgusBitmap.setMergeable` / `ArgusVideoItem.setMergeable`) allowing video-capable vision architectures (e.g. Qwen-VL) to compress consecutive frames temporally during tokenization.
+> * **Telemetry ABI Expansion:** Expands `argus_perf_timings_t` from 48 bytes to 56 bytes (8-byte aligned) with zero padding holes, exposing scheduler graph reallocation metrics (`n_reallocs_same`, `n_reallocs_diff`) to monitor off-heap buffer reallocation events without scraping terminal logs.
+> * **Zero-Allocation Java Embedding Pipeline:** Adds idiomatic `ArgusContext.extractEmbeddings` methods, tokenizing, evaluating non-causal batches, and copying out normalized float vectors in a single call.
 > * **Release Tooling Hardening:** Codifies synthetic Windows DLL export inspection validation, verifying that test symbol escapes (`argus_test_*`) or header ABI disparities are strictly rejected.
-> * **Compatibility Note on v1.9.2 Test Symbols:** In v1.9.2, internal fault-injection symbols (`argus_test_set_force_rollback_fail` and `argus_test_emit_log`) inadvertently escaped into public release headers and production libraries. These symbols were never supported application APIs and introduced process-wide testing side effects. They were removed from the public production ABI in v1.9.3 and isolated behind `ARGUS_TESTING` build boundaries.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -32,14 +34,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>1.9.5</version>
+        <version>2.0.0</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>1.9.5</version>
+        <version>2.0.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -49,10 +51,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:1.9.5")
+    implementation("cc.projectargus:libargus-core:2.0.0")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:1.9.5")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.0")
 }
 ```
 
@@ -323,28 +325,24 @@ public class EmbeddingsApp {
         try (Arena arena = Arena.ofConfined();
              ArgusModel model = ArgusModel.load(arena, Path.of("models/jina-embeddings-v3-Q4_K_M.gguf"), 99, true)) {
 
-            // Initialize context configuration with embeddings enabled
+            // Initialize context configuration with embeddings and bidirectional non-causal attention
             ArgusContextConfig config = new ArgusContextConfig.Builder(512)
                 .cpuThreads(4)
                 .embeddings(true)
+                .causalAttn(false) // Non-causal attention for BERT/Gemma2/Gemma4 embedding architectures
                 .build();
 
             try (ArgusContext context = ArgusContext.init(arena, model, config)) {
-                // Tokenize and evaluate prompt
                 String text = "text-matching: Retrieve semantic vector for this sentence.";
-                MemorySegment textSeg = arena.allocateFrom(text);
-                
-                MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, 512);
-                int nTokens = context.tokenize(textSeg, tokenBuf, true);
-                
-                context.decodeBatch(tokenBuf, nTokens, 0, 0, false);
 
-                // Retrieve embedding vector (e.g., 1024 dimensions)
-                int expectedDim = 1024;
-                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, expectedDim);
-                int nFloats = context.getEmbeddings(0, embeddingsBuf, expectedDim);
-                
-                System.out.println("Retrieved embeddings containing " + nFloats + " floats.");
+                // Zero-allocation high-level extraction into caller-managed off-heap buffer:
+                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, model.nEmbd());
+                int nFloats = context.extractEmbeddings(arena, text, embeddingsBuf);
+                System.out.println("Extracted " + nFloats + " floats into off-heap memory.");
+
+                // Or retrieve directly as Java float[]:
+                float[] vector = context.extractEmbeddings(text);
+                System.out.println("Extracted float[] with length: " + vector.length);
             }
         } finally {
             ArgusBackend.free();
@@ -569,7 +567,7 @@ Offset  Size  Type       Field Name            Description
 Total Struct Byte Size: 56 bytes (0 padding holes)
 ```
 
-### `argus_perf_timings_t` (48 Bytes, 8-Byte Aligned)
+### `argus_perf_timings_t` (56 Bytes, 8-Byte Aligned)
 ```
 Offset  Size  Type       Field Name            Description
 ---------------------------------------------------------------------------------------------
@@ -580,9 +578,11 @@ Offset  Size  Type       Field Name            Description
 32      4     int32_t    n_p_eval              Prompt tokens evaluated
 36      4     int32_t    n_eval                Generation tokens evaluated
 40      4     int32_t    n_reused              KV cache reused graph iterations count
-44      4     uint8_t[4] reserved_padding      Reserved bytes; struct size 48, alignment 8
+44      4     int32_t    n_reallocs_same       KV cache reallocations within the same buffer
+48      4     int32_t    n_reallocs_diff       KV cache reallocations in different buffers
+52      4     uint8_t[4] reserved_padding      Reserved bytes; struct size 56, alignment 8
 ---------------------------------------------------------------------------------------------
-Total Struct Byte Size: 48 bytes (0 padding holes)
+Total Struct Byte Size: 56 bytes (0 padding holes)
 ```
 
 ### Dynamic CPU Thread Allocation & Governor Control

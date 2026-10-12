@@ -92,6 +92,8 @@ class LoggingAndTelemetryTest {
             ArgusPerfTimings initialTimings = ctx.getPerfTimings();
             assertNotNull(initialTimings);
             assertTrue(initialTimings.startTimeMs() > 0.0);
+            assertTrue(initialTimings.nReallocsSame() >= 0);
+            assertTrue(initialTimings.nReallocsDiff() >= 0);
 
             // Evaluate a prompt batch
             MemorySegment tokens = setup.allocateFrom(ValueLayout.JAVA_INT, 1, 4, 5, 6);
@@ -102,6 +104,8 @@ class LoggingAndTelemetryTest {
             assertTrue(evaluatedTimings.nPromptEval() >= 4, "Prompt tokens count should be >= 4");
             assertTrue(evaluatedTimings.promptEvalTimeMs() >= 0.0);
             assertTrue(evaluatedTimings.promptTokensPerSecond() >= 0.0);
+            assertTrue(evaluatedTimings.nReallocsSame() >= 0);
+            assertTrue(evaluatedTimings.nReallocsDiff() >= 0);
 
             // Reset performance telemetry
             ctx.resetPerfTimings();

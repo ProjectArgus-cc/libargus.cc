@@ -84,7 +84,7 @@ static_assert(sizeof(argus_multimodal_params_t) == 16);
 static_assert(sizeof(argus_logit_bias_t) == 8);
 static_assert(sizeof(argus_sampler_params_t) == 56);
 static_assert(offsetof(argus_sampler_params_t, seed) == 48);
-static_assert(sizeof(argus_perf_timings_t) == 48);
+static_assert(sizeof(argus_perf_timings_t) == 56);
 static_assert(alignof(argus_perf_timings_t) == 8);
 static_assert(offsetof(argus_perf_timings_t, t_start_ms) == 0);
 static_assert(offsetof(argus_perf_timings_t, t_load_ms) == 8);
@@ -93,7 +93,9 @@ static_assert(offsetof(argus_perf_timings_t, t_eval_ms) == 24);
 static_assert(offsetof(argus_perf_timings_t, n_p_eval) == 32);
 static_assert(offsetof(argus_perf_timings_t, n_eval) == 36);
 static_assert(offsetof(argus_perf_timings_t, n_reused) == 40);
-static_assert(offsetof(argus_perf_timings_t, reserved_padding) == 44);
+static_assert(offsetof(argus_perf_timings_t, n_reallocs_same) == 44);
+static_assert(offsetof(argus_perf_timings_t, n_reallocs_diff) == 48);
+static_assert(offsetof(argus_perf_timings_t, reserved_padding) == 52);
 
 // =========================================================================
 // Global Diagnostic Logging State & Dispatch

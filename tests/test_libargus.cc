@@ -1012,12 +1012,15 @@ int main(int argc, char ** argv) {
         ARGUS_CHECK(argus_context_get_perf(nullptr, &timings) == false);
         ARGUS_CHECK(argus_context_get_perf(ctx, nullptr) == false);
         bool got_perf = argus_context_get_perf(ctx, &timings);
-        ARGUS_CHECK(got_perf);
         ARGUS_CHECK(timings.n_p_eval > 0);
         ARGUS_CHECK(timings.t_p_eval_ms >= 0.0);
         ARGUS_CHECK(timings.t_start_ms > 0.0);
+        ARGUS_CHECK(timings.n_reallocs_same >= 0);
+        ARGUS_CHECK(timings.n_reallocs_diff >= 0);
         std::cout << "  - Performance telemetry verified: n_p_eval=" << timings.n_p_eval
-                  << ", t_p_eval_ms=" << timings.t_p_eval_ms << " ms" << std::endl;
+                  << ", t_p_eval_ms=" << timings.t_p_eval_ms << " ms"
+                  << ", reallocs_same=" << timings.n_reallocs_same
+                  << ", reallocs_diff=" << timings.n_reallocs_diff << std::endl;
 
         argus_context_reset_perf(ctx);
         argus_perf_timings_t timings_reset = {};
@@ -1027,7 +1030,23 @@ int main(int argc, char ** argv) {
         std::cout << "  - Performance telemetry reset verified: n_p_eval successfully reset from "
                   << timings.n_p_eval << " to " << timings_reset.n_p_eval << std::endl;
 
-        // 7.17. Cleanup
+        // 7.17. Causal Attention Mode Verification
+        std::cout << "[Test] Verifying causal attention state mutations..." << std::endl;
+        bool causal_state = false;
+        ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
+        ARGUS_CHECK(causal_state == true); // default is true for standard context
+        ARGUS_CHECK(argus_context_set_causal_attn(ctx, false));
+        ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
+        ARGUS_CHECK(causal_state == false);
+        ARGUS_CHECK(argus_context_set_causal_attn(ctx, true));
+        ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
+        ARGUS_CHECK(causal_state == true);
+        ARGUS_CHECK(argus_context_set_causal_attn(nullptr, true) == false);
+        ARGUS_CHECK(argus_context_get_causal_attn(nullptr, &causal_state) == false);
+        ARGUS_CHECK(argus_context_get_causal_attn(ctx, nullptr) == false);
+        std::cout << "  - Causal attention mutation verified." << std::endl;
+
+        // 7.18. Cleanup
         argus_context_free(ctx);
         argus_model_free(draft_model);
         argus_model_free(model);

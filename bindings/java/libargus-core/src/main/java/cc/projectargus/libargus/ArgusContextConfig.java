@@ -30,7 +30,8 @@ public record ArgusContextConfig(
     boolean enableDraftMtp,
     boolean embeddings,
     boolean kvUnified,
-    int cloneSlots
+    int cloneSlots,
+    Boolean causalAttn
 ) {
     public ArgusContextConfig {
         ArgusValidation.checkNonNegative(seqMax, "seqMax");
@@ -48,6 +49,26 @@ public record ArgusContextConfig(
     public static final int KV_TYPE_Q4_1 = 3;
 
     /**
+     * Backwards-compatible constructor without causalAttn parameter.
+     */
+    public ArgusContextConfig(
+        ArgusModel draftModel,
+        int contextLength,
+        int cpuThreads,
+        int typeK,
+        int typeV,
+        int specDraftNMax,
+        int uBatch,
+        int seqMax,
+        boolean enableDraftMtp,
+        boolean embeddings,
+        boolean kvUnified,
+        int cloneSlots
+    ) {
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, uBatch, seqMax, enableDraftMtp, embeddings, kvUnified, cloneSlots, null);
+    }
+
+    /**
      * Backwards-compatible constructor without cloneSlots parameter.
      */
     public ArgusContextConfig(
@@ -63,7 +84,7 @@ public record ArgusContextConfig(
         boolean embeddings,
         boolean kvUnified
     ) {
-        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, uBatch, seqMax, enableDraftMtp, embeddings, kvUnified, 0);
+        this(draftModel, contextLength, cpuThreads, typeK, typeV, specDraftNMax, uBatch, seqMax, enableDraftMtp, embeddings, kvUnified, 0, null);
     }
 
     /**
@@ -224,6 +245,17 @@ public record ArgusContextConfig(
             return this;
         }
 
+        private Boolean causalAttn = null;
+
+        /**
+         * Configures whether this context uses causal attention masking.
+         * Default is null (respects model defaults: true for text LLMs, false for embedding models).
+         */
+        public Builder causalAttn(boolean causalAttn) {
+            this.causalAttn = causalAttn;
+            return this;
+        }
+
         public ArgusContextConfig build() {
             int effectiveSeqMax = seqMax;
             if (cloneSlots > 0) {
@@ -247,7 +279,8 @@ public record ArgusContextConfig(
                 enableDraftMtp,
                 embeddings,
                 kvUnified,
-                cloneSlots
+                cloneSlots,
+                causalAttn
             );
         }
     }

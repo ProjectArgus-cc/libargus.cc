@@ -162,7 +162,11 @@ public final class ArgusContext extends ArgusNativeResource {
                     ArgusNativeException.throwLastError("argus_context_init");
                 }
                 try {
-                    return new ArgusContext(ctxPtr, model, config.draftModel(), privateArena, config);
+                    ArgusContext contextInstance = new ArgusContext(ctxPtr, model, config.draftModel(), privateArena, config);
+                    if (config.causalAttn() != null) {
+                        contextInstance.setCausalAttn(config.causalAttn());
+                    }
+                    return contextInstance;
                 } catch (Throwable t) {
                     try {
                         ArgusBindings.argus_context_free.invokeExact(ctxPtr);
@@ -1136,8 +1140,10 @@ public final class ArgusContext extends ArgusNativeResource {
             int nPromptEval = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 32);
             int nEval = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 36);
             int nReused = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 40);
+            int nReallocsSame = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 44);
+            int nReallocsDiff = outSeg.get(java.lang.foreign.ValueLayout.JAVA_INT, 48);
 
-            return new ArgusPerfTimings(startMs, loadMs, pEvalMs, evalMs, nPromptEval, nEval, nReused);
+            return new ArgusPerfTimings(startMs, loadMs, pEvalMs, evalMs, nPromptEval, nEval, nReused, nReallocsSame, nReallocsDiff);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query context performance timings", t);
@@ -1159,5 +1165,98 @@ public final class ArgusContext extends ArgusNativeResource {
         } finally {
             releaseReadLease();
         }
+    }
+
+    /**
+     * Configures whether this context uses causal attention masking.
+     *
+     * @param causal True for causal masking (autoregressive models), false for bidirectional attention (embedding models).
+     */
+    public void setCausalAttn(boolean causal) {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            boolean ok = (boolean) ArgusBindings.argus_context_set_causal_attn.invokeExact(ctxH, causal);
+            if (!ok) {
+                ArgusNativeException.throwLastError("argus_context_set_causal_attn");
+            }
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to set causal attention", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Returns true if this context is currently configured for causal attention masking.
+     */
+    public boolean isCausalAttn() {
+        MemorySegment ctxH = acquireReadLease();
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_BOOLEAN);
+            boolean ok = (boolean) ArgusBindings.argus_context_get_causal_attn.invokeExact(ctxH, outSeg);
+            if (!ok) {
+                ArgusNativeException.throwLastError("argus_context_get_causal_attn");
+            }
+            return outSeg.get(ValueLayout.JAVA_BOOLEAN, 0);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query causal attention status", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * High-level, zero-allocation embedding extraction pipeline.
+     * Tokenizes prompt text, decodes a single non-causal batch, and writes the resulting
+     * normalized float embedding vector into the caller's preallocated MemorySegment.
+     *
+     * @param arena Confined or temporary arena used for intermediate token buffers
+     * @param text Input text string to embed
+     * @param outEmbeddings Destination MemorySegment allocated for at least model.nEmbd() floats
+     * @return Number of floats written to outEmbeddings
+     */
+    public int extractEmbeddings(Arena arena, String text, MemorySegment outEmbeddings) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+
+        MemorySegment textSeg = arena.allocateFrom(text);
+        int maxTokens = Math.max(512, (int) textSeg.byteSize());
+        MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, maxTokens);
+        int nTokens = tokenize(textSeg, tokenBuf, true);
+        if (nTokens <= 0) {
+            return 0;
+        }
+
+        decodeBatch(tokenBuf, nTokens, 0, 0, false);
+        int maxFloats = (int) (outEmbeddings.byteSize() / ValueLayout.JAVA_FLOAT.byteSize());
+        return getEmbeddings(0, outEmbeddings, maxFloats);
+    }
+
+    /**
+     * Returns the underlying primary model reference associated with this context.
+     */
+    public ArgusModel getModel() {
+        return modelRef;
+    }
+
+    /**
+     * Convenience method to extract semantic text embeddings as a standard Java float array.
+     *
+     * @param text Input text to embed
+     * @return Float array containing the embedding vector
+     */
+    public float[] extractEmbeddings(String text) {
+        Objects.requireNonNull(text, "text");
+        int dim = modelRef.nEmbd();
+        float[] result = new float[dim];
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, dim);
+            int written = extractEmbeddings(localArena, text, outSeg);
+            MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, result, 0, written);
+        }
+        return result;
     }
 }

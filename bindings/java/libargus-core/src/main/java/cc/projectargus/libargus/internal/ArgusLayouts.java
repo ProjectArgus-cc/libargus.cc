@@ -184,6 +184,8 @@ public final class ArgusLayouts {
      *     int32_t  n_p_eval;            // 4 bytes
      *     int32_t  n_eval;              // 4 bytes
      *     int32_t  n_reused;            // 4 bytes
+     *     int32_t  n_reallocs_same;     // 4 bytes
+     *     int32_t  n_reallocs_diff;     // 4 bytes
      *     uint8_t  reserved_padding[4]; // 4 bytes padding
      * } argus_perf_timings_t;
      * </pre>
@@ -196,6 +198,8 @@ public final class ArgusLayouts {
         ValueLayout.JAVA_INT.withName("n_p_eval"),
         ValueLayout.JAVA_INT.withName("n_eval"),
         ValueLayout.JAVA_INT.withName("n_reused"),
+        ValueLayout.JAVA_INT.withName("n_reallocs_same"),
+        ValueLayout.JAVA_INT.withName("n_reallocs_diff"),
         MemoryLayout.paddingLayout(4).withName("reserved_padding")
     ).withName("argus_perf_timings");
 

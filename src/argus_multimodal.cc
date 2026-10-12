@@ -204,7 +204,8 @@ argus_bitmap_t * argus_bitmap_load_file(argus_multimodal_t * mctx, const char * 
             return nullptr;
         }
 
-        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_file(mctx->ctx, path, placeholder);
+        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_file(
+            mctx->ctx, path, placeholder, mtmd_helper_init_opt_default());
         if (wrapper.video_ctx) {
             mtmd_helper_video_free(wrapper.video_ctx);
             if (wrapper.bitmap) {
@@ -224,7 +225,8 @@ argus_bitmap_t * argus_bitmap_load_buffer(argus_multimodal_t * mctx, const uint8
             return nullptr;
         }
 
-        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(mctx->ctx, buffer, (size_t)size, placeholder);
+        struct mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(
+            mctx->ctx, buffer, (size_t)size, placeholder, mtmd_helper_init_opt_default());
         if (wrapper.video_ctx) {
             mtmd_helper_video_free(wrapper.video_ctx);
             if (wrapper.bitmap) {
@@ -242,6 +244,17 @@ void argus_bitmap_free(argus_bitmap_t * bitmap) {
         if (bitmap) {
             mtmd_bitmap_free(reinterpret_cast<mtmd_bitmap*>(bitmap));
         }
+    });
+}
+
+ARGUS_API bool argus_bitmap_set_mergeable(argus_bitmap_t * bitmap, bool mergeable) {
+    if (!bitmap) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null bitmap pointer");
+        return false;
+    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_bitmap_set_mergeable", [&]() -> bool {
+        mtmd_bitmap_set_mergeable(reinterpret_cast<mtmd_bitmap*>(bitmap), mergeable);
+        return true;
     });
 }
 

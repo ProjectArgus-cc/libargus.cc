@@ -2267,6 +2267,8 @@ ARGUS_API bool argus_context_get_perf(const argus_context_t * ctx, argus_perf_ti
         out_timings->n_p_eval = pdata.n_p_eval;
         out_timings->n_eval = pdata.n_eval;
         out_timings->n_reused = pdata.n_reused;
+        out_timings->n_reallocs_same = pdata.n_reallocs_same;
+        out_timings->n_reallocs_diff = pdata.n_reallocs_diff;
         std::memset(out_timings->reserved_padding, 0, sizeof(out_timings->reserved_padding));
         return true;
     });
@@ -2280,6 +2282,30 @@ ARGUS_API void argus_context_reset_perf(argus_context_t * ctx) {
     argus_guard_void("argus_context_reset_perf", [&]() {
         std::lock_guard<std::mutex> lock(ctx->mtx);
         llama_perf_context_reset(ctx->ctx);
+    });
+}
+
+ARGUS_API bool argus_context_set_causal_attn(argus_context_t * ctx, bool causal) {
+    if (!ctx || !ctx->ctx) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context pointer");
+        return false;
+    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_context_set_causal_attn", [&]() -> bool {
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+        llama_set_causal_attn(ctx->ctx, causal);
+        return true;
+    });
+}
+
+ARGUS_API bool argus_context_get_causal_attn(const argus_context_t * ctx, bool * out_causal) {
+    if (!ctx || !ctx->ctx || !out_causal) {
+        set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context or output pointer");
+        return false;
+    }
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_context_get_causal_attn", [&]() -> bool {
+        std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+        *out_causal = llama_get_causal_attn(ctx->ctx);
+        return true;
     });
 }
 

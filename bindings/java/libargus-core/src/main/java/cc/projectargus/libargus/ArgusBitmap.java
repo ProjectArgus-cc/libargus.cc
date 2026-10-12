@@ -127,4 +127,24 @@ public final class ArgusBitmap extends ArgusNativeResource {
             throw new RuntimeException("Failed to load ArgusBitmap from memory buffer", t);
         }
     }
+
+    /**
+     * Configures whether this bitmap is temporally mergeable by video models during tokenization.
+     *
+     * @param mergeable True if adjacent frames can be merged, false otherwise.
+     */
+    public void setMergeable(boolean mergeable) {
+        withHandle(h -> {
+            try {
+                boolean ok = (boolean) ArgusBindings.argus_bitmap_set_mergeable.invokeExact(h, mergeable);
+                if (!ok) {
+                    ArgusNativeException.throwLastError("argus_bitmap_set_mergeable");
+                }
+                return null;
+            } catch (Throwable t) {
+                if (t instanceof RuntimeException re) throw re;
+                throw new RuntimeException("Failed to set bitmap mergeable status", t);
+            }
+        });
+    }
 }

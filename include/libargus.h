@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 1.9.5
+ * @version 2.0.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -319,7 +319,9 @@ typedef struct argus_perf_timings {
     int32_t  n_p_eval;            /**< Evaluated prompt token count (4 bytes) */
     int32_t  n_eval;              /**< Evaluated generation token count (4 bytes) */
     int32_t  n_reused;            /**< Reused graph compute iterations count (4 bytes) */
-    uint8_t  reserved_padding[4]; /**< Alignment padding securing 8-byte boundaries (4 bytes) */
+    int32_t  n_reallocs_same;     /**< Graph reallocations during inference with unchanged size (4 bytes) */
+    int32_t  n_reallocs_diff;     /**< Graph reallocations during inference with changed size (4 bytes) */
+    uint8_t  reserved_padding[4]; /**< Explicit reserved alignment padding securing 8-byte boundaries (4 bytes) */
 } argus_perf_timings_t;
 
 // =========================================================================
@@ -458,6 +460,27 @@ ARGUS_API bool argus_context_get_perf(const argus_context_t * ctx, argus_perf_ti
  * @param ctx Target execution context.
  */
 ARGUS_API void argus_context_reset_perf(argus_context_t * ctx);
+
+/**
+ * @brief Configures whether the context enforces causal attention masking.
+ *
+ * For standard autoregressive generation, causal attention is true.
+ * For bidirectional embedding models (e.g. embeddinggemma2), set to false.
+ *
+ * @param ctx Target execution context.
+ * @param causal True for causal masking, false for bidirectional attention.
+ * @return true on success, false on invalid pointer or context.
+ */
+ARGUS_API bool argus_context_set_causal_attn(argus_context_t * ctx, bool causal);
+
+/**
+ * @brief Queries whether the context is currently operating in causal attention mode.
+ *
+ * @param ctx Target execution context.
+ * @param out_causal Pointer to boolean receiving the active causal attention state.
+ * @return true on success, false on invalid pointer or context.
+ */
+ARGUS_API bool argus_context_get_causal_attn(const argus_context_t * ctx, bool * out_causal);
 
 /**
  * @brief Checks if speculative decoding draft context is initialized and active on this context session.
@@ -1175,6 +1198,17 @@ ARGUS_API argus_bitmap_t * argus_bitmap_load_buffer(argus_multimodal_t * mctx, c
  * @param bitmap Target bitmap pointer.
  */
 ARGUS_API void argus_bitmap_free(argus_bitmap_t * bitmap);
+
+/**
+ * @brief Marks a bitmap as temporally mergeable by supported video models (e.g. Qwen-VL).
+ *
+ * Consecutive mergeable frames are merged into composite visual tokens during tokenization.
+ *
+ * @param bitmap Target bitmap pointer.
+ * @param mergeable True to permit temporal merging, false otherwise.
+ * @return true on success, false on invalid pointer.
+ */
+ARGUS_API bool argus_bitmap_set_mergeable(argus_bitmap_t * bitmap, bool mergeable);
 
 /**
  * @brief Prepares a video processing session from a file.

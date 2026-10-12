@@ -10,6 +10,8 @@ package cc.projectargus.libargus;
  * @param nPromptEval Evaluated prompt token count
  * @param nEval Evaluated generation token count
  * @param nReused Reused graph compute iterations count
+ * @param nReallocsSame Graph reallocations during inference with unchanged size
+ * @param nReallocsDiff Graph reallocations during inference with changed size
  */
 public record ArgusPerfTimings(
     double startTimeMs,
@@ -18,7 +20,9 @@ public record ArgusPerfTimings(
     double evalTimeMs,
     int nPromptEval,
     int nEval,
-    int nReused
+    int nReused,
+    int nReallocsSame,
+    int nReallocsDiff
 ) {
     /**
      * Calculates the prompt prefill processing speed in tokens per second.

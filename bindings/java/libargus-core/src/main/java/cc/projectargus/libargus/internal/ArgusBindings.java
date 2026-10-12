@@ -365,6 +365,14 @@ public final class ArgusBindings {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_context_set_causal_attn = bind("argus_context_set_causal_attn",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN)
+    );
+
+    public static final MethodHandle argus_context_get_causal_attn = bind("argus_context_get_causal_attn",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
+
     // Tokenization
     public static final MethodHandle argus_tokenize = bind("argus_tokenize",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, 
@@ -664,6 +672,10 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_bitmap_free = bind("argus_bitmap_free",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_bitmap_set_mergeable = bind("argus_bitmap_set_mergeable",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_BOOLEAN)
     );
 
     public static final MethodHandle argus_video_load_file = bind("argus_video_load_file",

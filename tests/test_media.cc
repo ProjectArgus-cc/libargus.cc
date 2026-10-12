@@ -16,6 +16,8 @@ int main(int argc, char **) {
     CHECK(argus_multimodal_support_vision(projector));
     std::vector<uint8_t> rgb(16 * 16 * 3, 127);
     auto bitmap = argus_bitmap_from_rgb(16, 16, rgb.data()); CHECK(bitmap);
+    CHECK(argus_bitmap_set_mergeable(bitmap, true));
+    CHECK(argus_bitmap_set_mergeable(nullptr, true) == false);
     auto chunks = argus_input_chunks_init(); CHECK(chunks);
     const argus_bitmap_t * images[] = {bitmap};
     CHECK(argus_multimodal_tokenize(projector, chunks, "<__media__>", false, images, 1) == 0);

@@ -106,6 +106,25 @@ public final class ArgusVideoItem implements AutoCloseable {
         }
     }
 
+    /**
+     * Marks the active frame bitmap as temporally mergeable if a bitmap is present.
+     *
+     * @param mergeable True to permit temporal merging, false otherwise.
+     */
+    public void setMergeable(boolean mergeable) {
+        lifecycleLock.readLock().lock();
+        try {
+            if (closed) {
+                throw new IllegalStateException("ArgusVideoItem is closed");
+            }
+            if (bitmap != null) {
+                bitmap.setMergeable(mergeable);
+            }
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
     @Override
     public void close() {
         if (closed) {
