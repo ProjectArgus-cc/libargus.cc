@@ -141,4 +141,22 @@ public final class ArgusValidation {
             throw new IllegalArgumentException(paramName + " does not contain null terminator within its bounds");
         }
     }
+
+    /**
+     * Allocates an off-heap UTF-8 memory segment for a Java string without appending
+     * an artificial C null terminator byte.
+     *
+     * @param arena allocator arena
+     * @param text string to convert
+     * @return memory segment whose byteSize() exactly equals the UTF-8 byte length
+     */
+    public static MemorySegment allocateUtf8Text(java.lang.foreign.Arena arena, String text) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(text, "text");
+        if (text.isEmpty()) {
+            return arena.allocate(0);
+        }
+        MemorySegment seg = arena.allocateFrom(text);
+        return seg.asSlice(0, seg.byteSize() - 1);
+    }
 }

@@ -200,9 +200,6 @@ public final class ArgusContext extends ArgusNativeResource {
         ArgusValidation.checkWritable(outTokensSeg, ValueLayout.JAVA_INT.byteSize(), "outTokensSeg");
         long maxTokens = outTokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize();
         long textLen = textSeg.byteSize();
-        if (textLen > 0 && textSeg.get(ValueLayout.JAVA_BYTE, textLen - 1) == 0) {
-            textLen--;
-        }
 
         MemorySegment ctxH = acquireReadLease();
         try {
@@ -250,7 +247,7 @@ public final class ArgusContext extends ArgusNativeResource {
     public MemorySegment tokenize(Arena arena, String text, boolean addBos) {
         Objects.requireNonNull(arena, "arena");
         Objects.requireNonNull(text, "text");
-        MemorySegment textSeg = arena.allocateFrom(text);
+        MemorySegment textSeg = ArgusValidation.allocateUtf8Text(arena, text);
         int initialCap = Math.max(64, (int) textSeg.byteSize());
         MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, initialCap);
         int nTokens = tokenize(textSeg, tokenBuf, addBos);
@@ -1389,7 +1386,7 @@ public final class ArgusContext extends ArgusNativeResource {
             throw new IllegalArgumentException("Cannot extract embeddings for empty text string");
         }
 
-        MemorySegment textSeg = arena.allocateFrom(text);
+        MemorySegment textSeg = ArgusValidation.allocateUtf8Text(arena, text);
         int maxTokens = Math.max(512, (int) textSeg.byteSize());
         MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, maxTokens);
         int nTokens = tokenize(textSeg, tokenBuf, true);

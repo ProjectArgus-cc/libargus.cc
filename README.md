@@ -8,14 +8,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.2 Release — Atomic Embedding Ownership, Concurrency Safety & Tokenizer Hardening**
+> **v2.0.3 Release — Preflight State Atomicity, Tokenizer Alignment & Fixture Hardening**
 > 
-> * **Atomic Embedding Downcall:** Introduces `argus_eval_embeddings` across the native C ABI and Project Panama FFM (`ArgusContext.evalEmbeddings`), locking the execution context across KV pruning, token decoding, and embedding extraction to eliminate cross-thread interleaving and race conditions.
-> * **Generational Embedding Ownership:** Implements monotonic generational stamping (`embedding_generation`) across contexts and sequence slots, invalidating superseded sequence embeddings immediately upon subsequent decoding or state rollback (`ARGUS_ERROR_INVALID_STATE`).
-> * **Zero-Allocation Steady-State Token Chunking:** Context initialization now preallocates dedicated `llama_batch` scratch storage sized to `n_batch`, eliminating steady-state unmanaged allocations/deallocations on chunked decode paths.
-> * **Tokenizer Capacity Retry & Overflow Protection:** Preserves negative required token counts when `last_error == 0` during buffer undersizing retries and protects against integer negation overflow (`Integer.MIN_VALUE` / CWE-190).
-> * **Convenience Tokenizer Overloads:** Adds high-level `tokenize(String, boolean)` and `tokenize(Arena, String, boolean)` methods to both `ArgusContext` and `ArgusModel` for seamless ergonomic tokenization.
-> * **Deterministic Callback Reaper Handoff:** Hardens `ArgusBackend` callback retirement with sub-second virtual-thread handoff testing, ensuring clean quiescent reclamation under sustained native queries.
+> * **Pure Preflight Rejection & State Neutrality:** Predictably invalid embedding requests (`argus_eval_embeddings`) and token batches (`argus_decode_batch`) violating non-causal single micro-batch limits (`n_tokens > n_ubatch`) or context limits (`n_tokens > n_ctx`) are rejected prior to native context mutation, preserving prior sequence embeddings, KV cache positions, history sequences, and sampler states without side-effects.
+> * **Tokenizer Contract & Parity Alignment:** Aligns `ArgusModel` and `ArgusContext` String tokenizers by introducing zero-allocation off-heap UTF-8 string slicing (`ArgusValidation.allocateUtf8Text`) to eliminate artificial terminating NUL byte injection (`\0`), guaranteeing exact token ID agreement across convenience overloads while preserving exact `byteSize()` contracts on raw `MemorySegment` boundaries.
+> * **Embedding Input String Integrity:** `ArgusContext.extractEmbeddings` now uses zero-allocation UTF-8 slicing, preventing unintended trailing NUL byte tokenization in embedding inputs.
+> * **Defensive Scratch Allocation Checks:** Guards `llama_batch_init` scratch allocations against unhandled `malloc` failures during context initialization and chunked decoding fallbacks (`std::bad_alloc` and `ARGUS_ERROR_OUT_OF_MEMORY`).
+> * **Fail-Fast Fixture Loading:** Replaces directory-dependent fixture resolution in concurrency tests with multi-candidate path resolution and explicit non-null assertions (`CHECK(emodel != nullptr)`), eliminating silent test skips.
+> * **Real Blocked-Callback Reaper Handoff:** Regression-tested with real in-flight unmanaged callbacks blocked on concurrent latches past the reaper timeout, verifying automated virtual-thread handoff and clean quiescent reclamation.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -34,14 +34,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.2</version>
+        <version>2.0.3</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.2</version>
+        <version>2.0.3</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -51,10 +51,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.2")
+    implementation("cc.projectargus:libargus-core:2.0.3")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.2")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.3")
 }
 ```
 

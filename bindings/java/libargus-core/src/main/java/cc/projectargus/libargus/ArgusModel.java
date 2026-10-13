@@ -634,7 +634,7 @@ public final class ArgusModel extends ArgusNativeResource {
     public MemorySegment tokenize(Arena arena, String text, boolean addBos) {
         Objects.requireNonNull(arena, "arena");
         Objects.requireNonNull(text, "text");
-        MemorySegment textSeg = arena.allocateFrom(text);
+        MemorySegment textSeg = ArgusValidation.allocateUtf8Text(arena, text);
         int initialCap = Math.max(64, (int) textSeg.byteSize());
         MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, initialCap);
         int nTokens = tokenize(textSeg, tokenBuf, addBos);

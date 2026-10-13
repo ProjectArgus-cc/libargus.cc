@@ -371,6 +371,11 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
             }
 
             argus_ctx->batch_scratch       = llama_batch_init(cparams.n_batch, 0, 1);
+            if (!argus_ctx->batch_scratch.token || !argus_ctx->batch_scratch.pos ||
+                !argus_ctx->batch_scratch.n_seq_id || !argus_ctx->batch_scratch.seq_id ||
+                !argus_ctx->batch_scratch.logits) {
+                throw std::bad_alloc();
+            }
             argus_ctx->has_batch_scratch   = true;
 
             return argus_ctx;
@@ -962,6 +967,12 @@ static int32_t decode_tokens_chunked(
     if (!use_scratch) {
         int32_t max_chunk_size = std::min(n_batch, n_tokens);
         temp_batch = llama_batch_init(max_chunk_size, 0, 1);
+        if (!temp_batch.token || !temp_batch.pos || !temp_batch.n_seq_id ||
+            !temp_batch.seq_id || !temp_batch.logits) {
+            llama_batch_free(temp_batch);
+            set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, "failed to allocate temporary llama_batch");
+            return -1;
+        }
     }
     struct llama_batch & batch = use_scratch ? ctx->batch_scratch : temp_batch;
 
@@ -1096,6 +1107,23 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
         int32_t seq_id = batch_payload->seq_id;
         if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range");
+            return -1;
+        }
+
+        // Preflight validation: non-causal single batch constraint & context length limits
+        if (!llama_get_causal_attn(ctx->ctx)) {
+            int32_t n_ubatch = (int32_t)llama_n_ubatch(ctx->ctx);
+            int32_t n_batch  = (int32_t)llama_n_batch(ctx->ctx);
+            if (batch_payload->n_tokens > n_ubatch || batch_payload->n_tokens > n_batch) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
+                    "non-causal bidirectional attention requires n_tokens <= n_ubatch and n_tokens <= n_batch; "
+                    "sequence chunking is semantically invalid for non-causal attention");
+                return -1;
+            }
+        }
+
+        if (batch_payload->start_pos + batch_payload->n_tokens > (int32_t)llama_n_ctx(ctx->ctx)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "batch extends beyond context length limit");
             return -1;
         }
 
@@ -1367,15 +1395,33 @@ int32_t argus_eval_embeddings(
             return -2;
         }
 
-        // Invalidate embeddings and logits prior to evaluation
-        invalidate_context_embeddings(ctx);
-        invalidate_seq_logits(ctx, seq_id);
+        // Side-effect-free preflight checks: validate batch limits and context length before state mutation
+        if (!llama_get_causal_attn(ctx->ctx)) {
+            int32_t n_ubatch = (int32_t)llama_n_ubatch(ctx->ctx);
+            int32_t n_batch  = (int32_t)llama_n_batch(ctx->ctx);
+            if (n_tokens > n_ubatch || n_tokens > n_batch) {
+                set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
+                    "non-causal bidirectional attention requires n_tokens <= n_ubatch and n_tokens <= n_batch; "
+                    "sequence chunking is semantically invalid for non-causal attention");
+                return -1;
+            }
+        }
 
-        // Prune any prior KV cache entries for this sequence slot to ensure clean start from position 0
+        if (n_tokens > (int32_t)llama_n_ctx(ctx->ctx)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "n_tokens exceeds context length limit");
+            return -1;
+        }
+
+        // Prune any prior KV cache entries for this sequence slot to ensure clean start from position 0.
+        // If pruning fails, exit immediately before modifying sampler history, pending, or embeddings.
         if (!prune_kv_cache_if_rollback(ctx->ctx, seq_id, 0)) {
             set_last_error(ARGUS_ERROR_ROLLBACK_FAILED, "failed to prune prior sequence KV cache for embedding evaluation");
             return -1;
         }
+
+        // Invalidate embeddings and logits prior to evaluation
+        invalidate_context_embeddings(ctx);
+        invalidate_seq_logits(ctx, seq_id);
 
         auto & slot = ctx->seq_samplers[seq_id];
         slot.history.clear();

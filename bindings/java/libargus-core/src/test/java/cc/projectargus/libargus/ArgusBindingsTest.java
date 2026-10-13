@@ -1770,20 +1770,41 @@ public class ArgusBindingsTest {
                         "evalEmbeddings float at index " + i + " must match deterministic baseline");
                 }
 
-                // Test high-level String tokenizer convenience overloads
-                int[] tokenArray = ctx.tokenize("Testing libargus tokenizer convenience overload", true);
-                assertNotNull(tokenArray);
-                assertTrue(tokenArray.length > 0);
-                assertEquals(1, tokenArray[0], "First token must be BOS when addBos is true");
+                // Test high-level String tokenizer convenience overloads and parity (F-02)
+                String[] testStrings = {
+                    "",
+                    "Hello, World!",
+                    "Testing libargus tokenizer convenience overload",
+                    "こんにちは世界! 🚀",
+                    "🔥🔬🧠💻",
+                    "prefix\u0000suffix",
+                    "Long text repeated ".repeat(20)
+                };
+                for (String s : testStrings) {
+                    for (boolean addBos : new boolean[]{true, false}) {
+                        int[] ctxTokens = ctx.tokenize(s, addBos);
+                        int[] modelTokens = model.tokenize(s, addBos);
+                        assertArrayEquals(ctxTokens, modelTokens,
+                            "Context and Model tokenize must agree exactly on string: '" + s + "' (addBos=" + addBos + ")");
 
-                MemorySegment tokenArenaSeg = ctx.tokenize(arena, "Testing libargus tokenizer convenience overload", true);
-                assertNotNull(tokenArenaSeg);
-                assertEquals(tokenArray.length, tokenArenaSeg.byteSize() / ValueLayout.JAVA_INT.byteSize());
+                        MemorySegment ctxTokenSeg = ctx.tokenize(arena, s, addBos);
+                        MemorySegment modelTokenSeg = model.tokenize(arena, s, addBos);
+                        assertEquals(ctxTokenSeg.byteSize(), modelTokenSeg.byteSize(),
+                            "Context and Model segment tokenization must agree on byteSize for string: '" + s + "'");
+                        assertEquals(ctxTokens.length, (int)(ctxTokenSeg.byteSize() / ValueLayout.JAVA_INT.byteSize()));
+                    }
+                }
 
-                // Test model-level tokenizer convenience overload
-                int[] modelTokenArray = model.tokenize("Testing libargus model tokenizer", false);
-                assertNotNull(modelTokenArray);
-                assertTrue(modelTokenArray.length > 0);
+                // Verify context tokenization survives when Java ArgusModel wrapper is closed
+                int[] expectedTokensBeforeClose = ctx.tokenize("Context tokenizer persists across model closure", false);
+                try (ArgusModel tempModel = ArgusModel.load(arena, embedPath, 0, false)) {
+                    try (ArgusContext tempCtx = ArgusContext.init(arena, tempModel, config)) {
+                        tempModel.close(); // Explicitly close Java ArgusModel wrapper
+                        int[] tokensAfterClose = tempCtx.tokenize("Context tokenizer persists across model closure", false);
+                        assertArrayEquals(expectedTokensBeforeClose, tokensAfterClose,
+                            "Context tokenization must remain fully operational and bit-identical after ArgusModel is closed");
+                    }
+                }
 
                 // Test tokenizer undersized capacity retry protocol
                 MemorySegment undersizedBuf = arena.allocate(ValueLayout.JAVA_INT, 1);

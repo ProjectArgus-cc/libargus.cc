@@ -51,6 +51,24 @@ void release() {
     released.store(true, std::memory_order_release);
 }
 }
+
+static const char * resolve_test_fixture(const char * relative_path) {
+    static char resolved_paths[4][512];
+    static int path_idx = 0;
+    const char * prefixes[] = { "", "../", "../../" };
+    for (const char * prefix : prefixes) {
+        char * buf = resolved_paths[path_idx % 4];
+        std::snprintf(buf, 512, "%s%s", prefix, relative_path);
+        FILE * f = std::fopen(buf, "rb");
+        if (f) {
+            std::fclose(f);
+            path_idx++;
+            return buf;
+        }
+    }
+    return relative_path;
+}
+
 int main() {
     const float frames[] = {1, 2, 3, 4, 5, 6, 7, 8};
     float output[] = {-99, -1, -1, -1, -1, -1, -1, -99};
@@ -70,7 +88,7 @@ int main() {
     CHECK(bounded[0] == 0x55 && bounded[1] == 'v' && bounded[2] == 'e' && bounded[3] == 0 && bounded[4] == 0x55);
     CHECK(argus_build_info_copy(nullptr, 1) == -1 && argus_build_info_copy(bounded, -1) == -1);
     CHECK(argus_backend_init(nullptr));
-    argus_model_params_t mp{}; mp.model_path = "tests/data/tiny.gguf";
+    argus_model_params_t mp{}; mp.model_path = resolve_test_fixture("tests/data/tiny.gguf");
     auto model = argus_model_load(&mp); CHECK(model);
     argus_context_params_t cp{}; cp.context_length = 128; cp.cpu_threads = 2; cp.n_seq_max = 1;
     auto first = argus_context_init(model, &cp);
@@ -95,7 +113,7 @@ int main() {
     CHECK(argus_multimodal_tokenize(projector, chunks, "", false, nullptr, -1) < 0);
     argus_context_free(foreign_context); argus_model_free(foreign_model);
     argus_test_set_observer(observe);
-    argus_multimodal_params_t mm{}; mm.mmproj_path = "tests/data/tiny-mmproj.gguf";
+    argus_multimodal_params_t mm{}; mm.mmproj_path = resolve_test_fixture("tests/data/tiny-mmproj.gguf");
     argus_test_fail_after_retain(true);
     CHECK(argus_multimodal_init(model, &mm) == nullptr);
     argus_test_fail_after_retain(false);
@@ -273,9 +291,26 @@ int main() {
 
     // Multi-threaded concurrent argus_eval_embeddings stress test on a shared context
     {
-        argus_model_params_t emp{}; emp.model_path = "tests/data/tiny-embed.gguf";
+        const char * embed_model_paths[] = {
+            "tests/data/tiny-embed.gguf",
+            "../tests/data/tiny-embed.gguf",
+            "../../tests/data/tiny-embed.gguf"
+        };
+        const char * valid_embed_path = nullptr;
+        for (const char * p : embed_model_paths) {
+            FILE * f = fopen(p, "rb");
+            if (f) {
+                fclose(f);
+                valid_embed_path = p;
+                break;
+            }
+        }
+        CHECK(valid_embed_path != nullptr);
+
+        argus_model_params_t emp{};
+        emp.model_path = valid_embed_path;
         auto emodel = argus_model_load(&emp);
-        if (emodel) {
+        CHECK(emodel != nullptr);
             argus_context_params_t ecp{};
             ecp.context_length = 256;
             ecp.cpu_threads = 2;
@@ -333,7 +368,6 @@ int main() {
 
             argus_context_free(ectx);
             argus_model_free(emodel);
-        }
     }
 
     argus_backend_free();

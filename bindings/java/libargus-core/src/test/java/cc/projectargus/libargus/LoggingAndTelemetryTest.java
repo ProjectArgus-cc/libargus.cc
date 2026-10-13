@@ -763,6 +763,68 @@ class LoggingAndTelemetryTest {
             ArgusBackend.setLogLevel(initial);
         }
     }
+
+    @Test
+    void testRealBlockedCallbackReaperDeadlineHandoff() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            ArgusBackend.testReaperTimeoutMs = 50; // Shorten 10s reaper to 50ms
+
+            CountDownLatch callbackEntered = new CountDownLatch(1);
+            CountDownLatch releaseCallback = new CountDownLatch(1);
+            CountDownLatch callbackFinished = new CountDownLatch(1);
+
+            // 1. Register Callback A that blocks on releaseCallback
+            ArgusBackend.setLogCallback((lvl, msg) -> {
+                callbackEntered.countDown();
+                try {
+                    releaseCallback.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {}
+                callbackFinished.countDown();
+            });
+
+            // 2. Launch worker thread calling native emitLog to invoke Callback A
+            Thread worker = Thread.ofPlatform().start(() -> {
+                try (Arena a = Arena.ofConfined()) {
+                    ArgusTestBindings.emitLog(1, a.allocateFrom("Triggering blocked callback A\n"));
+                } catch (Throwable ignored) {}
+            });
+
+            assertTrue(callbackEntered.await(5, TimeUnit.SECONDS), "Callback A must be entered");
+
+            // 3. Replace callback with B, retiring callback A's arena while Callback A is actively in-flight
+            ArgusBackend.setLogCallback((lvl, msg) -> {});
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(), "Retired arena count should be 1");
+
+            // 4. Sleep past the 50ms reaper deadline while Callback A is still blocked in native execution
+            Thread.sleep(80);
+
+            // Retired arena must still be retained because work is genuinely in-flight in native code!
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Arena must remain retained while real native callback is in flight");
+
+            // 5. Release the callback and let worker complete
+            releaseCallback.countDown();
+            assertTrue(callbackFinished.await(5, TimeUnit.SECONDS), "Callback A must finish");
+            worker.join();
+
+            // 6. Wait for the handoff successor reaper to automatically reclaim the retired arena
+            long deadline = System.currentTimeMillis() + 2000;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Handoff successor reaper must successfully reclaim retired arena after native callback quiescence");
+        } finally {
+            ArgusBackend.testReaperTimeoutMs = -1;
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
 }
 
 

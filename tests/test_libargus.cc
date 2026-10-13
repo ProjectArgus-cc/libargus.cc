@@ -1144,6 +1144,7 @@ int main(int argc, char ** argv) {
             embed_cparams.embeddings = true;
             embed_cparams.type_k = 0; // F16 KV cache
             embed_cparams.type_v = 0;
+            embed_cparams.u_batch = 4; // Physical micro-batch boundary for non-causal invariant testing
 
             argus_context_t * embed_ctx = argus_context_init(embed_model, &embed_cparams);
             ARGUS_CHECK(embed_ctx != nullptr);
@@ -1189,9 +1190,48 @@ int main(int argc, char ** argv) {
                 ARGUS_CHECK(std::abs(eval_out_a[i] - EXPECTED_VEC_A[i]) < 1e-4f);
             }
 
-            // Test argus_eval_embeddings capacity constraint: max_floats < 32 returns -2
-            ARGUS_CHECK(argus_eval_embeddings(embed_ctx, embed_tokens_a, 3, 0, eval_out_a, 31) == -2);
+            // Test 2b: Preflight non-causal batch limit rejection & state neutrality (F-01 / F-03)
+            // Context has u_batch=4 and non-causal attention. Submit 8 tokens (> u_batch=4).
+            int32_t oversized_embed_tokens[8] = { 1, 4, 5, 6, 7, 8, 9, 10 };
+            float sentinel_out[32];
+            for (int i = 0; i < 32; ++i) {
+                sentinel_out[i] = -999.0f;
+            }
+
+            int32_t preflight_res = argus_eval_embeddings(embed_ctx, oversized_embed_tokens, 8, 0, sentinel_out, 32);
+            ARGUS_CHECK(preflight_res == -1);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // Invariant 1: Output buffer must remain completely untouched on preflight failure
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(sentinel_out[i] == -999.0f);
+            }
+
+            // Invariant 2: Sequence 0's prior valid embeddings MUST STILL BE INTACT AND UNCHANGED!
+            float preserved_embeds[32] = {};
+            int32_t preserved_written = argus_get_embeddings(embed_ctx, 0, preserved_embeds, 32);
+            ARGUS_CHECK(preserved_written == 32);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(std::abs(preserved_embeds[i] - EXPECTED_VEC_A[i]) < 1e-4f);
+            }
+
+            // Invariant 3: Sequence 0 KV cache high-water mark must remain intact (max pos is 2 for 3 tokens: 0, 1, 2)
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(embed_ctx, 0) == 2);
+
+            // Test argus_eval_embeddings capacity constraint: max_floats < 32 returns -2
+            for (int i = 0; i < 32; ++i) sentinel_out[i] = -888.0f;
+            ARGUS_CHECK(argus_eval_embeddings(embed_ctx, embed_tokens_a, 3, 0, sentinel_out, 31) == -2);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(sentinel_out[i] == -888.0f);
+            }
+
+            // Prior embedding still intact after capacity rejection
+            ARGUS_CHECK(argus_get_embeddings(embed_ctx, 0, preserved_embeds, 32) == 32);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(std::abs(preserved_embeds[i] - EXPECTED_VEC_A[i]) < 1e-4f);
+            }
+            std::cout << "  - Preflight non-causal rejection & output capacity state-neutrality verified." << std::endl;
 
             // Test 3: Multi-sequence generational invalidation proof
             // Expected analytical reference coordinates for tiny-embed.gguf with input tokens [1, 4, 6]
