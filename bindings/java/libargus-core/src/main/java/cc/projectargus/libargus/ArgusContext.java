@@ -1208,31 +1208,102 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
-     * High-level, zero-allocation embedding extraction pipeline.
-     * Tokenizes prompt text, decodes a single non-causal batch, and writes the resulting
-     * normalized float embedding vector into the caller's preallocated MemorySegment.
+     * Returns the embedding dimension size for the model retained by this execution context.
+     * Operates safely even if the original Java ArgusModel wrapper has been closed.
+     *
+     * @return Model embedding dimension in floats (e.g. 32, 1024, 4096)
+     */
+    public int nEmbd() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
+            int dim = (int) ArgusBindings.argus_model_n_embd.invokeExact(modelH);
+            if (dim <= 0) {
+                ArgusNativeException.throwLastError("argus_model_n_embd");
+            }
+            return dim;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model embedding dimension", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Pure zero-allocation steady-state embedding evaluation pipeline.
+     * Evaluates a pre-tokenized token segment on sequence slot 0 and retrieves the embedding vector
+     * directly into the caller's preallocated native memory segment without heap allocations or scratch copies.
+     *
+     * @param tokensSeg Native MemorySegment containing token integers (must be 4-byte aligned)
+     * @param nTokens Number of tokens in tokensSeg to evaluate
+     * @param outEmbeddings Destination MemorySegment allocated for at least {@link #nEmbd()} floats
+     * @return Number of floats written to outEmbeddings
+     */
+    public int evalEmbeddings(MemorySegment tokensSeg, int nTokens, MemorySegment outEmbeddings) {
+        Objects.requireNonNull(tokensSeg, "tokensSeg");
+        Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+        if (nTokens <= 0) {
+            throw new IllegalArgumentException("nTokens must be positive, got: " + nTokens);
+        }
+
+        int requiredDim = nEmbd();
+        long maxFloats = outEmbeddings.byteSize() / ValueLayout.JAVA_FLOAT.byteSize();
+        if (maxFloats < requiredDim) {
+            throw new IllegalArgumentException("outEmbeddings capacity (" + maxFloats +
+                " floats) is insufficient for model embedding dimension (" + requiredDim + " floats)");
+        }
+
+        int decodeStatus = decodeBatch(tokensSeg, nTokens, 0, 0, false);
+        if (decodeStatus != 0) {
+            ArgusNativeException.checkStatus(decodeStatus, "argus_decode_tokens");
+        }
+
+        int written = getEmbeddings(0, outEmbeddings, (int) maxFloats);
+        if (written < 0) {
+            ArgusNativeException.throwLastError("argus_get_embeddings");
+        }
+        if (written != requiredDim) {
+            throw new IllegalStateException("Incomplete embedding extraction: expected " + requiredDim + " floats, got " + written);
+        }
+        return written;
+    }
+
+    /**
+     * Convenience method to extract semantic text embeddings into the caller's preallocated MemorySegment,
+     * utilizing the caller-supplied Arena for intermediate token scratch buffers.
+     * Tokenizes prompt text, decodes a single batch, and retrieves the embedding vector.
      *
      * @param arena Confined or temporary arena used for intermediate token buffers
      * @param text Input text string to embed
-     * @param outEmbeddings Destination MemorySegment allocated for at least model.nEmbd() floats
+     * @param outEmbeddings Destination MemorySegment allocated for at least {@link #nEmbd()} floats
      * @return Number of floats written to outEmbeddings
      */
     public int extractEmbeddings(Arena arena, String text, MemorySegment outEmbeddings) {
         Objects.requireNonNull(arena, "arena");
         Objects.requireNonNull(text, "text");
         Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("Cannot extract embeddings for empty text string");
+        }
 
         MemorySegment textSeg = arena.allocateFrom(text);
         int maxTokens = Math.max(512, (int) textSeg.byteSize());
         MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, maxTokens);
         int nTokens = tokenize(textSeg, tokenBuf, true);
+        if (nTokens < 0) {
+            int requiredTokens = -nTokens;
+            tokenBuf = arena.allocate(ValueLayout.JAVA_INT, requiredTokens);
+            nTokens = tokenize(textSeg, tokenBuf, true);
+        }
         if (nTokens <= 0) {
-            return 0;
+            throw new IllegalStateException("Tokenization produced 0 tokens for non-empty text");
         }
 
-        decodeBatch(tokenBuf, nTokens, 0, 0, false);
-        int maxFloats = (int) (outEmbeddings.byteSize() / ValueLayout.JAVA_FLOAT.byteSize());
-        return getEmbeddings(0, outEmbeddings, maxFloats);
+        return evalEmbeddings(tokenBuf, nTokens, outEmbeddings);
     }
 
     /**
@@ -1250,11 +1321,14 @@ public final class ArgusContext extends ArgusNativeResource {
      */
     public float[] extractEmbeddings(String text) {
         Objects.requireNonNull(text, "text");
-        int dim = modelRef.nEmbd();
+        int dim = nEmbd();
         float[] result = new float[dim];
         try (Arena localArena = Arena.ofConfined()) {
             MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, dim);
             int written = extractEmbeddings(localArena, text, outSeg);
+            if (written != dim) {
+                throw new IllegalStateException("Incomplete embedding extraction: expected " + dim + " floats, got " + written);
+            }
             MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, result, 0, written);
         }
         return result;

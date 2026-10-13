@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 2.0.0
+ * @version 2.0.1
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -79,7 +79,8 @@ typedef enum argus_error_code {
     ARGUS_ERROR_CANCELLED        = 6,  /**< Evaluation was aborted via cancellation handle */
     ARGUS_ERROR_BUSY             = 7,  /**< Resource is currently locked or cannot be released */
     ARGUS_ERROR_INTERNAL         = 8,  /**< Uncaught native runtime error */
-    ARGUS_ERROR_ROLLBACK_FAILED  = 9   /**< KV cache sequence rollback rejected by model topology */
+    ARGUS_ERROR_ROLLBACK_FAILED  = 9,  /**< KV cache sequence rollback rejected by model topology */
+    ARGUS_ERROR_INVALID_STATE    = 10  /**< Operation is invalid for current resource, context, or sequence state */
 } argus_error_code_t;
 
 #define ARGUS_DECODE_SUCCESS          0

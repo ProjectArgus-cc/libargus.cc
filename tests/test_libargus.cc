@@ -18,6 +18,7 @@
 #include <chrono>
 #include <atomic>
 #include <mutex>
+#include <cmath>
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <fcntl.h>
@@ -1012,6 +1013,7 @@ int main(int argc, char ** argv) {
         ARGUS_CHECK(argus_context_get_perf(nullptr, &timings) == false);
         ARGUS_CHECK(argus_context_get_perf(ctx, nullptr) == false);
         bool got_perf = argus_context_get_perf(ctx, &timings);
+        ARGUS_CHECK(got_perf);
         ARGUS_CHECK(timings.n_p_eval > 0);
         ARGUS_CHECK(timings.t_p_eval_ms >= 0.0);
         ARGUS_CHECK(timings.t_start_ms > 0.0);
@@ -1030,23 +1032,155 @@ int main(int argc, char ** argv) {
         std::cout << "  - Performance telemetry reset verified: n_p_eval successfully reset from "
                   << timings.n_p_eval << " to " << timings_reset.n_p_eval << std::endl;
 
-        // 7.17. Causal Attention Mode Verification
-        std::cout << "[Test] Verifying causal attention state mutations..." << std::endl;
+        // 7.17. Causal Attention State Mutations & Transition Contract
+        std::cout << "[Test] Verifying causal attention state mutations & transition contract..." << std::endl;
         bool causal_state = false;
         ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
         ARGUS_CHECK(causal_state == true); // default is true for standard context
-        ARGUS_CHECK(argus_context_set_causal_attn(ctx, false));
-        ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
-        ARGUS_CHECK(causal_state == false);
-        ARGUS_CHECK(argus_context_set_causal_attn(ctx, true));
-        ARGUS_CHECK(argus_context_get_causal_attn(ctx, &causal_state));
-        ARGUS_CHECK(causal_state == true);
+
+        // 1. Transition contract: cannot switch causal attention when draft model is attached
+        ARGUS_CHECK(argus_context_set_causal_attn(ctx, false) == false);
+        ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
+
+        // Null safety
         ARGUS_CHECK(argus_context_set_causal_attn(nullptr, true) == false);
+        ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
         ARGUS_CHECK(argus_context_get_causal_attn(nullptr, &causal_state) == false);
         ARGUS_CHECK(argus_context_get_causal_attn(ctx, nullptr) == false);
-        std::cout << "  - Causal attention mutation verified." << std::endl;
 
-        // 7.18. Cleanup
+        // 2. Standalone context transition contract:
+        argus_context_params_t standalone_cparams = {};
+        standalone_cparams.context_length = 256;
+        standalone_cparams.cpu_threads = 2;
+        standalone_cparams.n_seq_max = 1;
+        standalone_cparams.u_batch = 4; // micro-batch size 4 for non-causal invariant testing
+
+        argus_context_t * standalone_ctx = argus_context_init(model, &standalone_cparams);
+        ARGUS_CHECK(standalone_ctx != nullptr);
+
+        // Switch on empty context: succeeds
+        ARGUS_CHECK(argus_context_set_causal_attn(standalone_ctx, false));
+        ARGUS_CHECK(argus_context_get_causal_attn(standalone_ctx, &causal_state));
+        ARGUS_CHECK(causal_state == false);
+        ARGUS_CHECK(argus_context_set_causal_attn(standalone_ctx, true));
+        ARGUS_CHECK(argus_context_get_causal_attn(standalone_ctx, &causal_state));
+        ARGUS_CHECK(causal_state == true);
+
+        // Populate KV cache by decoding 4 tokens
+        int32_t sample_tokens[] = { 1, 4, 5, 6 };
+        argus_token_batch_t standalone_batch = {};
+        standalone_batch.tokens = sample_tokens;
+        standalone_batch.n_tokens = 4;
+        standalone_batch.start_pos = 0;
+        standalone_batch.seq_id = 0;
+        standalone_batch.request_logits = false;
+        ARGUS_CHECK(argus_decode_batch(standalone_ctx, &standalone_batch) == 0);
+
+        // Switch on populated context: MUST fail with ARGUS_ERROR_INVALID_STATE
+        ARGUS_CHECK(argus_context_set_causal_attn(standalone_ctx, false) == false);
+        ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
+
+        // Reset sampler and clear KV cache
+        ARGUS_CHECK(argus_kv_cache_clear_slot(standalone_ctx, 0, 0, -1));
+        ARGUS_CHECK(argus_sampler_reset(standalone_ctx, 0) == 0);
+
+        // Now that context is reset, switching succeeds
+        ARGUS_CHECK(argus_context_set_causal_attn(standalone_ctx, false));
+        ARGUS_CHECK(argus_context_get_causal_attn(standalone_ctx, &causal_state));
+        ARGUS_CHECK(causal_state == false);
+
+        // 3. Non-causal physical micro-batch invariant verification:
+        // u_batch is 4. Submitting <= 4 tokens succeeds; submitting > 4 tokens MUST fail with
+        // ARGUS_ERROR_INVALID_ARGUMENT and zero process abort.
+        standalone_batch.n_tokens = 4;
+        ARGUS_CHECK(argus_decode_batch(standalone_ctx, &standalone_batch) == 0);
+
+        // Clear cache before next decode
+        ARGUS_CHECK(argus_kv_cache_clear_slot(standalone_ctx, 0, 0, -1));
+
+        // Submit 6 tokens (> u_batch=4) under non-causal attention -> MUST fail without abort
+        int32_t oversized_tokens[] = { 1, 4, 5, 6, 7, 8 };
+        standalone_batch.tokens = oversized_tokens;
+        standalone_batch.n_tokens = 6;
+        ARGUS_CHECK(argus_decode_batch(standalone_ctx, &standalone_batch) == -1);
+        ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+        std::cout << "  - Non-causal micro-batch invariant (n_tokens > n_ubatch rejection) verified without abort." << std::endl;
+
+        argus_context_free(standalone_ctx);
+        std::cout << "  - Causal attention mutation & transition contract verified." << std::endl;
+
+        // 7.18. Deterministic Synthetic Embedding Model Verification (tests/data/tiny-embed.gguf)
+        std::cout << "[Test] Verifying synthetic embedding model (tests/data/tiny-embed.gguf)..." << std::endl;
+        const char * embed_model_paths[] = {
+            "tests/data/tiny-embed.gguf",
+            "../../tests/data/tiny-embed.gguf",
+            "../tests/data/tiny-embed.gguf"
+        };
+        const char * valid_embed_path = nullptr;
+        for (const char * p : embed_model_paths) {
+            FILE * f = fopen(p, "rb");
+            if (f) {
+                fclose(f);
+                valid_embed_path = p;
+                break;
+            }
+        }
+
+        if (valid_embed_path) {
+            argus_model_params_t embed_mparams = {};
+            embed_mparams.model_path = valid_embed_path;
+            embed_mparams.gpu_layers = 0;
+            argus_model_t * embed_model = argus_model_load(&embed_mparams);
+            ARGUS_CHECK(embed_model != nullptr);
+
+            int32_t embd_dim = argus_model_n_embd(embed_model);
+            ARGUS_CHECK(embd_dim == 32);
+
+            argus_context_params_t embed_cparams = {};
+            embed_cparams.context_length = 256;
+            embed_cparams.cpu_threads = 2;
+            embed_cparams.n_seq_max = 1;
+            embed_cparams.embeddings = true;
+            embed_cparams.type_k = 1; // F16 KV cache for 16-element head size
+            embed_cparams.type_v = 1;
+
+            argus_context_t * embed_ctx = argus_context_init(embed_model, &embed_cparams);
+            ARGUS_CHECK(embed_ctx != nullptr);
+
+            // Verifying has_embeddings guard: query before decode must return ARGUS_ERROR_INVALID_STATE
+            float out_embeds[32] = {};
+            ARGUS_CHECK(argus_get_embeddings(embed_ctx, 0, out_embeds, 32) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
+
+            // Decode 3 tokens
+            int32_t embed_tokens[] = { 1, 4, 5 };
+            argus_token_batch_t embed_batch = {};
+            embed_batch.tokens = embed_tokens;
+            embed_batch.n_tokens = 3;
+            embed_batch.start_pos = 0;
+            embed_batch.seq_id = 0;
+            embed_batch.request_logits = false;
+            ARGUS_CHECK(argus_decode_batch(embed_ctx, &embed_batch) == 0);
+
+            // Query embeddings after successful decode -> must succeed
+            int32_t written = argus_get_embeddings(embed_ctx, 0, out_embeds, 32);
+            ARGUS_CHECK(written == 32);
+
+            double norm_sq = 0.0;
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(!std::isnan(out_embeds[i]) && !std::isinf(out_embeds[i]));
+                norm_sq += out_embeds[i] * out_embeds[i];
+            }
+            ARGUS_CHECK(norm_sq > 0.0);
+            std::cout << "  - Synthetic embedding model extraction verified: norm_sq=" << norm_sq << std::endl;
+
+            argus_context_free(embed_ctx);
+            argus_model_free(embed_model);
+        } else {
+            std::cout << "  [Notice] tiny-embed.gguf not found, skipping synthetic embedding check." << std::endl;
+        }
+
+        // 7.19. Cleanup
         argus_context_free(ctx);
         argus_model_free(draft_model);
         argus_model_free(model);

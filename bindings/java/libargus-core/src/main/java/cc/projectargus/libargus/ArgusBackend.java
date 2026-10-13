@@ -221,9 +221,22 @@ public final class ArgusBackend {
                     }
                 } finally {
                     REAPER_RUNNING.set(false);
-                    // Bounded reschedule: only reschedule if work remains AND we did not experience query failure or loop timeout
-                    if (!retiredCallbacks.isEmpty() && consecutiveFailures == 0 && System.currentTimeMillis() < deadline) {
-                        scheduleReaperIfNeeded();
+                    if (!retiredCallbacks.isEmpty() && consecutiveFailures == 0) {
+                        if (System.currentTimeMillis() < deadline) {
+                            scheduleReaperIfNeeded();
+                        } else {
+                            // Normal 10-second deadline elapsed with pending work and healthy native queries.
+                            // Schedule a bounded delayed successor to guarantee eventual quiescence and reclamation.
+                            Thread.ofVirtual().name("argus-callback-reaper-handoff").start(() -> {
+                                try {
+                                    Thread.sleep(100);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    return;
+                                }
+                                scheduleReaperIfNeeded();
+                            });
+                        }
                     }
                 }
             });

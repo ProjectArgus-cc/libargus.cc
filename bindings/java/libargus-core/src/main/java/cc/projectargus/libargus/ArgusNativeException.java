@@ -19,6 +19,7 @@ public class ArgusNativeException extends RuntimeException {
     public static final int ERROR_BUSY = 7;
     public static final int ERROR_INTERNAL = 8;
     public static final int ERROR_ROLLBACK_FAILED = 9;
+    public static final int ERROR_INVALID_STATE = 10;
 
     private final int errorCode;
 

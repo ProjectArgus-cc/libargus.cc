@@ -77,6 +77,7 @@ struct argus_seq_sampler {
     argus_pending_sample               pending;           // Active sample accepted into chain, awaiting decode
     int32_t                            last_logits_pos    = -1;
     bool                               has_logits         = false;
+    bool                               has_embeddings     = false;
     bool                               has_cached_chain   = false;
 };
 

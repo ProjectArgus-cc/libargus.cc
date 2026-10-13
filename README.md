@@ -8,14 +8,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.0 Release — Upstream Sync (llama.cpp b11576 / whisper.cpp v1.9.5), EmbeddingGemma2 & Telemetry ABI Elevation**
+> **v2.0.1 Release — Upstream Integration Hardening, Non-Causal Batch Preflight & Embedding Correctness**
 > 
-> * **Next-Gen Embedding Bedrock (`embeddinggemma2`):** Synchronizes upstream computational primitives to `llama.cpp` `b11576` and `whisper.cpp` `v1.9.5`, bringing native support for Google's 24-layer `embeddinggemma2` architecture with symmetric sliding-window attention ($\text{SWA}=6$) and CUDA Flash Attention 256-cell KV padding on no-cache graphs.
-> * **Causal Attention Control:** Exposes thread-safe native downcalls (`argus_context_set_causal_attn` / `argus_context_get_causal_attn`) and `ArgusContextConfig.Builder.causalAttn(boolean)`, enabling dynamic switching between autoregressive causal masking and bidirectional embeddings.
-> * **Temporal Video Frame Merging:** Exposes `argus_bitmap_set_mergeable` (`ArgusBitmap.setMergeable` / `ArgusVideoItem.setMergeable`) allowing video-capable vision architectures (e.g. Qwen-VL) to compress consecutive frames temporally during tokenization.
-> * **Telemetry ABI Expansion:** Expands `argus_perf_timings_t` from 48 bytes to 56 bytes (8-byte aligned) with zero padding holes, exposing scheduler graph reallocation metrics (`n_reallocs_same`, `n_reallocs_diff`) to monitor off-heap buffer reallocation events without scraping terminal logs.
-> * **Zero-Allocation Java Embedding Pipeline:** Adds idiomatic `ArgusContext.extractEmbeddings` methods, tokenizing, evaluating non-causal batches, and copying out normalized float vectors in a single call.
-> * **Release Tooling Hardening:** Codifies synthetic Windows DLL export inspection validation, verifying that test symbol escapes (`argus_test_*`) or header ABI disparities are strictly rejected.
+> * **Non-Causal Batch Safety:** Enforces strict physical micro-batch limits ($N \le \min(n\_batch, n\_ubatch)$) in `decode_tokens_chunked` before calling upstream GGML, eliminating process aborts (`GGML_ASSERT`) and rejecting semantically invalid multi-chunk bidirectional evaluations.
+> * **Causal Attention Transition Contract:** Establishes a fail-fast state machine transition contract for dynamic causal attention switching (`argus_context_set_causal_attn`), rejecting mutations on contexts with active speculative draft models or populated KV cache/sampler state (`ARGUS_ERROR_INVALID_STATE`).
+> * **Hardened Embedding Extraction:** Eliminates swallowed decode failures in `ArgusContext.extractEmbeddings`, verifies output vector completeness, guards against stale vectors, and decouples model queries (`context.nEmbd()`) from the Java `ArgusModel` wrapper lifecycle.
+> * **Steady-State Zero-Allocation Downcall:** Adds `ArgusContext.evalEmbeddings(MemorySegment tokensSeg, int nTokens, MemorySegment outEmbeddings)` for pure zero-allocation steady-state embedding evaluation from pre-tokenized memory segments.
+> * **Deterministic Offline Verification:** Ships project-owned synthetic embedding model fixture `tests/data/tiny-embed.gguf` with MEAN pooling and byte-fallback vocabulary, making embedding correctness verification a mandatory, release-gated offline CI step.
+> * **Telemetry & Reaper Hardening:** Restores native telemetry assertions (`ARGUS_CHECK(got_perf)`) and resolves callback reaper normal-timeout handoff quiescence in `ArgusBackend`.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -34,14 +34,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.0</version>
+        <version>2.0.1</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.0</version>
+        <version>2.0.1</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -51,10 +51,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.0")
+    implementation("cc.projectargus:libargus-core:2.0.1")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.1")
 }
 ```
 
@@ -335,12 +335,15 @@ public class EmbeddingsApp {
             try (ArgusContext context = ArgusContext.init(arena, model, config)) {
                 String text = "text-matching: Retrieve semantic vector for this sentence.";
 
-                // Zero-allocation high-level extraction into caller-managed off-heap buffer:
-                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, model.nEmbd());
+                // 1. Caller-controlled off-heap extraction into caller-managed MemorySegment:
+                MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, context.nEmbd());
                 int nFloats = context.extractEmbeddings(arena, text, embeddingsBuf);
                 System.out.println("Extracted " + nFloats + " floats into off-heap memory.");
 
-                // Or retrieve directly as Java float[]:
+                // 2. Pure zero-allocation steady-state evaluation from pre-tokenized memory segments:
+                // int written = context.evalEmbeddings(preTokenizedSeg, nTokens, embeddingsBuf);
+
+                // 3. Or retrieve directly as Java float[]:
                 float[] vector = context.extractEmbeddings(text);
                 System.out.println("Extracted float[] with length: " + vector.length);
             }

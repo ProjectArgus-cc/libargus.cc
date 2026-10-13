@@ -932,6 +932,18 @@ static int32_t decode_tokens_chunked(
     }
 
     int32_t n_batch = (int32_t)llama_n_batch(lctx);
+    int32_t n_ubatch = (int32_t)llama_n_ubatch(lctx);
+    bool is_causal = llama_get_causal_attn(lctx);
+
+    if (!is_causal) {
+        if (n_tokens > n_ubatch || n_tokens > n_batch) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT,
+                "non-causal bidirectional attention requires n_tokens <= n_ubatch and n_tokens <= n_batch; "
+                "sequence chunking is semantically invalid for non-causal attention");
+            return -1;
+        }
+    }
+
     int32_t decoded = 0;
 
     int32_t max_chunk_size = std::min(n_batch, n_tokens);
@@ -996,12 +1008,14 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
         for (auto & slot : ctx->seq_samplers) {
             slot.has_logits = false;
             slot.last_logits_pos = -1;
+            slot.has_embeddings = false;
         }
         ctx->last_decoded_seq_id = -1;
     } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
         auto & slot = ctx->seq_samplers[seq_id];
         slot.has_logits = false;
         slot.last_logits_pos = -1;
+        slot.has_embeddings = false;
         if (ctx->last_decoded_seq_id == seq_id) {
             ctx->last_decoded_seq_id = -1;
         }
@@ -1148,6 +1162,7 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                 ctx->last_decoded_seq_id = seq_id;
                 slot.has_logits = batch_payload->request_logits;
                 slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
+                slot.has_embeddings = true;
             } else {
                 invalidate_seq_logits(ctx, seq_id);
             }
@@ -1211,6 +1226,7 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
             ctx->last_decoded_seq_id = seq_id;
             slot.has_logits = batch_payload->request_logits;
             slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
+            slot.has_embeddings = true;
         } else {
             invalidate_seq_logits(ctx, seq_id);
         }
@@ -1239,6 +1255,11 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
 
         if (!ctx->model_ref || !ctx->model_ref->model) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null model reference in argus_get_embeddings");
+            return -1;
+        }
+
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size() || !ctx->seq_samplers[seq_id].has_embeddings) {
+            set_last_error(ARGUS_ERROR_INVALID_STATE, "no embeddings available for sequence in argus_get_embeddings; ensure decodeBatch succeeded");
             return -1;
         }
 
@@ -2292,6 +2313,37 @@ ARGUS_API bool argus_context_set_causal_attn(argus_context_t * ctx, bool causal)
     }
     return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_context_set_causal_attn", [&]() -> bool {
         std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        if (ctx->draft_ctx != nullptr) {
+            set_last_error(ARGUS_ERROR_INVALID_STATE,
+                "causal attention switching is unsupported on contexts with active speculative draft context");
+            return false;
+        }
+
+        bool current_causal = llama_get_causal_attn(ctx->ctx);
+        if (current_causal == causal) {
+            return true;
+        }
+
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        if (mem) {
+            for (int32_t s = 0; s < (int32_t)ctx->seq_samplers.size(); ++s) {
+                if (llama_memory_seq_pos_max(mem, s) >= 0) {
+                    set_last_error(ARGUS_ERROR_INVALID_STATE,
+                        "cannot change causal attention mode on context with populated KV cache; clear cache slots first");
+                    return false;
+                }
+            }
+        }
+
+        for (const auto & slot : ctx->seq_samplers) {
+            if (!slot.history.empty() || slot.pending.valid) {
+                set_last_error(ARGUS_ERROR_INVALID_STATE,
+                    "cannot change causal attention mode with active sequence sampler history; reset samplers first");
+                return false;
+            }
+        }
+
         llama_set_causal_attn(ctx->ctx, causal);
         return true;
     });

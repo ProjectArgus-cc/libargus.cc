@@ -1698,40 +1698,41 @@ public class ArgusBindingsTest {
     @Test
     public void testExtractEmbeddingsHelper() {
         Path root = Paths.get(".").toAbsolutePath();
-        while (root != null && !Files.exists(root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf"))) {
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny-embed.gguf"))) {
             root = root.getParent();
         }
-        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "Project root not found");
-        Path jinaPath = root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf");
-        org.junit.jupiter.api.Assumptions.assumeTrue(
-            Files.exists(jinaPath),
-            "Skipping: models/jina-embeddings-v3-Q4_K_M.gguf not found"
-        );
+        assertNotNull(root, "Project root containing tests/data/tiny-embed.gguf not found");
+        Path embedPath = root.resolve("tests/data/tiny-embed.gguf");
+        assertTrue(Files.exists(embedPath), "Mandatory release-gate fixture tests/data/tiny-embed.gguf is missing");
 
         ArgusBackend.init();
         try (Arena arena = Arena.ofConfined();
-             ArgusModel model = ArgusModel.load(arena, jinaPath, 0, false)) {
+             ArgusModel model = ArgusModel.load(arena, embedPath, 0, false)) {
 
-            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
-                .cpuThreads(4)
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .cpuThreads(2)
                 .embeddings(true)
                 .causalAttn(false)
+                .typeK(ArgusContextConfig.KV_TYPE_F16)
+                .typeV(ArgusContextConfig.KV_TYPE_F16)
                 .build();
 
             try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
                 assertSame(model, ctx.getModel(), "ArgusContext.getModel() must return underlying ArgusModel");
-                int dim = model.nEmbd();
-                assertTrue(dim > 0, "Embedding dimension must be positive");
+                int dim = ctx.nEmbd();
+                assertEquals(32, dim, "Embedding dimension for tiny-embed must be 32");
 
                 MemorySegment outSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
-                String prompt = "text-matching: Testing libargus high-level zero-allocation embedding extraction helper.";
+                String prompt = "Testing libargus deterministic synthetic embedding extraction helper.";
                 int written = ctx.extractEmbeddings(arena, prompt, outSeg);
                 assertEquals(dim, written, "Written floats must equal model dimension");
 
-                // Check L2 norm is positive and non-zero
+                // Check L2 norm is positive and finite
                 double sumSq = 0.0;
                 for (int i = 0; i < dim; i++) {
                     float val = outSeg.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+                    assertFalse(Float.isNaN(val), "Embedding float must not be NaN");
+                    assertFalse(Float.isInfinite(val), "Embedding float must not be infinite");
                     sumSq += val * val;
                 }
                 assertTrue(sumSq > 0.0, "Embedding vector must not be all zeros");
@@ -1748,9 +1749,195 @@ public class ArgusBindingsTest {
                 }
                 assertTrue(dot > 0.0, "Array and segment embeddings should correlate");
 
+                // Test zero-allocation evalEmbeddings overload
+                MemorySegment tokenSeg = arena.allocate(ValueLayout.JAVA_INT, 3);
+                tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 0, 1); // <s>
+                tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 1, 4); // a
+                tokenSeg.setAtIndex(ValueLayout.JAVA_INT, 2, 5); // b
+                MemorySegment evalOutSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+                int evalWritten = ctx.evalEmbeddings(tokenSeg, 3, evalOutSeg);
+                assertEquals(dim, evalWritten, "evalEmbeddings must extract full dimension");
+
+                // Test validation: empty text string rejected
+                assertThrows(IllegalArgumentException.class, () -> ctx.extractEmbeddings(arena, "", outSeg));
+                assertThrows(IllegalArgumentException.class, () -> ctx.extractEmbeddings(""));
+
+                // Test validation: insufficient output buffer capacity
+                MemorySegment tooSmallSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim - 1);
+                assertThrows(IllegalArgumentException.class, () -> ctx.extractEmbeddings(arena, prompt, tooSmallSeg));
+                assertThrows(IllegalArgumentException.class, () -> ctx.evalEmbeddings(tokenSeg, 3, tooSmallSeg));
+
                 // Test exception on closed context
                 ctx.close();
                 assertThrows(IllegalStateException.class, () -> ctx.extractEmbeddings(prompt));
+                assertThrows(IllegalStateException.class, () -> ctx.evalEmbeddings(tokenSeg, 3, evalOutSeg));
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testExtractEmbeddingsWithClosedModelWrapper() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny-embed.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "tests/data/tiny-embed.gguf not found");
+        Path embedPath = root.resolve("tests/data/tiny-embed.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            ArgusModel model = ArgusModel.load(arena, embedPath, 0, false);
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .cpuThreads(2)
+                .embeddings(true)
+                .causalAttn(false)
+                .build();
+
+            ArgusContext ctx = ArgusContext.init(arena, model, config);
+
+            // Explicitly close the Java model wrapper! Context retains native model ref.
+            model.close();
+            assertTrue(model.isClosed(), "ArgusModel Java wrapper must be closed");
+
+            // Extracting embeddings must succeed seamlessly via retained native model
+            int dim = ctx.nEmbd();
+            assertEquals(32, dim);
+            float[] vec = ctx.extractEmbeddings("Extracting embeddings after model wrapper closure");
+            assertNotNull(vec);
+            assertEquals(32, vec.length);
+
+            ctx.close();
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testNonCausalOversizedBatchRejection() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny-embed.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "tests/data/tiny-embed.gguf not found");
+        Path embedPath = root.resolve("tests/data/tiny-embed.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, embedPath, 0, false)) {
+
+            // Configure non-causal attention with physical micro-batch ceiling of 4 tokens
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .cpuThreads(2)
+                .embeddings(true)
+                .causalAttn(false)
+                .uBatch(4)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                // Batch of 4 tokens (<= u_batch): succeeds
+                MemorySegment tokens4 = arena.allocate(ValueLayout.JAVA_INT, 4);
+                for (int i = 0; i < 4; i++) tokens4.setAtIndex(ValueLayout.JAVA_INT, i, i + 1);
+                MemorySegment outSeg = arena.allocate(ValueLayout.JAVA_FLOAT, ctx.nEmbd());
+                int written = ctx.evalEmbeddings(tokens4, 4, outSeg);
+                assertEquals(32, written);
+
+                // Batch of 8 tokens (> u_batch): MUST fail with ArgusNativeException, ZERO process abort
+                MemorySegment tokens8 = arena.allocate(ValueLayout.JAVA_INT, 8);
+                for (int i = 0; i < 8; i++) tokens8.setAtIndex(ValueLayout.JAVA_INT, i, i + 1);
+                ArgusNativeException ex = assertThrows(ArgusNativeException.class,
+                    () -> ctx.evalEmbeddings(tokens8, 8, outSeg));
+                assertEquals(ArgusNativeException.ERROR_INVALID_ARGUMENT, ex.getErrorCode());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testCausalAttentionTransitionContract() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "tests/data/tiny.gguf not found");
+        Path modelPath = root.resolve("tests/data/tiny.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, modelPath, 0, false)) {
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(256)
+                .cpuThreads(2)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                assertTrue(ctx.isCausalAttn(), "Default context should have causal attention enabled");
+
+                // Switch while empty: succeeds
+                ctx.setCausalAttn(false);
+                assertFalse(ctx.isCausalAttn());
+                ctx.setCausalAttn(true);
+                assertTrue(ctx.isCausalAttn());
+
+                // Populate KV cache with decode
+                MemorySegment tokens = arena.allocate(ValueLayout.JAVA_INT, 4);
+                for (int i = 0; i < 4; i++) tokens.setAtIndex(ValueLayout.JAVA_INT, i, i + 1);
+                assertEquals(0, ctx.decodeBatch(tokens, 4, 0, 0, false));
+
+                // Attempt to switch causal attention on populated context -> MUST fail with ERROR_INVALID_STATE
+                ArgusNativeException ex = assertThrows(ArgusNativeException.class, () -> ctx.setCausalAttn(false));
+                assertEquals(ArgusNativeException.ERROR_INVALID_STATE, ex.getErrorCode());
+
+                // Reset context state: clear cache and reset sampler
+                ctx.clearCacheSlot(0, 0, -1);
+                ctx.resetSampler(0);
+
+                // Now that state is cleared, switching succeeds
+                ctx.setCausalAttn(false);
+                assertFalse(ctx.isCausalAttn());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testExtractEmbeddingsJinaExtended() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf"))) {
+            root = root.getParent();
+        }
+        org.junit.jupiter.api.Assumptions.assumeTrue(root != null, "Project root not found");
+        Path jinaPath = root.resolve("models/jina-embeddings-v3-Q4_K_M.gguf");
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+            Files.exists(jinaPath),
+            "Skipping extended test: models/jina-embeddings-v3-Q4_K_M.gguf not found"
+        );
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, jinaPath, 0, false)) {
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(512)
+                .cpuThreads(4)
+                .embeddings(true)
+                .causalAttn(false)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                int dim = ctx.nEmbd();
+                assertTrue(dim > 0);
+
+                MemorySegment outSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+                String prompt = "text-matching: Testing libargus extended Jina embedding extraction.";
+                int written = ctx.extractEmbeddings(arena, prompt, outSeg);
+                assertEquals(dim, written);
+
+                float[] floats = ctx.extractEmbeddings(prompt);
+                assertNotNull(floats);
+                assertEquals(dim, floats.length);
             }
         } finally {
             ArgusBackend.free();

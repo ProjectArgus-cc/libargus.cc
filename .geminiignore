@@ -10,3 +10,4 @@ media/
 *.tar.gz
 *.zip
 __pycache__/
+*.gguf
