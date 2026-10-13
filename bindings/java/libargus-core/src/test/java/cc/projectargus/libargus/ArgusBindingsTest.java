@@ -1696,7 +1696,7 @@ public class ArgusBindingsTest {
     }
 
     @Test
-    public void testExtractEmbeddingsHelper() {
+    public void testExtractEmbeddingsHelper() throws Throwable {
         Path root = Paths.get(".").toAbsolutePath();
         while (root != null && !Files.exists(root.resolve("tests/data/tiny-embed.gguf"))) {
             root = root.getParent();
@@ -1758,6 +1758,44 @@ public class ArgusBindingsTest {
                 int evalWritten = ctx.evalEmbeddings(tokenSeg, 3, evalOutSeg);
                 assertEquals(dim, evalWritten, "evalEmbeddings must extract full dimension");
 
+                // Fanged deterministic numerical assertion against expected analytical coordinates
+                float[] expectedVecA = new float[] {
+                    0.012607f, 0.008028f, 0.004507f, -0.023824f, 0.000028f, -0.013474f, 0.001769f, -0.006316f,
+                    -0.000113f, 0.000781f, 0.000226f, -0.019436f, -0.001485f, 0.004716f, -0.013539f, 0.005747f,
+                    -0.004355f, -0.003777f, -0.001283f, -0.001102f, 0.000275f, -0.000012f, 0.005550f, -0.016983f,
+                    0.025341f, 0.001413f, -0.002965f, 0.000518f, 0.002365f, -0.010931f, 0.030305f, -0.000967f
+                };
+                for (int i = 0; i < dim; i++) {
+                    assertEquals(expectedVecA[i], evalOutSeg.getAtIndex(ValueLayout.JAVA_FLOAT, i), 1e-4f,
+                        "evalEmbeddings float at index " + i + " must match deterministic baseline");
+                }
+
+                // Test high-level String tokenizer convenience overloads
+                int[] tokenArray = ctx.tokenize("Testing libargus tokenizer convenience overload", true);
+                assertNotNull(tokenArray);
+                assertTrue(tokenArray.length > 0);
+                assertEquals(1, tokenArray[0], "First token must be BOS when addBos is true");
+
+                MemorySegment tokenArenaSeg = ctx.tokenize(arena, "Testing libargus tokenizer convenience overload", true);
+                assertNotNull(tokenArenaSeg);
+                assertEquals(tokenArray.length, tokenArenaSeg.byteSize() / ValueLayout.JAVA_INT.byteSize());
+
+                // Test model-level tokenizer convenience overload
+                int[] modelTokenArray = model.tokenize("Testing libargus model tokenizer", false);
+                assertNotNull(modelTokenArray);
+                assertTrue(modelTokenArray.length > 0);
+
+                // Test tokenizer undersized capacity retry protocol
+                MemorySegment undersizedBuf = arena.allocate(ValueLayout.JAVA_INT, 1);
+                MemorySegment longTextSeg = arena.allocateFrom("Long text that requires multiple tokens to encode");
+                int required = ctx.tokenize(longTextSeg, undersizedBuf, true);
+                assertTrue(required < 0, "Undersized buffer must return negative required token count");
+                int neededTokens = -required;
+                assertTrue(neededTokens > 1, "Needed tokens count must exceed undersized buffer");
+                MemorySegment properlySizedBuf = arena.allocate(ValueLayout.JAVA_INT, neededTokens);
+                int retryTokens = ctx.tokenize(longTextSeg, properlySizedBuf, true);
+                assertEquals(neededTokens, retryTokens, "Re-tokenization with required buffer size must succeed");
+
                 // Test validation: empty text string rejected
                 assertThrows(IllegalArgumentException.class, () -> ctx.extractEmbeddings(arena, "", outSeg));
                 assertThrows(IllegalArgumentException.class, () -> ctx.extractEmbeddings(""));
@@ -1771,6 +1809,52 @@ public class ArgusBindingsTest {
                 ctx.close();
                 assertThrows(IllegalStateException.class, () -> ctx.extractEmbeddings(prompt));
                 assertThrows(IllegalStateException.class, () -> ctx.evalEmbeddings(tokenSeg, 3, evalOutSeg));
+            }
+
+            // Test Generational Multi-Sequence Embedding Isolation on 2-sequence context
+            ArgusContextConfig multiSeqConfig = new ArgusContextConfig.Builder(256)
+                .cpuThreads(2)
+                .seqMax(2)
+                .embeddings(true)
+                .build();
+            try (ArgusContext multiCtx = ArgusContext.init(arena, model, multiSeqConfig)) {
+                int dim = multiCtx.nEmbd();
+                MemorySegment tokensA = arena.allocate(ValueLayout.JAVA_INT, 3);
+                tokensA.setAtIndex(ValueLayout.JAVA_INT, 0, 1);
+                tokensA.setAtIndex(ValueLayout.JAVA_INT, 1, 4);
+                tokensA.setAtIndex(ValueLayout.JAVA_INT, 2, 5);
+
+                MemorySegment tokensB = arena.allocate(ValueLayout.JAVA_INT, 3);
+                tokensB.setAtIndex(ValueLayout.JAVA_INT, 0, 1);
+                tokensB.setAtIndex(ValueLayout.JAVA_INT, 1, 4);
+                tokensB.setAtIndex(ValueLayout.JAVA_INT, 2, 6);
+
+                MemorySegment outA = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+                MemorySegment outB = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+
+                // Step 1: Evaluate sequence 0
+                int writtenA = multiCtx.evalEmbeddings(tokensA, 3, 0, outA);
+                assertEquals(dim, writtenA);
+
+                // Step 2: Evaluate sequence 1
+                int writtenB = multiCtx.evalEmbeddings(tokensB, 3, 1, outB);
+                assertEquals(dim, writtenB);
+
+                // Step 3: Query sequence 0 via getEmbeddings: MUST RETURN -1 with ERROR_INVALID_STATE (10)
+                MemorySegment staleSeg = arena.allocate(ValueLayout.JAVA_FLOAT, dim);
+                int resStale = multiCtx.getEmbeddings(0, staleSeg, dim);
+                assertEquals(-1, resStale, "Querying superseded sequence 0 must fail with -1");
+                int lastErr = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                assertEquals(ArgusNativeException.ERROR_INVALID_STATE, lastErr,
+                    "Native error code must be set to ERROR_INVALID_STATE (10)");
+
+                // Step 4: Query sequence 1 via getEmbeddings: MUST SUCCEED
+                int writtenSeq1 = multiCtx.getEmbeddings(1, staleSeg, dim);
+                assertEquals(dim, writtenSeq1);
+                for (int i = 0; i < dim; i++) {
+                    assertEquals(outB.getAtIndex(ValueLayout.JAVA_FLOAT, i),
+                        staleSeg.getAtIndex(ValueLayout.JAVA_FLOAT, i), 1e-6f);
+                }
             }
         } finally {
             ArgusBackend.free();

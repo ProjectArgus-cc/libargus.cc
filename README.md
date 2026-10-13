@@ -8,14 +8,14 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.1 Release — Upstream Integration Hardening, Non-Causal Batch Preflight & Embedding Correctness**
+> **v2.0.2 Release — Atomic Embedding Ownership, Concurrency Safety & Tokenizer Hardening**
 > 
-> * **Non-Causal Batch Safety:** Enforces strict physical micro-batch limits ($N \le \min(n\_batch, n\_ubatch)$) in `decode_tokens_chunked` before calling upstream GGML, eliminating process aborts (`GGML_ASSERT`) and rejecting semantically invalid multi-chunk bidirectional evaluations.
-> * **Causal Attention Transition Contract:** Establishes a fail-fast state machine transition contract for dynamic causal attention switching (`argus_context_set_causal_attn`), rejecting mutations on contexts with active speculative draft models or populated KV cache/sampler state (`ARGUS_ERROR_INVALID_STATE`).
-> * **Hardened Embedding Extraction:** Eliminates swallowed decode failures in `ArgusContext.extractEmbeddings`, verifies output vector completeness, guards against stale vectors, and decouples model queries (`context.nEmbd()`) from the Java `ArgusModel` wrapper lifecycle.
-> * **Steady-State Zero-Allocation Downcall:** Adds `ArgusContext.evalEmbeddings(MemorySegment tokensSeg, int nTokens, MemorySegment outEmbeddings)` for pure zero-allocation steady-state embedding evaluation from pre-tokenized memory segments.
-> * **Deterministic Offline Verification:** Ships project-owned synthetic embedding model fixture `tests/data/tiny-embed.gguf` with MEAN pooling and byte-fallback vocabulary, making embedding correctness verification a mandatory, release-gated offline CI step.
-> * **Telemetry & Reaper Hardening:** Restores native telemetry assertions (`ARGUS_CHECK(got_perf)`) and resolves callback reaper normal-timeout handoff quiescence in `ArgusBackend`.
+> * **Atomic Embedding Downcall:** Introduces `argus_eval_embeddings` across the native C ABI and Project Panama FFM (`ArgusContext.evalEmbeddings`), locking the execution context across KV pruning, token decoding, and embedding extraction to eliminate cross-thread interleaving and race conditions.
+> * **Generational Embedding Ownership:** Implements monotonic generational stamping (`embedding_generation`) across contexts and sequence slots, invalidating superseded sequence embeddings immediately upon subsequent decoding or state rollback (`ARGUS_ERROR_INVALID_STATE`).
+> * **Zero-Allocation Steady-State Token Chunking:** Context initialization now preallocates dedicated `llama_batch` scratch storage sized to `n_batch`, eliminating steady-state unmanaged allocations/deallocations on chunked decode paths.
+> * **Tokenizer Capacity Retry & Overflow Protection:** Preserves negative required token counts when `last_error == 0` during buffer undersizing retries and protects against integer negation overflow (`Integer.MIN_VALUE` / CWE-190).
+> * **Convenience Tokenizer Overloads:** Adds high-level `tokenize(String, boolean)` and `tokenize(Arena, String, boolean)` methods to both `ArgusContext` and `ArgusModel` for seamless ergonomic tokenization.
+> * **Deterministic Callback Reaper Handoff:** Hardens `ArgusBackend` callback retirement with sub-second virtual-thread handoff testing, ensuring clean quiescent reclamation under sustained native queries.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -34,14 +34,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.1</version>
+        <version>2.0.2</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.1</version>
+        <version>2.0.2</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -51,10 +51,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.1")
+    implementation("cc.projectargus:libargus-core:2.0.2")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.2")
 }
 ```
 
@@ -335,15 +335,19 @@ public class EmbeddingsApp {
             try (ArgusContext context = ArgusContext.init(arena, model, config)) {
                 String text = "text-matching: Retrieve semantic vector for this sentence.";
 
-                // 1. Caller-controlled off-heap extraction into caller-managed MemorySegment:
+                // 1. Direct high-level string convenience tokenization:
+                MemorySegment tokensSeg = context.tokenize(arena, text, true);
+                int nTokens = (int) (tokensSeg.byteSize() / ValueLayout.JAVA_INT.byteSize());
+
+                // 2. Atomic, thread-safe steady-state evaluation and copy-out:
                 MemorySegment embeddingsBuf = arena.allocate(ValueLayout.JAVA_FLOAT, context.nEmbd());
-                int nFloats = context.extractEmbeddings(arena, text, embeddingsBuf);
-                System.out.println("Extracted " + nFloats + " floats into off-heap memory.");
+                int nFloats = context.evalEmbeddings(tokensSeg, nTokens, embeddingsBuf);
+                System.out.println("Evaluated & extracted " + nFloats + " floats atomically.");
 
-                // 2. Pure zero-allocation steady-state evaluation from pre-tokenized memory segments:
-                // int written = context.evalEmbeddings(preTokenizedSeg, nTokens, embeddingsBuf);
+                // 3. Or direct all-in-one text extraction into caller-managed MemorySegment:
+                int extracted = context.extractEmbeddings(arena, text, embeddingsBuf);
 
-                // 3. Or retrieve directly as Java float[]:
+                // 4. Or retrieve directly as Java float[]:
                 float[] vector = context.extractEmbeddings(text);
                 System.out.println("Extracted float[] with length: " + vector.length);
             }

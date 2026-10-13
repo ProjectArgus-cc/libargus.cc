@@ -18,6 +18,9 @@ public final class ArgusTestBindings {
     private static final MethodHandle MH_ARGUS_TEST_SET_FORCE_ROLLBACK_FAIL;
 
     static {
+        try {
+            Class.forName("cc.projectargus.libargus.internal.ArgusBindings");
+        } catch (Throwable ignored) {}
         MethodHandle emitLog = null;
         MethodHandle rollbackFail = null;
         try {

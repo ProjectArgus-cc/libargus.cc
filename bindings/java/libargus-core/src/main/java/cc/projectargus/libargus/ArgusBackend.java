@@ -162,6 +162,7 @@ public final class ArgusBackend {
     // Testing hooks for deterministic synchronization and fault injection
     static volatile Consumer<Long> testReaperPostQuiescenceHook = null;
     static volatile IntSupplier testInFlightCountOverride = null;
+    static volatile long testReaperTimeoutMs = -1;
 
     private static int getInFlightCount() throws Throwable {
         var override = testInFlightCountOverride;
@@ -178,7 +179,8 @@ public final class ArgusBackend {
         if (REAPER_RUNNING.compareAndSet(false, true)) {
             Thread.ofVirtual().name("argus-callback-reaper").start(() -> {
                 int consecutiveFailures = 0;
-                long deadline = System.currentTimeMillis() + 10_000;
+                long timeout = testReaperTimeoutMs > 0 ? testReaperTimeoutMs : 10_000;
+                long deadline = System.currentTimeMillis() + timeout;
                 try {
                     while (System.currentTimeMillis() < deadline && !retiredCallbacks.isEmpty()) {
                         long eligibleGen = RETIREMENT_SEQUENCE.get();

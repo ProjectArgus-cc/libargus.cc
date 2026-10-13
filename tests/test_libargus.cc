@@ -1126,7 +1126,8 @@ int main(int argc, char ** argv) {
             }
         }
 
-        if (valid_embed_path) {
+        ARGUS_CHECK(valid_embed_path != nullptr && "Mandatory tiny-embed.gguf fixture not found!");
+        {
             argus_model_params_t embed_mparams = {};
             embed_mparams.model_path = valid_embed_path;
             embed_mparams.gpu_layers = 0;
@@ -1139,10 +1140,10 @@ int main(int argc, char ** argv) {
             argus_context_params_t embed_cparams = {};
             embed_cparams.context_length = 256;
             embed_cparams.cpu_threads = 2;
-            embed_cparams.n_seq_max = 1;
+            embed_cparams.n_seq_max = 2; // Multi-sequence support for isolation testing
             embed_cparams.embeddings = true;
-            embed_cparams.type_k = 1; // F16 KV cache for 16-element head size
-            embed_cparams.type_v = 1;
+            embed_cparams.type_k = 0; // F16 KV cache
+            embed_cparams.type_v = 0;
 
             argus_context_t * embed_ctx = argus_context_init(embed_model, &embed_cparams);
             ARGUS_CHECK(embed_ctx != nullptr);
@@ -1152,32 +1153,79 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_get_embeddings(embed_ctx, 0, out_embeds, 32) == -1);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
 
-            // Decode 3 tokens
-            int32_t embed_tokens[] = { 1, 4, 5 };
-            argus_token_batch_t embed_batch = {};
-            embed_batch.tokens = embed_tokens;
-            embed_batch.n_tokens = 3;
-            embed_batch.start_pos = 0;
-            embed_batch.seq_id = 0;
-            embed_batch.request_logits = false;
-            ARGUS_CHECK(argus_decode_batch(embed_ctx, &embed_batch) == 0);
+            // Expected analytical reference coordinates for tiny-embed.gguf with input tokens [1, 4, 5]
+            static const float EXPECTED_VEC_A[32] = {
+                0.012607f, 0.008028f, 0.004507f, -0.023824f, 0.000028f, -0.013474f, 0.001769f, -0.006316f,
+                -0.000113f, 0.000781f, 0.000226f, -0.019436f, -0.001485f, 0.004716f, -0.013539f, 0.005747f,
+                -0.004355f, -0.003777f, -0.001283f, -0.001102f, 0.000275f, -0.000012f, 0.005550f, -0.016983f,
+                0.025341f, 0.001413f, -0.002965f, 0.000518f, 0.002365f, -0.010931f, 0.030305f, -0.000967f
+            };
 
-            // Query embeddings after successful decode -> must succeed
-            int32_t written = argus_get_embeddings(embed_ctx, 0, out_embeds, 32);
-            ARGUS_CHECK(written == 32);
+            // Test 1: Decode sequence 0 with [1, 4, 5]
+            int32_t embed_tokens_a[] = { 1, 4, 5 };
+            argus_token_batch_t embed_batch_a = {};
+            embed_batch_a.tokens = embed_tokens_a;
+            embed_batch_a.n_tokens = 3;
+            embed_batch_a.start_pos = 0;
+            embed_batch_a.seq_id = 0;
+            embed_batch_a.request_logits = false;
+            ARGUS_CHECK(argus_decode_batch(embed_ctx, &embed_batch_a) == 0);
 
-            double norm_sq = 0.0;
+            // Query embeddings for sequence 0
+            int32_t written_a = argus_get_embeddings(embed_ctx, 0, out_embeds, 32);
+            ARGUS_CHECK(written_a == 32);
+
             for (int i = 0; i < 32; ++i) {
                 ARGUS_CHECK(!std::isnan(out_embeds[i]) && !std::isinf(out_embeds[i]));
-                norm_sq += out_embeds[i] * out_embeds[i];
+                ARGUS_CHECK(std::abs(out_embeds[i] - EXPECTED_VEC_A[i]) < 1e-4f);
             }
-            ARGUS_CHECK(norm_sq > 0.0);
-            std::cout << "  - Synthetic embedding model extraction verified: norm_sq=" << norm_sq << std::endl;
+            std::cout << "  - Deterministic reference vector A verified with 1e-4 precision." << std::endl;
+
+            // Test 2: Atomic evaluation via argus_eval_embeddings on sequence 0
+            float eval_out_a[32] = {};
+            int32_t eval_written = argus_eval_embeddings(embed_ctx, embed_tokens_a, 3, 0, eval_out_a, 32);
+            ARGUS_CHECK(eval_written == 32);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(std::abs(eval_out_a[i] - EXPECTED_VEC_A[i]) < 1e-4f);
+            }
+
+            // Test argus_eval_embeddings capacity constraint: max_floats < 32 returns -2
+            ARGUS_CHECK(argus_eval_embeddings(embed_ctx, embed_tokens_a, 3, 0, eval_out_a, 31) == -2);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // Test 3: Multi-sequence generational invalidation proof
+            // Expected analytical reference coordinates for tiny-embed.gguf with input tokens [1, 4, 6]
+            static const float EXPECTED_VEC_B[32] = {
+                -0.003486f, 0.024704f, -0.008348f, -0.010331f, -0.000755f, -0.016964f, 0.002638f, -0.001489f,
+                0.000092f, -0.000260f, -0.002435f, -0.005751f, -0.002582f, -0.000795f, -0.012421f, 0.004681f,
+                -0.007213f, -0.020193f, -0.000497f, 0.000980f, 0.000381f, -0.000168f, 0.020802f, -0.018449f,
+                0.031088f, -0.000668f, -0.000664f, 0.000861f, 0.013751f, -0.011461f, 0.019753f, 0.007501f
+            };
+
+            int32_t embed_tokens_b[] = { 1, 4, 6 };
+            float eval_out_b[32] = {};
+            int32_t written_b = argus_eval_embeddings(embed_ctx, embed_tokens_b, 3, 1, eval_out_b, 32);
+            ARGUS_CHECK(written_b == 32);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(std::abs(eval_out_b[i] - EXPECTED_VEC_B[i]) < 1e-4f);
+            }
+
+            // CRITICAL INVARIANT: Query sequence 0 again! It must fail with ARGUS_ERROR_INVALID_STATE
+            // because sequence 1 superseded upstream embedding output!
+            float stale_check[32] = {};
+            ARGUS_CHECK(argus_get_embeddings(embed_ctx, 0, stale_check, 32) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
+
+            // Query sequence 1: must succeed and match vector B
+            float seq1_check[32] = {};
+            ARGUS_CHECK(argus_get_embeddings(embed_ctx, 1, seq1_check, 32) == 32);
+            for (int i = 0; i < 32; ++i) {
+                ARGUS_CHECK(std::abs(seq1_check[i] - EXPECTED_VEC_B[i]) < 1e-4f);
+            }
+            std::cout << "  - Generational multi-sequence embedding isolation verified: zero cross-sequence contamination." << std::endl;
 
             argus_context_free(embed_ctx);
             argus_model_free(embed_model);
-        } else {
-            std::cout << "  [Notice] tiny-embed.gguf not found, skipping synthetic embedding check." << std::endl;
         }
 
         // 7.19. Cleanup

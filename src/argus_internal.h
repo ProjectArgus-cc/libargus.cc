@@ -78,6 +78,7 @@ struct argus_seq_sampler {
     int32_t                            last_logits_pos    = -1;
     bool                               has_logits         = false;
     bool                               has_embeddings     = false;
+    uint64_t                           embedding_generation = 0;
     bool                               has_cached_chain   = false;
 };
 
@@ -92,9 +93,14 @@ struct argus_context {
     const argus_model              * vocoder_model_ref;
     std::mutex                       mtx;                 // per-context concurrency guard
 
+    // Context-level scratch batch for zero-allocation steady-state decode
+    struct llama_batch               batch_scratch      = {};
+    bool                             has_batch_scratch  = false;
+
     // Sequence-isolated persistent sampler state slots
     std::vector<argus_seq_sampler>   seq_samplers;
     int32_t                          last_decoded_seq_id = -1;
+    uint64_t                         embedding_generation = 0;
 };
 
 // Internal helper to discard a sequence slot's pending sample and rebuild its chain

@@ -721,5 +721,48 @@ class LoggingAndTelemetryTest {
             ArgusBackend.setLogLevel(initial);
         }
     }
+
+    @Test
+    void testReaperDeadlineHandoffQuiescence() throws Throwable {
+        Assumptions.assumeTrue(ArgusTestBindings.hasTestHooks(), "Native test hooks required");
+        ArgusBackend.init();
+        ArgusLogLevel initial = ArgusBackend.getLogLevel();
+        try {
+            ArgusBackend.setLogLevel(ArgusLogLevel.DEBUG);
+            ArgusBackend.testReaperTimeoutMs = 50; // Shorten 10s reaper to 50ms
+            ArgusBackend.testInFlightCountOverride = () -> 1; // Simulate ongoing work
+
+            // Register and replace callback so one is retired
+            ArgusBackend.setLogCallback((lvl, msg) -> {});
+            ArgusBackend.setLogCallback((lvl, msg) -> {}); // Generation retired
+
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(), "One callback arena should be retired");
+
+            // Sleep past the reaper's 50ms deadline while in_flight remains 1.
+            // The reaper will exit its loop due to timeout and schedule a handoff successor (Thread.sleep(100)).
+            Thread.sleep(80);
+
+            // Arena is still retained because in_flight was 1
+            assertEquals(1, ArgusBackend.getRetiredCallbackArenaCount(), "Arena must remain retained while work is in flight");
+
+            // Now simulate in-flight dropping to 0
+            ArgusBackend.testInFlightCountOverride = () -> 0;
+
+            // Wait for the handoff successor reaper (100ms sleep + execution) to reclaim the retired arena
+            long deadline = System.currentTimeMillis() + 1500;
+            while (System.currentTimeMillis() < deadline && ArgusBackend.getRetiredCallbackArenaCount() > 0) {
+                Thread.sleep(10);
+            }
+
+            assertEquals(0, ArgusBackend.getRetiredCallbackArenaCount(),
+                "Handoff successor reaper must successfully reclaim retired arena after quiescence");
+        } finally {
+            ArgusBackend.testReaperTimeoutMs = -1;
+            ArgusBackend.testInFlightCountOverride = null;
+            ArgusBackend.free();
+            ArgusBackend.setLogLevel(initial);
+        }
+    }
 }
+
 

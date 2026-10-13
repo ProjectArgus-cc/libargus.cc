@@ -271,5 +271,70 @@ int main() {
         argus_set_log_callback(nullptr, nullptr);
     }
 
+    // Multi-threaded concurrent argus_eval_embeddings stress test on a shared context
+    {
+        argus_model_params_t emp{}; emp.model_path = "tests/data/tiny-embed.gguf";
+        auto emodel = argus_model_load(&emp);
+        if (emodel) {
+            argus_context_params_t ecp{};
+            ecp.context_length = 256;
+            ecp.cpu_threads = 2;
+            ecp.n_seq_max = 2;
+            ecp.embeddings = true;
+            auto ectx = argus_context_init(emodel, &ecp);
+            CHECK(ectx != nullptr);
+
+            static const float EXPECTED_A[32] = {
+                0.012607f, 0.008028f, 0.004507f, -0.023824f, 0.000028f, -0.013474f, 0.001769f, -0.006316f,
+                -0.000113f, 0.000781f, 0.000226f, -0.019436f, -0.001485f, 0.004716f, -0.013539f, 0.005747f,
+                -0.004355f, -0.003777f, -0.001283f, -0.001102f, 0.000275f, -0.000012f, 0.005550f, -0.016983f,
+                0.025341f, 0.001413f, -0.002965f, 0.000518f, 0.002365f, -0.010931f, 0.030305f, -0.000967f
+            };
+            static const float EXPECTED_B[32] = {
+                -0.003486f, 0.024704f, -0.008348f, -0.010331f, -0.000755f, -0.016964f, 0.002638f, -0.001489f,
+                0.000092f, -0.000260f, -0.002435f, -0.005751f, -0.002582f, -0.000795f, -0.012421f, 0.004681f,
+                -0.007213f, -0.020193f, -0.000497f, 0.000980f, 0.000381f, -0.000168f, 0.020802f, -0.018449f,
+                0.031088f, -0.000668f, -0.000664f, 0.000861f, 0.013751f, -0.011461f, 0.019753f, 0.007501f
+            };
+
+            const int iterations = 10;
+            std::atomic<bool> race_failed{false};
+
+            auto worker_a = [&]() {
+                const int32_t tokens_a[] = {1, 4, 5};
+                float out[32];
+                for (int i = 0; i < iterations; ++i) {
+                    int32_t written = argus_eval_embeddings(ectx, tokens_a, 3, 0, out, 32);
+                    if (written != 32) { race_failed.store(true); break; }
+                    for (int j = 0; j < 32; ++j) {
+                        if (std::abs(out[j] - EXPECTED_A[j]) > 1e-4f) { race_failed.store(true); break; }
+                    }
+                }
+            };
+
+            auto worker_b = [&]() {
+                const int32_t tokens_b[] = {1, 4, 6};
+                float out[32];
+                for (int i = 0; i < iterations; ++i) {
+                    int32_t written = argus_eval_embeddings(ectx, tokens_b, 3, 1, out, 32);
+                    if (written != 32) { race_failed.store(true); break; }
+                    for (int j = 0; j < 32; ++j) {
+                        if (std::abs(out[j] - EXPECTED_B[j]) > 1e-4f) { race_failed.store(true); break; }
+                    }
+                }
+            };
+
+            std::thread t1(worker_a);
+            std::thread t2(worker_b);
+            t1.join();
+            t2.join();
+
+            CHECK(!race_failed.load());
+
+            argus_context_free(ectx);
+            argus_model_free(emodel);
+        }
+    }
+
     argus_backend_free();
 }

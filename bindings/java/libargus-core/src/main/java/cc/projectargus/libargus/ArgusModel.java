@@ -602,8 +602,16 @@ public final class ArgusModel extends ArgusNativeResource {
                 (int) maxTokens,
                 addBos
             );
+            if (res == Integer.MIN_VALUE) {
+                throw new ArgusNativeException(ArgusNativeException.ERROR_INTERNAL,
+                    "Tokenization overflow: result size exceeds int32 limit");
+            }
             if (res < 0) {
-                ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+                int lastErr = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                if (lastErr != 0) {
+                    ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+                }
+                // When lastErr == 0, res is -required_tokens indicating insufficient buffer capacity
             }
             return res;
         } catch (Throwable t) {
@@ -611,6 +619,57 @@ public final class ArgusModel extends ArgusNativeResource {
             throw new RuntimeException("Failed to tokenize input text", t);
         } finally {
             releaseReadLease();
+        }
+    }
+
+    /**
+     * Converts a Java string into vocabulary token IDs using this model's unmanaged vocabulary.
+     * Automatically handles buffer sizing and allocation within the provided arena.
+     *
+     * @param arena Arena used to allocate the output token segment
+     * @param text Input text string to tokenize
+     * @param addBos Whether to prepend the beginning-of-sequence (BOS) token
+     * @return MemorySegment containing the token integers (int32)
+     */
+    public MemorySegment tokenize(Arena arena, String text, boolean addBos) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(text, "text");
+        MemorySegment textSeg = arena.allocateFrom(text);
+        int initialCap = Math.max(64, (int) textSeg.byteSize());
+        MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, initialCap);
+        int nTokens = tokenize(textSeg, tokenBuf, addBos);
+        if (nTokens < 0) {
+            if (nTokens == Integer.MIN_VALUE) {
+                throw new ArgusNativeException(ArgusNativeException.ERROR_INTERNAL,
+                    "Tokenization overflow: result size exceeds int32 limit");
+            }
+            int required = -nTokens;
+            if (required <= 0 || required > 10_000_000) {
+                throw new IllegalArgumentException("Token count exceeds safety limit: " + required);
+            }
+            tokenBuf = arena.allocate(ValueLayout.JAVA_INT, required);
+            nTokens = tokenize(textSeg, tokenBuf, addBos);
+        }
+        if (nTokens < 0) {
+            ArgusNativeException.checkStatus(nTokens, "argus_tokenize_n");
+        }
+        return tokenBuf.asSlice(0, (long) nTokens * ValueLayout.JAVA_INT.byteSize());
+    }
+
+    /**
+     * Converts a Java string into vocabulary token IDs as a primitive Java int array.
+     *
+     * @param text Input text string to tokenize
+     * @param addBos Whether to prepend the beginning-of-sequence (BOS) token
+     * @return Primitive int array containing the token IDs
+     */
+    public int[] tokenize(String text, boolean addBos) {
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment tokenSeg = tokenize(localArena, text, addBos);
+            int count = (int) (tokenSeg.byteSize() / ValueLayout.JAVA_INT.byteSize());
+            int[] result = new int[count];
+            MemorySegment.copy(tokenSeg, ValueLayout.JAVA_INT, 0, result, 0, count);
+            return result;
         }
     }
 }

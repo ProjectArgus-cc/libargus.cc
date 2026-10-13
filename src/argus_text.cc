@@ -370,8 +370,14 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
                 }
             }
 
+            argus_ctx->batch_scratch       = llama_batch_init(cparams.n_batch, 0, 1);
+            argus_ctx->has_batch_scratch   = true;
+
             return argus_ctx;
         } catch (...) {
+            if (argus_ctx && argus_ctx->has_batch_scratch) {
+                llama_batch_free(argus_ctx->batch_scratch);
+            }
             if (draft_ctx) llama_free(draft_ctx);
             if (ctx) llama_free(ctx);
             if (draft_model) argus_model_release(draft_model);
@@ -425,6 +431,10 @@ void argus_context_free(argus_context_t * ctx) {
         if (ctx->model_ref) {
             argus_model_release(ctx->model_ref);
             ctx->model_ref = nullptr;
+        }
+        if (ctx->has_batch_scratch) {
+            llama_batch_free(ctx->batch_scratch);
+            ctx->has_batch_scratch = false;
         }
         delete ctx;
     } catch (const std::exception & e) {
@@ -914,6 +924,7 @@ struct abort_flag_lease {
 // Evaluates a sequence of tokens in chunks conforming to the model's native n_batch limit.
 // Precondition: Caller must hold the context level synchronization mutex (ctx->mtx).
 static int32_t decode_tokens_chunked(
+    argus_context_t      * ctx,
     struct llama_context * lctx,
     const int32_t        * tokens,
     int32_t                n_tokens,
@@ -946,8 +957,13 @@ static int32_t decode_tokens_chunked(
 
     int32_t decoded = 0;
 
-    int32_t max_chunk_size = std::min(n_batch, n_tokens);
-    struct llama_batch batch = llama_batch_init(max_chunk_size, 0, 1);
+    bool use_scratch = (ctx && ctx->has_batch_scratch && ctx->ctx == lctx);
+    struct llama_batch temp_batch = {};
+    if (!use_scratch) {
+        int32_t max_chunk_size = std::min(n_batch, n_tokens);
+        temp_batch = llama_batch_init(max_chunk_size, 0, 1);
+    }
+    struct llama_batch & batch = use_scratch ? ctx->batch_scratch : temp_batch;
 
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
@@ -968,7 +984,9 @@ static int32_t decode_tokens_chunked(
         }
 
         if (argus_abort_flag_is_requested(abort_flag)) {
-            llama_batch_free(batch);
+            if (!use_scratch) {
+                llama_batch_free(temp_batch);
+            }
             if (out_n_decoded) {
                 *out_n_decoded = decoded;
             }
@@ -983,7 +1001,9 @@ static int32_t decode_tokens_chunked(
         }
 
         if (result != 0) {
-            llama_batch_free(batch);
+            if (!use_scratch) {
+                llama_batch_free(temp_batch);
+            }
             if (out_n_decoded) {
                 *out_n_decoded = decoded;
             }
@@ -996,8 +1016,20 @@ static int32_t decode_tokens_chunked(
         }
     }
 
-    llama_batch_free(batch);
+    if (!use_scratch) {
+        llama_batch_free(temp_batch);
+    }
     return 0;
+}
+
+static void invalidate_context_embeddings(argus_context_t * ctx) {
+    if (!ctx) {
+        return;
+    }
+    ctx->embedding_generation++;
+    for (auto & slot : ctx->seq_samplers) {
+        slot.has_embeddings = false;
+    }
 }
 
 static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
@@ -1011,6 +1043,7 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
             slot.has_embeddings = false;
         }
         ctx->last_decoded_seq_id = -1;
+        ctx->embedding_generation++;
     } else if (seq_id < (int32_t)ctx->seq_samplers.size()) {
         auto & slot = ctx->seq_samplers[seq_id];
         slot.has_logits = false;
@@ -1019,6 +1052,7 @@ static void invalidate_seq_logits(argus_context_t * ctx, int32_t seq_id) {
         if (ctx->last_decoded_seq_id == seq_id) {
             ctx->last_decoded_seq_id = -1;
         }
+        ctx->embedding_generation++;
     }
 }
 
@@ -1108,8 +1142,9 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                 return ARGUS_DECODE_ROLLBACK_FAILED;
             }
 
-            // Rollback confirmed successful: invalidate logits and prune state
+            // Rollback confirmed successful: invalidate logits, embeddings and prune state
             invalidate_seq_logits(ctx, seq_id);
+            invalidate_context_embeddings(ctx);
 
             // Discard pending sample if targeted at or beyond rollback point
             bool pending_discarded = false;
@@ -1135,8 +1170,11 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                 rebuild_slot_chain_preserving_rng(ctx, seq_id);
             }
 
+            invalidate_context_embeddings(ctx);
+
             int32_t n_decoded = 0;
             int32_t res = decode_tokens_chunked(
+                ctx,
                 ctx->ctx,
                 batch_payload->tokens,
                 batch_payload->n_tokens,
@@ -1163,8 +1201,10 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
                 slot.has_logits = batch_payload->request_logits;
                 slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
                 slot.has_embeddings = true;
+                slot.embedding_generation = ++ctx->embedding_generation;
             } else {
                 invalidate_seq_logits(ctx, seq_id);
+                invalidate_context_embeddings(ctx);
             }
 
             return res;
@@ -1175,11 +1215,13 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
             (batch_payload->start_pos == slot.pending.kv_pos && batch_payload->tokens[0] == slot.pending.token);
         bool is_mismatched_override = slot.pending.valid && !is_matching_continuation;
 
-        // Invalidate previous logits prior to forward token evaluation
+        // Invalidate previous logits and context embeddings prior to forward token evaluation
         invalidate_seq_logits(ctx, seq_id);
+        invalidate_context_embeddings(ctx);
 
         int32_t n_decoded = 0;
         int32_t res = decode_tokens_chunked(
+            ctx,
             ctx->ctx,
             batch_payload->tokens,
             batch_payload->n_tokens,
@@ -1227,8 +1269,10 @@ int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_batch_t * ba
             slot.has_logits = batch_payload->request_logits;
             slot.last_logits_pos = batch_payload->request_logits ? (batch_payload->start_pos + batch_payload->n_tokens - 1) : -1;
             slot.has_embeddings = true;
+            slot.embedding_generation = ++ctx->embedding_generation;
         } else {
             invalidate_seq_logits(ctx, seq_id);
+            invalidate_context_embeddings(ctx);
         }
 
         return res;
@@ -1258,20 +1302,25 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
             return -1;
         }
 
-        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size() || !ctx->seq_samplers[seq_id].has_embeddings) {
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size() ||
+            !ctx->seq_samplers[seq_id].has_embeddings ||
+            ctx->seq_samplers[seq_id].embedding_generation != ctx->embedding_generation) {
             set_last_error(ARGUS_ERROR_INVALID_STATE, "no embeddings available for sequence in argus_get_embeddings; ensure decodeBatch succeeded");
             return -1;
         }
 
         float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
         if (!embd) {
-            embd = llama_get_embeddings_ith(ctx->ctx, -1);
+            enum llama_pooling_type ptype = llama_pooling_type(ctx->ctx);
+            if (ptype == LLAMA_POOLING_TYPE_NONE && ctx->last_decoded_seq_id == seq_id) {
+                embd = llama_get_embeddings_ith(ctx->ctx, -1);
+                if (!embd) {
+                    embd = llama_get_embeddings(ctx->ctx);
+                }
+            }
         }
         if (!embd) {
-            embd = llama_get_embeddings(ctx->ctx);
-        }
-        if (!embd) {
-            set_last_error(ARGUS_ERROR_INTERNAL, "no embeddings available for sequence in argus_get_embeddings");
+            set_last_error(ARGUS_ERROR_INVALID_STATE, "no embeddings available for sequence in argus_get_embeddings");
             return -1;
         }
 
@@ -1281,7 +1330,101 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
             return -2;
         }
 
-        std::memcpy(out_embeddings, embd, n_embd * sizeof(float));
+        std::memcpy(out_embeddings, embd, (size_t)n_embd * sizeof(float));
+        return n_embd;
+    });
+}
+
+int32_t argus_eval_embeddings(
+    argus_context_t * ctx,
+    const int32_t   * tokens,
+    int32_t           n_tokens,
+    int32_t           seq_id,
+    float           * out_embeddings,
+    int32_t           max_floats
+) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_eval_embeddings", [&]() -> int32_t {
+        if (!ctx || !ctx->ctx || !tokens || n_tokens <= 0 || !out_embeddings || max_floats <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_eval_embeddings");
+            return -1;
+        }
+
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        if (!ctx->model_ref || !ctx->model_ref->model) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null model reference in argus_eval_embeddings");
+            return -1;
+        }
+
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "seq_id out of bounds in argus_eval_embeddings");
+            return -1;
+        }
+
+        int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
+        if (n_embd > max_floats) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "output buffer too small for embeddings in argus_eval_embeddings");
+            return -2;
+        }
+
+        // Invalidate embeddings and logits prior to evaluation
+        invalidate_context_embeddings(ctx);
+        invalidate_seq_logits(ctx, seq_id);
+
+        // Prune any prior KV cache entries for this sequence slot to ensure clean start from position 0
+        if (!prune_kv_cache_if_rollback(ctx->ctx, seq_id, 0)) {
+            set_last_error(ARGUS_ERROR_ROLLBACK_FAILED, "failed to prune prior sequence KV cache for embedding evaluation");
+            return -1;
+        }
+
+        auto & slot = ctx->seq_samplers[seq_id];
+        slot.history.clear();
+        slot.pending = {};
+        if (slot.chain) {
+            llama_sampler_reset(slot.chain);
+        }
+
+        int32_t n_decoded = 0;
+        int32_t res = decode_tokens_chunked(
+            ctx,
+            ctx->ctx,
+            tokens,
+            n_tokens,
+            0,
+            seq_id,
+            false,
+            nullptr,
+            &n_decoded
+        );
+
+        if (res != 0) {
+            invalidate_seq_logits(ctx, seq_id);
+            invalidate_context_embeddings(ctx);
+            return res;
+        }
+
+        ctx->last_decoded_seq_id = seq_id;
+        slot.has_embeddings = true;
+        slot.embedding_generation = ++ctx->embedding_generation;
+
+        float * embd = llama_get_embeddings_seq(ctx->ctx, seq_id);
+        if (!embd) {
+            enum llama_pooling_type ptype = llama_pooling_type(ctx->ctx);
+            if (ptype == LLAMA_POOLING_TYPE_NONE && ctx->last_decoded_seq_id == seq_id) {
+                embd = llama_get_embeddings_ith(ctx->ctx, -1);
+                if (!embd) {
+                    embd = llama_get_embeddings(ctx->ctx);
+                }
+            }
+        }
+
+        if (!embd) {
+            invalidate_context_embeddings(ctx);
+            set_last_error(ARGUS_ERROR_INVALID_STATE, "no embeddings produced by evaluation in argus_eval_embeddings");
+            return -1;
+        }
+
+        std::memcpy(out_embeddings, embd, (size_t)n_embd * sizeof(float));
         return n_embd;
     });
 }
@@ -1733,8 +1876,9 @@ bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0
             return false;
         }
 
-        // Invalidate logits across sequence slots
+        // Invalidate logits and embeddings across sequence slots
         invalidate_seq_logits(ctx, seq_id);
+        invalidate_context_embeddings(ctx);
 
         // Sequence-specific sampler reset / coordinate-linked pruning
         if (seq_id < 0) {
@@ -1870,8 +2014,9 @@ bool argus_kv_cache_seq_cp(argus_context_t * ctx, int32_t seq_id_src, int32_t se
             }
         }
 
-        // Invalidate destination logits
+        // Invalidate destination logits and context embeddings
         invalidate_seq_logits(ctx, seq_id_dst);
+        invalidate_context_embeddings(ctx);
 
         auto & slot_src = ctx->seq_samplers[seq_id_src];
         auto & slot_dst = ctx->seq_samplers[seq_id_dst];
@@ -2015,7 +2160,7 @@ int32_t argus_synthesize_speech_n(
     tokenize_to_vector(vocab, audio_data, prompt_inp, false);
 
     // run decode batch for initial prompt evaluation using DRY chunked helper
-    if (decode_tokens_chunked(ctx->ctx, prompt_inp.data(), (int32_t)prompt_inp.size(), 0, 0, true, nullptr) != 0) {
+    if (decode_tokens_chunked(ctx, ctx->ctx, prompt_inp.data(), (int32_t)prompt_inp.size(), 0, 0, true, nullptr) != 0) {
         return -1;
     }
 

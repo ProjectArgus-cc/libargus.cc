@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 2.0.1
+ * @version 2.0.2
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -850,6 +850,23 @@ ARGUS_API int32_t argus_decode_tokens(argus_context_t * ctx, const int32_t * tok
  * @return Number of floats written to out_embeddings, or negative on failure.
  */
 ARGUS_API int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_embeddings, int32_t max_floats);
+
+/**
+ * @brief Evaluates an input token sequence and copies out the resulting embedding vector
+ * atomically under a single context-level critical section.
+ *
+ * This guarantees that concurrent callers cannot interleave evaluations or retrieve
+ * an embedding vector belonging to another evaluation or sequence.
+ *
+ * @param ctx Reference execution context.
+ * @param tokens Array of input token IDs.
+ * @param n_tokens Number of tokens in the input array.
+ * @param seq_id Target sequence ID (typically 0).
+ * @param out_embeddings Flat floating-point buffer to receive the embedding vector.
+ * @param max_floats Size of the output buffer in float elements.
+ * @return Number of floats written to out_embeddings, or negative on failure.
+ */
+ARGUS_API int32_t argus_eval_embeddings(argus_context_t * ctx, const int32_t * tokens, int32_t n_tokens, int32_t seq_id, float * out_embeddings, int32_t max_floats);
 
 /**
  * @brief Samples a single token from the last computed layer logits matrix.

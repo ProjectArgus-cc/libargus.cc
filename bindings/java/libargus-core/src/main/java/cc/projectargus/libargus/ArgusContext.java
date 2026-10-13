@@ -218,8 +218,16 @@ public final class ArgusContext extends ArgusNativeResource {
                 (int) maxTokens,
                 addBos
             );
+            if (res == Integer.MIN_VALUE) {
+                throw new ArgusNativeException(ArgusNativeException.ERROR_INTERNAL,
+                    "Tokenization overflow: result size exceeds int32 limit");
+            }
             if (res < 0) {
-                ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+                int lastErr = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                if (lastErr != 0) {
+                    ArgusNativeException.checkStatus(res, "argus_tokenize_n");
+                }
+                // When lastErr == 0, res is -required_tokens indicating insufficient buffer capacity
             }
             return res;
         } catch (Throwable t) {
@@ -227,6 +235,57 @@ public final class ArgusContext extends ArgusNativeResource {
             throw new RuntimeException("Failed to tokenize input text", t);
         } finally {
             releaseReadLease();
+        }
+    }
+
+    /**
+     * Converts a Java string into vocabulary token IDs using this context's retained model.
+     * Automatically handles buffer sizing and allocation within the provided arena.
+     *
+     * @param arena Arena used to allocate the output token segment
+     * @param text Input text string to tokenize
+     * @param addBos Whether to prepend the beginning-of-sequence (BOS) token
+     * @return MemorySegment containing the token integers (int32)
+     */
+    public MemorySegment tokenize(Arena arena, String text, boolean addBos) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(text, "text");
+        MemorySegment textSeg = arena.allocateFrom(text);
+        int initialCap = Math.max(64, (int) textSeg.byteSize());
+        MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, initialCap);
+        int nTokens = tokenize(textSeg, tokenBuf, addBos);
+        if (nTokens < 0) {
+            if (nTokens == Integer.MIN_VALUE) {
+                throw new ArgusNativeException(ArgusNativeException.ERROR_INTERNAL,
+                    "Tokenization overflow: result size exceeds int32 limit");
+            }
+            int required = -nTokens;
+            if (required <= 0 || required > 10_000_000) {
+                throw new IllegalArgumentException("Token count exceeds safety limit: " + required);
+            }
+            tokenBuf = arena.allocate(ValueLayout.JAVA_INT, required);
+            nTokens = tokenize(textSeg, tokenBuf, addBos);
+        }
+        if (nTokens < 0) {
+            ArgusNativeException.checkStatus(nTokens, "argus_tokenize_n");
+        }
+        return tokenBuf.asSlice(0, (long) nTokens * ValueLayout.JAVA_INT.byteSize());
+    }
+
+    /**
+     * Converts a Java string into vocabulary token IDs as a primitive Java int array.
+     *
+     * @param text Input text string to tokenize
+     * @param addBos Whether to prepend the beginning-of-sequence (BOS) token
+     * @return Primitive int array containing the token IDs
+     */
+    public int[] tokenize(String text, boolean addBos) {
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment tokenSeg = tokenize(localArena, text, addBos);
+            int count = (int) (tokenSeg.byteSize() / ValueLayout.JAVA_INT.byteSize());
+            int[] result = new int[count];
+            MemorySegment.copy(tokenSeg, ValueLayout.JAVA_INT, 0, result, 0, count);
+            return result;
         }
     }
 
@@ -1066,6 +1125,20 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
+     * Retrieves the pooled or token embeddings evaluated for default sequence 0 into the specified float buffer.
+     * Mutex-locked inside the native layer.
+     *
+     * @param outEmbeddings destination buffer memory segment to receive the float embedding vector
+     * @param maxFloats maximum capacity of the output buffer in float elements
+     * @return the number of float elements written
+     * @throws ArgusNativeException if retrieving embeddings fails
+     */
+    public int getEmbeddings(MemorySegment outEmbeddings, int maxFloats) {
+        return getEmbeddings(0, outEmbeddings, maxFloats);
+    }
+
+
+    /**
      * Dynamically configures the CPU thread counts for this execution context session.
      * Automatically updates main evaluation, speculative draft, and vocoder contexts if present.
      *
@@ -1236,7 +1309,7 @@ public final class ArgusContext extends ArgusNativeResource {
     /**
      * Pure zero-allocation steady-state embedding evaluation pipeline.
      * Evaluates a pre-tokenized token segment on sequence slot 0 and retrieves the embedding vector
-     * directly into the caller's preallocated native memory segment without heap allocations or scratch copies.
+     * directly into the caller's preallocated native memory segment under a single atomic context lock.
      *
      * @param tokensSeg Native MemorySegment containing token integers (must be 4-byte aligned)
      * @param nTokens Number of tokens in tokensSeg to evaluate
@@ -1244,8 +1317,24 @@ public final class ArgusContext extends ArgusNativeResource {
      * @return Number of floats written to outEmbeddings
      */
     public int evalEmbeddings(MemorySegment tokensSeg, int nTokens, MemorySegment outEmbeddings) {
+        return evalEmbeddings(tokensSeg, nTokens, 0, outEmbeddings);
+    }
+
+    /**
+     * Evaluates a pre-tokenized token segment on a specified sequence slot and retrieves the embedding vector
+     * directly into the caller's preallocated native memory segment under a single atomic context lock.
+     *
+     * @param tokensSeg Native MemorySegment containing token integers (must be 4-byte aligned)
+     * @param nTokens Number of tokens in tokensSeg to evaluate
+     * @param seqId Target sequence ID
+     * @param outEmbeddings Destination MemorySegment allocated for at least {@link #nEmbd()} floats
+     * @return Number of floats written to outEmbeddings
+     */
+    public int evalEmbeddings(MemorySegment tokensSeg, int nTokens, int seqId, MemorySegment outEmbeddings) {
         Objects.requireNonNull(tokensSeg, "tokensSeg");
         Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+        ArgusValidation.checkReadable(tokensSeg, (long) nTokens * ValueLayout.JAVA_INT.byteSize(), "tokensSeg");
+        ArgusValidation.checkWritable(outEmbeddings, ValueLayout.JAVA_FLOAT.byteSize(), "outEmbeddings");
         if (nTokens <= 0) {
             throw new IllegalArgumentException("nTokens must be positive, got: " + nTokens);
         }
@@ -1257,25 +1346,35 @@ public final class ArgusContext extends ArgusNativeResource {
                 " floats) is insufficient for model embedding dimension (" + requiredDim + " floats)");
         }
 
-        int decodeStatus = decodeBatch(tokensSeg, nTokens, 0, 0, false);
-        if (decodeStatus != 0) {
-            ArgusNativeException.checkStatus(decodeStatus, "argus_decode_tokens");
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            int written = (int) ArgusBindings.argus_eval_embeddings.invokeExact(
+                ctxH,
+                tokensSeg,
+                nTokens,
+                seqId,
+                outEmbeddings,
+                (int) maxFloats
+            );
+            if (written < 0) {
+                ArgusNativeException.checkStatus(written, "argus_eval_embeddings");
+            }
+            if (written != requiredDim) {
+                throw new IllegalStateException("Incomplete embedding extraction: expected " + requiredDim + " floats, got " + written);
+            }
+            return written;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to evaluate embeddings atomically", t);
+        } finally {
+            releaseReadLease();
         }
-
-        int written = getEmbeddings(0, outEmbeddings, (int) maxFloats);
-        if (written < 0) {
-            ArgusNativeException.throwLastError("argus_get_embeddings");
-        }
-        if (written != requiredDim) {
-            throw new IllegalStateException("Incomplete embedding extraction: expected " + requiredDim + " floats, got " + written);
-        }
-        return written;
     }
 
     /**
      * Convenience method to extract semantic text embeddings into the caller's preallocated MemorySegment,
      * utilizing the caller-supplied Arena for intermediate token scratch buffers.
-     * Tokenizes prompt text, decodes a single batch, and retrieves the embedding vector.
+     * Tokenizes prompt text, decodes a single batch, and retrieves the embedding vector atomically.
      *
      * @param arena Confined or temporary arena used for intermediate token buffers
      * @param text Input text string to embed
@@ -1295,7 +1394,14 @@ public final class ArgusContext extends ArgusNativeResource {
         MemorySegment tokenBuf = arena.allocate(ValueLayout.JAVA_INT, maxTokens);
         int nTokens = tokenize(textSeg, tokenBuf, true);
         if (nTokens < 0) {
+            if (nTokens == Integer.MIN_VALUE) {
+                throw new ArgusNativeException(ArgusNativeException.ERROR_INTERNAL,
+                    "Tokenization overflow: result size exceeds int32 limit");
+            }
             int requiredTokens = -nTokens;
+            if (requiredTokens <= 0 || requiredTokens > 10_000_000) {
+                throw new IllegalArgumentException("Token count exceeds safety limit: " + requiredTokens);
+            }
             tokenBuf = arena.allocate(ValueLayout.JAVA_INT, requiredTokens);
             nTokens = tokenize(textSeg, tokenBuf, true);
         }
