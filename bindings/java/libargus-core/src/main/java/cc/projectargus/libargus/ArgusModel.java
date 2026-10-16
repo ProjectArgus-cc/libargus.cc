@@ -309,7 +309,10 @@ public final class ArgusModel extends ArgusNativeResource {
     }
 
     /**
-     * Returns the model's embedding dimension.
+     * Returns the model's effective output embedding dimension.
+     * For architectures with a dedicated output projection layer (such as EmbeddingGemma2
+     * where {@code n_embd_out < n_embd}), this returns the projected output embedding dimension.
+     * To query the internal transformer backbone width directly, use {@link #nEmbdInp()}.
      */
     public int nEmbd() {
         MemorySegment h = acquireReadLease();
@@ -318,6 +321,39 @@ public final class ArgusModel extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve embedding dimension", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Returns the model's explicit output embedding dimension.
+     * Equivalent to {@link #nEmbd()}.
+     */
+    public int nEmbdOut() {
+        MemorySegment h = acquireReadLease();
+        try {
+            return (int) ArgusBindings.argus_model_n_embd_out.invokeExact(h);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to retrieve output embedding dimension", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Returns the model's internal input/backbone embedding dimension ({@code n_embd_inp}).
+     * For standard models this equals {@link #nEmbdOut()}, whereas for projected-embedding
+     * architectures (e.g. EmbeddingGemma2) this reflects the unprojected transformer width.
+     */
+    public int nEmbdInp() {
+        MemorySegment h = acquireReadLease();
+        try {
+            return (int) ArgusBindings.argus_model_n_embd_inp.invokeExact(h);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to retrieve input embedding dimension", t);
         } finally {
             releaseReadLease();
         }

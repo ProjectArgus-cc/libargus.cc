@@ -1,6 +1,7 @@
 """Resolve the exact existing release tag before any expensive jobs start."""
 import argparse
 import json
+import os
 import re
 import subprocess
 from catalog import ROOT, targets, version
@@ -28,6 +29,22 @@ def validate_header_no_test_symbols(root=ROOT):
         if test_symbols:
             raise ValueError(f"Test-only symbols found in public header {header_path}: {test_symbols}")
 
+def inspect_tag_object(tag):
+    obj_type = git('cat-file', '-t', f'refs/tags/{tag}')
+    if obj_type == 'tag':
+        tag_type = 'annotated'
+        raw_tag = git('cat-file', 'tag', f'refs/tags/{tag}')
+        tag_signed = (
+            '-----BEGIN PGP SIGNATURE-----' in raw_tag
+            or '-----BEGIN SSH SIGNATURE-----' in raw_tag
+        )
+    else:
+        tag_type = 'lightweight'
+        tag_signed = False
+    if os.environ.get('REQUIRE_SIGNED_TAG') == '1' and (tag_type != 'annotated' or not tag_signed):
+        raise ValueError(f"Release tag {tag} must be an annotated signed tag (got type={tag_type}, signed={tag_signed})")
+    return tag_type, tag_signed
+
 def preflight(tag):
     if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
         raise ValueError('Expected an existing vMAJOR.MINOR.PATCH release tag')
@@ -38,9 +55,17 @@ def preflight(tag):
     if commit != git('rev-parse', 'HEAD'): raise ValueError('Checkout is not the release tag commit')
     if git('status', '--porcelain', '--untracked-files=normal'):
         raise ValueError('Release checkout is dirty')
+    tag_type, tag_signed = inspect_tag_object(tag)
     targets()
-    return {'tag': tag, 'source': commit, 'version': version()}
+    return {
+        'tag': tag,
+        'source': commit,
+        'version': version(),
+        'tag_type': tag_type,
+        'tag_signed': tag_signed,
+    }
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(); p.add_argument('tag'); a = p.parse_args()
     print(json.dumps(preflight(a.tag)))
+

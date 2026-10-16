@@ -1268,6 +1268,317 @@ int main(int argc, char ** argv) {
             argus_model_free(embed_model);
         }
 
+        // 7.18a. Contiguous RAII Batch Allocator (argus_owned_batch) Fault Injection (F-01 / F-02 / TTS)
+#ifdef ARGUS_TESTING
+        {
+            std::cout << "[Test] Verifying argus_owned_batch OOM fault injection across all 6 sub-buffer steps..." << std::endl;
+            argus_context_params_t oom_cparams = {};
+            oom_cparams.context_length = 128;
+            oom_cparams.u_batch = 16;
+            oom_cparams.cpu_threads = 2;
+            oom_cparams.n_seq_max = 1;
+
+            // 1. Fault-inject argus_context_init across steps 1..6
+            for (int step = 1; step <= 6; ++step) {
+                argus_clear_error();
+                argus_test_set_batch_alloc_fail_step(step);
+                argus_context_t * failed_ctx = argus_context_init(model, &oom_cparams);
+                ARGUS_CHECK(failed_ctx == nullptr);
+                ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_OUT_OF_MEMORY);
+            }
+            argus_test_set_batch_alloc_fail_step(0);
+
+            // 2. Fault-inject decode_tokens_chunked fallback path when context batch_scratch is disabled
+            argus_context_t * fallback_ctx = argus_context_init(model, &oom_cparams);
+            ARGUS_CHECK(fallback_ctx != nullptr);
+            argus_test_set_context_batch_scratch_enabled(fallback_ctx, false);
+
+            int32_t fb_tokens[] = { 1, 4, 5, 6 };
+            argus_token_batch_t fb_batch = {};
+            fb_batch.tokens = fb_tokens;
+            fb_batch.n_tokens = 4;
+            fb_batch.start_pos = 0;
+            fb_batch.seq_id = 0;
+            fb_batch.request_logits = true;
+
+            // With fail_step == 0, local_batch_owner fallback succeeds cleanly
+            ARGUS_CHECK(argus_decode_batch(fallback_ctx, &fb_batch) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(fallback_ctx, 0) == 3);
+
+            // With fail_step == 1..6, local_batch_owner fallback fails cleanly with ARGUS_ERROR_OUT_OF_MEMORY
+            for (int step = 1; step <= 6; ++step) {
+                argus_clear_error();
+                argus_test_set_batch_alloc_fail_step(step);
+                fb_batch.start_pos = 4;
+                ARGUS_CHECK(argus_decode_batch(fallback_ctx, &fb_batch) == -1);
+                ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_OUT_OF_MEMORY);
+                // KV cache high-water mark must remain 3 (uncorrupted)
+                ARGUS_CHECK(argus_kv_cache_seq_pos_max(fallback_ctx, 0) == 3);
+            }
+            argus_test_set_batch_alloc_fail_step(0);
+            argus_test_set_context_batch_scratch_enabled(fallback_ctx, true);
+
+            argus_context_free(fallback_ctx);
+            std::cout << "  - argus_owned_batch 6-step OOM fault injection verified across context init and decode fallback." << std::endl;
+        }
+#endif
+
+        // 7.18b. KV-Cache Position Shifting (argus_kv_cache_seq_add) & Sampler Coordinate Sync (F-03)
+        {
+            std::cout << "[Test] Verifying argus_kv_cache_seq_add position shifting and sampler coordinate sync..." << std::endl;
+            argus_context_params_t shift_cparams = {};
+            shift_cparams.context_length = 64;
+            shift_cparams.u_batch = 16;
+            shift_cparams.cpu_threads = 2;
+            shift_cparams.n_seq_max = 2;
+            shift_cparams.draft_model = draft_model;
+
+            argus_context_t * shift_ctx = argus_context_init(model, &shift_cparams);
+            ARGUS_CHECK(shift_ctx != nullptr);
+            ARGUS_CHECK(argus_context_has_draft(shift_ctx));
+            ARGUS_CHECK(argus_kv_cache_can_shift(shift_ctx));
+
+            // Parameter validation checks
+            ARGUS_CHECK(!argus_kv_cache_seq_add(nullptr, 0, 0, -1, -1));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(!argus_kv_cache_seq_add(shift_ctx, -1, 0, -1, -1));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(!argus_kv_cache_seq_add(shift_ctx, 2, 0, -1, -1));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(!argus_kv_cache_seq_add(shift_ctx, 0, 10, 5, -1));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(!argus_kv_cache_seq_add(shift_ctx, 0, 2, -1, -5)); // p0_eff (2) + delta (-5) < 0
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // delta == 0 is a valid no-op
+            ARGUS_CHECK(argus_kv_cache_seq_add(shift_ctx, 0, 0, -1, 0));
+
+            // Prime 2 tokens (tagged with kv_pos = -1)
+            int32_t primed[] = { 2, 3 };
+            ARGUS_CHECK(argus_sampler_prime(shift_ctx, 0, primed, 2) == 0);
+            ARGUS_CHECK(argus_sampler_get_history_count(shift_ctx, 0) == 2);
+
+            // Decode 6 prompt tokens at [0..5]
+            int32_t prompt_toks[] = { 1, 4, 5, 6, 7, 8 };
+            argus_token_batch_t pb = {};
+            pb.tokens = prompt_toks;
+            pb.n_tokens = 6;
+            pb.start_pos = 0;
+            pb.seq_id = 0;
+            pb.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(shift_ctx, &pb) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_min(shift_ctx, 0) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(shift_ctx, 0) == 5);
+
+            // Sample token (recorded as pending at kv_pos = 5) and decode continuation at pos 6
+            int32_t sampled = argus_sample_token(shift_ctx, 0, 0.0f, 1.1f);
+            ARGUS_CHECK(sampled >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(shift_ctx, 0) == 1);
+
+            argus_token_batch_t cb = {};
+            cb.tokens = &sampled;
+            cb.n_tokens = 1;
+            cb.start_pos = 6;
+            cb.seq_id = 0;
+            cb.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(shift_ctx, &cb) == 0);
+            ARGUS_CHECK(argus_sampler_has_pending(shift_ctx, 0) == 0);
+            ARGUS_CHECK(argus_sampler_get_history_count(shift_ctx, 0) == 3);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(shift_ctx, 0) == 6);
+
+#ifdef ARGUS_TESTING
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 0) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 1) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 2) == 6);
+#endif
+
+            // Reject positive shift that would push pos_max (6) >= n_ctx (64)
+            ARGUS_CHECK(!argus_kv_cache_seq_add(shift_ctx, 0, 0, -1, 58));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(shift_ctx, 0) == 6);
+
+            // Ring-buffer eviction: keep [0, 2), evict [2, 4), shift [4, -1) left by -2
+            ARGUS_CHECK(argus_kv_cache_clear_slot(shift_ctx, 0, 2, 4));
+            ARGUS_CHECK(argus_kv_cache_seq_add(shift_ctx, 0, 4, -1, -2));
+
+            // Surviving KV positions are now [0, 1, 2, 3, 4] -> min = 0, max = 4
+            ARGUS_CHECK(argus_kv_cache_seq_pos_min(shift_ctx, 0) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(shift_ctx, 0) == 4);
+            ARGUS_CHECK(argus_sampler_get_history_count(shift_ctx, 0) == 3);
+
+#ifdef ARGUS_TESTING
+            // Primed entries stay at -1; committed entry at kv_pos = 6 shifted by -2 -> kv_pos = 4
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 0) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 1) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(shift_ctx, 0, 2) == 4);
+#endif
+
+            // Logits must have been invalidated by argus_kv_cache_seq_add
+            ARGUS_CHECK(argus_sample_token(shift_ctx, 0, 0.0f, 1.1f) == -2);
+
+            // Decoding at the new contiguous position (start_pos = 5) succeeds cleanly!
+            int32_t next_tok = 9;
+            cb.tokens = &next_tok;
+            cb.n_tokens = 1;
+            cb.start_pos = 5;
+            cb.seq_id = 0;
+            cb.request_logits = true;
+            ARGUS_CHECK(argus_decode_batch(shift_ctx, &cb) == 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(shift_ctx, 0) == 5);
+            ARGUS_CHECK(argus_sample_token(shift_ctx, 0, 0.0f, 1.1f) >= 0);
+
+            argus_context_free(shift_ctx);
+            std::cout << "  - KV-cache position shifting, speculative draft sync, and sampler coordinate shifting verified." << std::endl;
+        }
+
+        // 7.18c. EmbeddingGemma2 (n_embd_out != n_embd) Projected Dimension Resolution (F-04)
+        {
+            std::cout << "[Test] Verifying EmbeddingGemma2 (tiny-gemma-embed2.gguf) projected output dimensions..." << std::endl;
+            // Standard tiny.gguf has n_embd == n_embd_out == n_embd_inp == 32
+            ARGUS_CHECK(argus_model_n_embd(model) == 32);
+            ARGUS_CHECK(argus_model_n_embd_out(model) == 32);
+            ARGUS_CHECK(argus_model_n_embd_inp(model) == 32);
+            ARGUS_CHECK(argus_model_n_embd_out(nullptr) == -1);
+            ARGUS_CHECK(argus_model_n_embd_inp(nullptr) == -1);
+
+            const char * gemma2_candidates[] = {
+                "tests/data/tiny-gemma-embed2.gguf",
+                "../tests/data/tiny-gemma-embed2.gguf",
+                "../../tests/data/tiny-gemma-embed2.gguf"
+            };
+            const char * gemma2_path = nullptr;
+            for (const char * cand : gemma2_candidates) {
+                FILE * f = std::fopen(cand, "rb");
+                if (f) {
+                    std::fclose(f);
+                    gemma2_path = cand;
+                    break;
+                }
+            }
+            ARGUS_CHECK(gemma2_path != nullptr);
+
+            argus_model_params_t gm_params = {};
+            gm_params.model_path = gemma2_path;
+            gm_params.gpu_layers = 0;
+            argus_model_t * gemma2_model = argus_model_load(&gm_params);
+            ARGUS_CHECK(gemma2_model != nullptr);
+
+            // tiny-gemma-embed2.gguf has backbone n_embd_inp = 32 and projected output n_embd_out = 16
+            ARGUS_CHECK(argus_model_n_embd(gemma2_model) == 16);
+            ARGUS_CHECK(argus_model_n_embd_out(gemma2_model) == 16);
+            ARGUS_CHECK(argus_model_n_embd_inp(gemma2_model) == 32);
+
+            argus_context_params_t gc_params = {};
+            gc_params.context_length = 128;
+            gc_params.u_batch = 16;
+            gc_params.cpu_threads = 2;
+            gc_params.n_seq_max = 1;
+            gc_params.embeddings = true;
+
+            argus_context_t * gemma2_ctx = argus_context_init(gemma2_model, &gc_params);
+            ARGUS_CHECK(gemma2_ctx != nullptr);
+            ARGUS_CHECK(argus_context_set_causal_attn(gemma2_ctx, false));
+
+            // gemma-embedding2 is a no-KV-cache architecture: can_shift is false and seq_add returns ARGUS_ERROR_ROLLBACK_FAILED
+            ARGUS_CHECK(!argus_kv_cache_can_shift(gemma2_ctx));
+            ARGUS_CHECK(!argus_kv_cache_seq_add(gemma2_ctx, 0, 0, -1, -1));
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_ROLLBACK_FAILED);
+
+            int32_t g_toks[] = { 1, 4, 5 };
+            float g_out[16] = {};
+            // Capacity check: 15 < 16 must return -2
+            ARGUS_CHECK(argus_eval_embeddings(gemma2_ctx, g_toks, 3, 0, g_out, 15) == -2);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+
+            // Exact 16-float evaluation via argus_eval_embeddings
+            int32_t g_written = argus_eval_embeddings(gemma2_ctx, g_toks, 3, 0, g_out, 16);
+            ARGUS_CHECK(g_written == 16);
+
+            double sum_sq = 0.0;
+            for (int i = 0; i < 16; ++i) {
+                ARGUS_CHECK(!std::isnan(g_out[i]) && !std::isinf(g_out[i]));
+                sum_sq += static_cast<double>(g_out[i]) * static_cast<double>(g_out[i]);
+            }
+            ARGUS_CHECK(sum_sq > 0.0);
+
+            // Query via argus_get_embeddings must also return 16 floats matching g_out
+            float g_out2[16] = {};
+            ARGUS_CHECK(argus_get_embeddings(gemma2_ctx, 0, g_out2, 16) == 16);
+            for (int i = 0; i < 16; ++i) {
+                ARGUS_CHECK(std::abs(g_out[i] - g_out2[i]) < 1e-6f);
+            }
+
+            argus_context_free(gemma2_ctx);
+            argus_model_free(gemma2_model);
+            std::cout << "  - EmbeddingGemma2 projected dimensions (n_embd=16, n_embd_out=16, n_embd_inp=32) and deterministic extraction verified." << std::endl;
+        }
+
+        // 7.18d. Multimodal Chunk Evaluation Embedding Invalidation Verification
+        {
+            const char * mmproj_candidates[] = {
+                "tests/data/tiny-mmproj.gguf",
+                "../tests/data/tiny-mmproj.gguf",
+                "../../tests/data/tiny-mmproj.gguf"
+            };
+            const char * mmproj_path = nullptr;
+            for (const char * cand : mmproj_candidates) {
+                FILE * f = std::fopen(cand, "rb");
+                if (f) {
+                    std::fclose(f);
+                    mmproj_path = cand;
+                    break;
+                }
+            }
+            ARGUS_CHECK(mmproj_path != nullptr);
+
+            argus_context_params_t mm_cparams = {};
+            mm_cparams.context_length = 128;
+            mm_cparams.u_batch = 16;
+            mm_cparams.cpu_threads = 2;
+            mm_cparams.n_seq_max = 1;
+            mm_cparams.embeddings = true;
+
+            argus_context_t * mm_ctx = argus_context_init(model, &mm_cparams);
+            ARGUS_CHECK(mm_ctx != nullptr);
+
+            int32_t init_toks[] = { 1, 4, 5 };
+            float mm_emb[32] = {};
+            ARGUS_CHECK(argus_eval_embeddings(mm_ctx, init_toks, 3, 0, mm_emb, 32) == 32);
+#ifdef ARGUS_TESTING
+            ARGUS_CHECK(argus_test_has_embeddings(mm_ctx, 0) == 1);
+#endif
+
+            argus_multimodal_params_t mmp = {};
+            mmp.mmproj_path = mmproj_path;
+            mmp.cpu_threads = 2;
+            argus_multimodal_t * proj = argus_multimodal_init(model, &mmp);
+            ARGUS_CHECK(proj != nullptr);
+
+            std::vector<uint8_t> rgb(16 * 16 * 3, 127);
+            argus_bitmap_t * bmp = argus_bitmap_from_rgb(16, 16, rgb.data());
+            ARGUS_CHECK(bmp != nullptr);
+            argus_input_chunks_t * chunks = argus_input_chunks_init();
+            ARGUS_CHECK(chunks != nullptr);
+            const argus_bitmap_t * imgs[] = { bmp };
+            ARGUS_CHECK(argus_multimodal_tokenize(proj, chunks, "<__media__>", false, imgs, 1) == 0);
+
+            int32_t new_n_past = -1;
+            ARGUS_CHECK(argus_eval_multimodal_chunks(proj, mm_ctx, chunks, 3, 0, 8, true, &new_n_past) == 0);
+            ARGUS_CHECK(new_n_past == 7);
+#ifdef ARGUS_TESTING
+            ARGUS_CHECK(argus_test_has_embeddings(mm_ctx, 0) == 0);
+#endif
+            // Prior text embedding must be invalidated after multimodal chunk evaluation
+            ARGUS_CHECK(argus_get_embeddings(mm_ctx, 0, mm_emb, 32) == -1);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
+
+            argus_input_chunks_free(chunks);
+            argus_bitmap_free(bmp);
+            argus_multimodal_free(proj);
+            argus_context_free(mm_ctx);
+            std::cout << "  - Multimodal chunk evaluation stale embedding invalidation verified." << std::endl;
+        }
+
         // 7.19. Cleanup
         argus_context_free(ctx);
         argus_model_free(draft_model);

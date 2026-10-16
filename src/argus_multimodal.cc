@@ -518,9 +518,13 @@ int32_t argus_eval_multimodal_chunks(
         // Reconcile and discard any pending text sample prior to multimodal evaluation
         discard_slot_pending_preserving_rng(ctx, seq_id);
 
-        // Invalidate pending logits before starting multimodal projection evaluation
+        // Invalidate pending logits and context embeddings before starting multimodal projection evaluation
         ctx->seq_samplers[seq_id].has_logits = false;
         ctx->seq_samplers[seq_id].last_logits_pos = -1;
+        ctx->embedding_generation++;
+        for (auto & slot : ctx->seq_samplers) {
+            slot.has_embeddings = false;
+        }
         // llama owns one logits buffer across all sequences; failure invalidates its owner.
         ctx->last_decoded_seq_id = -1;
 

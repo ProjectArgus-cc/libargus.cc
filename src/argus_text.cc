@@ -353,6 +353,7 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
             argus_ctx->draft_ctx            = draft_ctx;
             argus_ctx->model_ref            = model;
             argus_ctx->draft_model_ref      = draft_model;
+            argus_ctx->context_length       = params->context_length;
             argus_ctx->spec_draft_n_max     = params->spec_draft_n_max;
             argus_ctx->enable_draft_mtp     = params->enable_draft_mtp;
             argus_ctx->vocoder_ctx          = nullptr;
@@ -370,18 +371,18 @@ argus_context_t * argus_context_init(argus_model_t * model, const argus_context_
                 }
             }
 
-            argus_ctx->batch_scratch       = llama_batch_init(cparams.n_batch, 0, 1);
-            if (!argus_ctx->batch_scratch.token || !argus_ctx->batch_scratch.pos ||
-                !argus_ctx->batch_scratch.n_seq_id || !argus_ctx->batch_scratch.seq_id ||
-                !argus_ctx->batch_scratch.logits) {
+            if (!argus_ctx->batch_scratch_owner.init(cparams.n_batch, 0, 1)) {
                 throw std::bad_alloc();
             }
+            argus_ctx->batch_scratch       = argus_ctx->batch_scratch_owner.raw;
             argus_ctx->has_batch_scratch   = true;
 
             return argus_ctx;
         } catch (...) {
-            if (argus_ctx && argus_ctx->has_batch_scratch) {
-                llama_batch_free(argus_ctx->batch_scratch);
+            if (argus_ctx) {
+                argus_ctx->batch_scratch_owner.reset();
+                argus_ctx->batch_scratch = {};
+                argus_ctx->has_batch_scratch = false;
             }
             if (draft_ctx) llama_free(draft_ctx);
             if (ctx) llama_free(ctx);
@@ -437,10 +438,9 @@ void argus_context_free(argus_context_t * ctx) {
             argus_model_release(ctx->model_ref);
             ctx->model_ref = nullptr;
         }
-        if (ctx->has_batch_scratch) {
-            llama_batch_free(ctx->batch_scratch);
-            ctx->has_batch_scratch = false;
-        }
+        ctx->batch_scratch_owner.reset();
+        ctx->batch_scratch = {};
+        ctx->has_batch_scratch = false;
         delete ctx;
     } catch (const std::exception & e) {
         set_last_error(ARGUS_ERROR_INTERNAL, e.what());
@@ -631,9 +631,33 @@ int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t i
     });
 }
 
+static int32_t resolve_model_n_embd_out(const struct llama_model * model) {
+    if (!model) {
+        return -1;
+    }
+    int32_t n_out = llama_model_n_embd_out(model);
+    return n_out > 0 ? n_out : llama_model_n_embd(model);
+}
+
 int32_t argus_model_n_embd(const argus_model_t * model) {
     return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_embd", [&]() -> int32_t {
-        return model && model->model ? llama_model_n_embd(model->model) : -1;
+        return model && model->model ? resolve_model_n_embd_out(model->model) : -1;
+    });
+}
+
+int32_t argus_model_n_embd_out(const argus_model_t * model) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_embd_out", [&]() -> int32_t {
+        return model && model->model ? resolve_model_n_embd_out(model->model) : -1;
+    });
+}
+
+int32_t argus_model_n_embd_inp(const argus_model_t * model) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_n_embd_inp", [&]() -> int32_t {
+        if (!model || !model->model) {
+            return -1;
+        }
+        int32_t n_inp = llama_model_n_embd_inp(model->model);
+        return n_inp > 0 ? n_inp : llama_model_n_embd(model->model);
     });
 }
 
@@ -806,6 +830,22 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 
 #ifdef ARGUS_TESTING
 static std::atomic<bool> g_test_force_rollback_fail{false};
+static std::atomic<int32_t> g_test_batch_alloc_fail_step{0};
+
+bool argus_test_should_fail_batch_alloc(int32_t step) noexcept {
+    int32_t target = g_test_batch_alloc_fail_step.load(std::memory_order_acquire);
+    return target > 0 && target == step;
+}
+
+extern "C" ARGUS_API void argus_test_set_batch_alloc_fail_step(int32_t step) {
+    g_test_batch_alloc_fail_step.store(step, std::memory_order_release);
+}
+
+extern "C" ARGUS_API void argus_test_set_context_batch_scratch_enabled(argus_context_t * ctx, bool enabled) {
+    if (!ctx) return;
+    std::lock_guard<std::mutex> lock(ctx->mtx);
+    ctx->has_batch_scratch = enabled && (ctx->batch_scratch_owner.raw.token != nullptr || ctx->batch_scratch_owner.raw.embd != nullptr);
+}
 
 extern "C" ARGUS_API void argus_test_set_force_rollback_fail(bool fail) {
     g_test_force_rollback_fail.store(fail, std::memory_order_release);
@@ -819,6 +859,14 @@ extern "C" ARGUS_API int32_t argus_test_sampler_get_history_token(const argus_co
     return hist[idx].token;
 }
 
+extern "C" ARGUS_API int32_t argus_test_sampler_get_history_kv_pos(const argus_context_t * ctx, int32_t seq_id, int32_t idx) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) return -2;
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    const auto & hist = ctx->seq_samplers[seq_id].history;
+    if (idx < 0 || idx >= (int32_t)hist.size()) return -2;
+    return hist[idx].kv_pos;
+}
+
 extern "C" ARGUS_API int32_t argus_test_draft_seq_pos_max(const argus_context_t * ctx, int32_t seq_id) {
     if (!ctx || !ctx->draft_ctx) return -1;
     return llama_memory_seq_pos_max(llama_get_memory(ctx->draft_ctx), seq_id);
@@ -828,6 +876,13 @@ extern "C" ARGUS_API bool argus_test_has_logits(const argus_context_t * ctx, int
     if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) return false;
     std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
     return ctx->last_decoded_seq_id == seq_id && ctx->seq_samplers[seq_id].has_logits;
+}
+
+extern "C" ARGUS_API bool argus_test_has_embeddings(const argus_context_t * ctx, int32_t seq_id) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) return false;
+    std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
+    const auto & slot = ctx->seq_samplers[seq_id];
+    return slot.has_embeddings && slot.embedding_generation == ctx->embedding_generation;
 }
 #endif
 
@@ -963,18 +1018,15 @@ static int32_t decode_tokens_chunked(
     int32_t decoded = 0;
 
     bool use_scratch = (ctx && ctx->has_batch_scratch && ctx->ctx == lctx);
-    struct llama_batch temp_batch = {};
+    argus_owned_batch temp_batch_owner;
     if (!use_scratch) {
         int32_t max_chunk_size = std::min(n_batch, n_tokens);
-        temp_batch = llama_batch_init(max_chunk_size, 0, 1);
-        if (!temp_batch.token || !temp_batch.pos || !temp_batch.n_seq_id ||
-            !temp_batch.seq_id || !temp_batch.logits) {
-            llama_batch_free(temp_batch);
+        if (!temp_batch_owner.init(max_chunk_size, 0, 1)) {
             set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, "failed to allocate temporary llama_batch");
             return -1;
         }
     }
-    struct llama_batch & batch = use_scratch ? ctx->batch_scratch : temp_batch;
+    struct llama_batch & batch = use_scratch ? ctx->batch_scratch : temp_batch_owner.raw;
 
     while (decoded < n_tokens) {
         int32_t chunk_size = std::min(n_batch, n_tokens - decoded);
@@ -995,9 +1047,6 @@ static int32_t decode_tokens_chunked(
         }
 
         if (argus_abort_flag_is_requested(abort_flag)) {
-            if (!use_scratch) {
-                llama_batch_free(temp_batch);
-            }
             if (out_n_decoded) {
                 *out_n_decoded = decoded;
             }
@@ -1012,9 +1061,6 @@ static int32_t decode_tokens_chunked(
         }
 
         if (result != 0) {
-            if (!use_scratch) {
-                llama_batch_free(temp_batch);
-            }
             if (out_n_decoded) {
                 *out_n_decoded = decoded;
             }
@@ -1027,9 +1073,6 @@ static int32_t decode_tokens_chunked(
         }
     }
 
-    if (!use_scratch) {
-        llama_batch_free(temp_batch);
-    }
     return 0;
 }
 
@@ -1352,7 +1395,11 @@ int32_t argus_get_embeddings(argus_context_t * ctx, int32_t seq_id, float * out_
             return -1;
         }
 
-        int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
+        int32_t n_embd = resolve_model_n_embd_out(ctx->model_ref->model);
+        if (n_embd <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_STATE, "invalid model embedding dimension in argus_get_embeddings");
+            return -1;
+        }
         if (n_embd > max_floats) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "output buffer too small for embeddings in argus_get_embeddings");
             return -2;
@@ -1389,7 +1436,11 @@ int32_t argus_eval_embeddings(
             return -1;
         }
 
-        int32_t n_embd = llama_model_n_embd(ctx->model_ref->model);
+        int32_t n_embd = resolve_model_n_embd_out(ctx->model_ref->model);
+        if (n_embd <= 0) {
+            set_last_error(ARGUS_ERROR_INVALID_STATE, "invalid model embedding dimension in argus_eval_embeddings");
+            return -1;
+        }
         if (n_embd > max_floats) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "output buffer too small for embeddings in argus_eval_embeddings");
             return -2;
@@ -2000,7 +2051,119 @@ bool argus_kv_cache_can_shift(const argus_context_t * ctx) {
         }
         std::lock_guard<std::mutex> lock(const_cast<argus_context_t *>(ctx)->mtx);
         llama_memory_t mem = llama_get_memory(ctx->ctx);
-        return mem ? llama_memory_can_shift(mem) : false;
+        if (!mem || !llama_memory_can_shift(mem)) {
+            return false;
+        }
+        if (ctx->draft_ctx) {
+            llama_memory_t draft_mem = llama_get_memory(ctx->draft_ctx);
+            if (!draft_mem || !llama_memory_can_shift(draft_mem)) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+bool argus_kv_cache_seq_add(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1, int32_t delta) {
+    return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_kv_cache_seq_add", [&]() -> bool {
+        if (!ctx || !ctx->ctx) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "null context in argus_kv_cache_seq_add");
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(ctx->mtx);
+
+        if (seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "sequence ID out of range in argus_kv_cache_seq_add");
+            return false;
+        }
+
+        if (p0 >= 0 && p1 >= 0 && p0 > p1) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid position range (p0 > p1) in argus_kv_cache_seq_add");
+            return false;
+        }
+
+        llama_memory_t mem = llama_get_memory(ctx->ctx);
+        if (!mem || !llama_memory_can_shift(mem)) {
+            set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                "KV cache sequence shift failed: position shifting unsupported by model architecture");
+            return false;
+        }
+
+        llama_memory_t draft_mem = nullptr;
+        if (ctx->draft_ctx) {
+            draft_mem = llama_get_memory(ctx->draft_ctx);
+            if (!draft_mem || !llama_memory_can_shift(draft_mem)) {
+                set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                    "KV cache sequence shift failed: position shifting unsupported by draft model architecture");
+                return false;
+            }
+        }
+
+        int32_t eff_p0 = (p0 < 0) ? 0 : p0;
+        if (delta == 0 || (p1 >= 0 && eff_p0 == p1)) {
+            return true;
+        }
+        if ((int64_t)eff_p0 + (int64_t)delta < 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid negative shift (p0 + delta < 0) in argus_kv_cache_seq_add");
+            return false;
+        }
+
+        llama_pos cur_max = llama_memory_seq_pos_max(mem, seq_id);
+        if (delta > 0 && cur_max >= eff_p0) {
+            int64_t upper_in_range = (p1 < 0) ? (int64_t)cur_max : std::min<int64_t>((int64_t)cur_max, (int64_t)p1 - 1);
+            if (upper_in_range >= eff_p0) {
+                int64_t shifted_max = upper_in_range + (int64_t)delta;
+                int64_t max_ctx_limit = (ctx->context_length > 0)
+                    ? std::min<int64_t>((int64_t)ctx->context_length, (int64_t)llama_n_ctx(ctx->ctx))
+                    : (int64_t)llama_n_ctx(ctx->ctx);
+                if (shifted_max >= max_ctx_limit || shifted_max > (int64_t)std::numeric_limits<int32_t>::max()) {
+                    set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "shifted KV position exceeds context length limit");
+                    return false;
+                }
+            }
+        }
+
+        if (draft_mem) {
+            llama_memory_seq_add(draft_mem, seq_id, p0, p1, delta);
+        }
+        llama_memory_seq_add(mem, seq_id, p0, p1, delta);
+
+        invalidate_seq_logits(ctx, seq_id);
+        invalidate_context_embeddings(ctx);
+
+        auto & slot = ctx->seq_samplers[seq_id];
+        bool pending_discarded = false;
+        if (slot.pending.valid && slot.pending.kv_pos >= eff_p0 && (p1 < 0 || slot.pending.kv_pos < p1)) {
+            int64_t shifted = (int64_t)slot.pending.kv_pos + (int64_t)delta;
+            if (shifted < 0 || shifted > (int64_t)std::numeric_limits<int32_t>::max()) {
+                slot.pending = {};
+                pending_discarded = true;
+            } else {
+                slot.pending.kv_pos = (int32_t)shifted;
+            }
+        }
+
+        bool history_pruned = false;
+        auto it = slot.history.begin();
+        while (it != slot.history.end()) {
+            if (it->kv_pos >= 0 && it->kv_pos >= eff_p0 && (p1 < 0 || it->kv_pos < p1)) {
+                int64_t shifted = (int64_t)it->kv_pos + (int64_t)delta;
+                if (shifted < 0 || shifted > (int64_t)std::numeric_limits<int32_t>::max()) {
+                    it = slot.history.erase(it);
+                    history_pruned = true;
+                    continue;
+                }
+                it->kv_pos = (int32_t)shifted;
+            }
+            ++it;
+        }
+
+        if (history_pruned || pending_discarded) {
+            rebuild_slot_chain_preserving_rng(ctx, seq_id);
+        }
+
+        return true;
     });
 }
 
@@ -2216,12 +2379,23 @@ int32_t argus_synthesize_speech_n(
     const int n_predict = 4096;
 
     struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
-    struct llama_sampler * sampler = llama_sampler_chain_init(sparams);
+    std::unique_ptr<struct llama_sampler, decltype(&llama_sampler_free)> sampler_guard(
+        llama_sampler_chain_init(sparams), llama_sampler_free);
+    struct llama_sampler * sampler = sampler_guard.get();
+    if (!sampler) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, "failed to allocate TTS sampler chain");
+        return -1;
+    }
     // Apply repeating penalty and temperature
     llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.1f));
     llama_sampler_chain_add(sampler, llama_sampler_init_dist(voice_seed > 0 ? (uint32_t)voice_seed : LLAMA_DEFAULT_SEED));
 
-    struct llama_batch batch = llama_batch_init(1, 0, 1);
+    argus_owned_batch batch_owner;
+    if (!batch_owner.init(1, 0, 1)) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, "failed to allocate TTS llama_batch");
+        return -1;
+    }
+    struct llama_batch & batch = batch_owner.raw;
 
     while (n_decode <= n_predict) {
         llama_token new_token_id = llama_sampler_sample(sampler, ctx->ctx, -1);
@@ -2247,8 +2421,8 @@ int32_t argus_synthesize_speech_n(
             break;
         }
     }
-    llama_sampler_free(sampler);
-    llama_batch_free(batch);
+    sampler_guard.reset();
+    batch_owner.reset();
 
     // Extract audio codes (filter range [151672, 155772])
     std::vector<llama_token> vocoder_codes;
@@ -2290,7 +2464,7 @@ int32_t argus_synthesize_speech_n(
     }
 
     struct llama_context * active_vocoder_ctx = ctx->vocoder_ctx;
-    bool is_temporary_vocoder_ctx = false;
+    std::unique_ptr<struct llama_context, decltype(&llama_free)> temp_vocoder_guard(nullptr, llama_free);
 
     if (n_codes + 16 > 4096) {
         struct llama_context_params vocoder_cparams = llama_context_default_params();
@@ -2304,12 +2478,17 @@ int32_t argus_synthesize_speech_n(
         if (!active_vocoder_ctx) {
             return -1;
         }
-        is_temporary_vocoder_ctx = true;
+        temp_vocoder_guard.reset(active_vocoder_ctx);
     } else {
         llama_memory_seq_rm(llama_get_memory(active_vocoder_ctx), 0, -1, -1);
     }
 
-    struct llama_batch vocoder_batch = llama_batch_init(n_codes, 0, 1);
+    argus_owned_batch vocoder_batch_owner;
+    if (!vocoder_batch_owner.init(n_codes, 0, 1)) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, "failed to allocate vocoder llama_batch");
+        return -1;
+    }
+    struct llama_batch & vocoder_batch = vocoder_batch_owner.raw;
     vocoder_batch.n_tokens = n_codes;
     for (int i = 0; i < n_codes; ++i) {
         vocoder_batch.token[i]     = vocoder_codes[i];
@@ -2320,10 +2499,6 @@ int32_t argus_synthesize_speech_n(
     }
 
     if (llama_decode(active_vocoder_ctx, vocoder_batch) != 0) {
-        llama_batch_free(vocoder_batch);
-        if (is_temporary_vocoder_ctx) {
-            llama_free(active_vocoder_ctx);
-        }
         return -1;
     }
     llama_synchronize(active_vocoder_ctx);
@@ -2331,10 +2506,6 @@ int32_t argus_synthesize_speech_n(
     const int n_embd = llama_model_n_embd_out(wavtokenizer_model->model);
     const float * embd = llama_get_embeddings(active_vocoder_ctx);
     if (!embd) {
-        llama_batch_free(vocoder_batch);
-        if (is_temporary_vocoder_ctx) {
-            llama_free(active_vocoder_ctx);
-        }
         return -1;
     }
 
@@ -2355,10 +2526,6 @@ int32_t argus_synthesize_speech_n(
     size_t required_floats = total_floats + scratch_floats;
 
     if (!workspace || workspace_size_floats < (int64_t)required_floats) {
-        llama_batch_free(vocoder_batch);
-        if (is_temporary_vocoder_ctx) {
-            llama_free(active_vocoder_ctx);
-        }
         return -(int32_t)required_floats; // Signal workspace resize required
     }
 
@@ -2418,8 +2585,6 @@ int32_t argus_synthesize_speech_n(
     const bool audio_valid = argus_overlap_add(res, n_codes * n_fft, n_out, n_win, n_hop, n_pad, audio);
     const bool env_valid = argus_overlap_add(hann2, n_codes * n_fft, n_out, n_win, n_hop, n_pad, env);
     if (!audio_valid || !env_valid) {
-        llama_batch_free(vocoder_batch);
-        if (is_temporary_vocoder_ctx) llama_free(active_vocoder_ctx);
         set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid overlap-add dimensions");
         return -1;
     }
@@ -2435,11 +2600,6 @@ int32_t argus_synthesize_speech_n(
     int32_t silence_samples = 24000 / 4;
     for (int32_t i = 0; i < silence_samples && i < count_to_write; ++i) {
         out_pcm[i] = 0.0f;
-    }
-
-    llama_batch_free(vocoder_batch);
-    if (is_temporary_vocoder_ctx) {
-        llama_free(active_vocoder_ctx);
     }
 
     return count_to_write;

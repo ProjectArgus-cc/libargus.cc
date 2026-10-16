@@ -6,8 +6,107 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <memory>
+#include <limits>
 #include <exception>
 #include <new>
+
+#ifdef ARGUS_TESTING
+extern "C" bool argus_test_should_fail_batch_alloc(int32_t step) noexcept;
+#endif
+
+struct argus_owned_batch {
+    struct llama_batch                  raw = {};
+    std::unique_ptr<llama_token[]>      token_buf;
+    std::unique_ptr<float[]>            embd_buf;
+    std::unique_ptr<llama_pos[]>        pos_buf;
+    std::unique_ptr<int32_t[]>          n_seq_id_buf;
+    std::unique_ptr<llama_seq_id *[]>   seq_id_ptrs;
+    std::unique_ptr<llama_seq_id[]>     seq_id_pool;
+    std::unique_ptr<int8_t[]>           logits_buf;
+
+    argus_owned_batch() noexcept = default;
+    ~argus_owned_batch() noexcept { reset(); }
+
+    argus_owned_batch(const argus_owned_batch &) = delete;
+    argus_owned_batch & operator=(const argus_owned_batch &) = delete;
+
+    argus_owned_batch(argus_owned_batch &&) noexcept = default;
+    argus_owned_batch & operator=(argus_owned_batch &&) noexcept = default;
+
+    void reset() noexcept {
+        raw = {};
+        token_buf.reset();
+        embd_buf.reset();
+        pos_buf.reset();
+        n_seq_id_buf.reset();
+        seq_id_ptrs.reset();
+        seq_id_pool.reset();
+        logits_buf.reset();
+    }
+
+    bool init(int32_t n_tokens_alloc, int32_t embd, int32_t n_seq_max) noexcept {
+        reset();
+        if (n_tokens_alloc <= 0 || n_seq_max <= 0 || embd < 0) {
+            return false;
+        }
+        try {
+            const size_t n_tok = static_cast<size_t>(n_tokens_alloc);
+            const size_t n_seq = static_cast<size_t>(n_seq_max);
+            if (n_tok > std::numeric_limits<size_t>::max() / n_seq) {
+                return false;
+            }
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(1)) throw std::bad_alloc();
+#endif
+            if (embd > 0) {
+                const size_t n_embd = static_cast<size_t>(embd);
+                if (n_tok > std::numeric_limits<size_t>::max() / n_embd) {
+                    return false;
+                }
+                embd_buf.reset(new float[n_tok * n_embd]());
+            } else {
+                token_buf.reset(new llama_token[n_tok]());
+            }
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(2)) throw std::bad_alloc();
+#endif
+            pos_buf.reset(new llama_pos[n_tok]());
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(3)) throw std::bad_alloc();
+#endif
+            n_seq_id_buf.reset(new int32_t[n_tok]());
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(4)) throw std::bad_alloc();
+#endif
+            seq_id_ptrs.reset(new llama_seq_id *[n_tok + 1]());
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(5)) throw std::bad_alloc();
+#endif
+            seq_id_pool.reset(new llama_seq_id[n_tok * n_seq]());
+            for (size_t i = 0; i < n_tok; ++i) {
+                seq_id_ptrs[i] = &seq_id_pool[i * n_seq];
+            }
+            seq_id_ptrs[n_tok] = nullptr;
+#ifdef ARGUS_TESTING
+            if (argus_test_should_fail_batch_alloc(6)) throw std::bad_alloc();
+#endif
+            logits_buf.reset(new int8_t[n_tok]());
+
+            raw.n_tokens = 0;
+            raw.token    = token_buf.get();
+            raw.embd     = embd_buf.get();
+            raw.pos      = pos_buf.get();
+            raw.n_seq_id = n_seq_id_buf.get();
+            raw.seq_id   = seq_id_ptrs.get();
+            raw.logits   = logits_buf.get();
+            return true;
+        } catch (...) {
+            reset();
+            return false;
+        }
+    }
+};
 
 struct argus_model {
     std::atomic<uint32_t>          refs{1};
@@ -87,6 +186,7 @@ struct argus_context {
     struct llama_context           * draft_ctx;
     argus_model                    * model_ref;
     argus_model                    * draft_model_ref;
+    int32_t                          context_length = 0;
     int32_t                          spec_draft_n_max;
     bool                             enable_draft_mtp;
     struct llama_context           * vocoder_ctx;
@@ -94,6 +194,7 @@ struct argus_context {
     std::mutex                       mtx;                 // per-context concurrency guard
 
     // Context-level scratch batch for zero-allocation steady-state decode
+    argus_owned_batch                batch_scratch_owner;
     struct llama_batch               batch_scratch      = {};
     bool                             has_batch_scratch  = false;
 

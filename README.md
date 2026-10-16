@@ -8,14 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.3 Release — Preflight State Atomicity, Tokenizer Alignment & Fixture Hardening**
+> **v2.0.4 Release — Contiguous Batch Ownership, Projected Embedding Dimensions, KV Position Shifting & Release Hardening**
 > 
-> * **Pure Preflight Rejection & State Neutrality:** Predictably invalid embedding requests (`argus_eval_embeddings`) and token batches (`argus_decode_batch`) violating non-causal single micro-batch limits (`n_tokens > n_ubatch`) or context limits (`n_tokens > n_ctx`) are rejected prior to native context mutation, preserving prior sequence embeddings, KV cache positions, history sequences, and sampler states without side-effects.
-> * **Tokenizer Contract & Parity Alignment:** Aligns `ArgusModel` and `ArgusContext` String tokenizers by introducing zero-allocation off-heap UTF-8 string slicing (`ArgusValidation.allocateUtf8Text`) to eliminate artificial terminating NUL byte injection (`\0`), guaranteeing exact token ID agreement across convenience overloads while preserving exact `byteSize()` contracts on raw `MemorySegment` boundaries.
-> * **Embedding Input String Integrity:** `ArgusContext.extractEmbeddings` now uses zero-allocation UTF-8 slicing, preventing unintended trailing NUL byte tokenization in embedding inputs.
-> * **Defensive Scratch Allocation Checks:** Guards `llama_batch_init` scratch allocations against unhandled `malloc` failures during context initialization and chunked decoding fallbacks (`std::bad_alloc` and `ARGUS_ERROR_OUT_OF_MEMORY`).
-> * **Fail-Fast Fixture Loading:** Replaces directory-dependent fixture resolution in concurrency tests with multi-candidate path resolution and explicit non-null assertions (`CHECK(emodel != nullptr)`), eliminating silent test skips.
-> * **Real Blocked-Callback Reaper Handoff:** Regression-tested with real in-flight unmanaged callbacks blocked on concurrent latches past the reaper timeout, verifying automated virtual-thread handoff and clean quiescent reclamation.
+> * **Contiguous RAII Batch Ownership (`argus_owned_batch`):** Replaces all upstream `llama_batch_init` / `llama_batch_free` calls across context initialization, chunked decoding, and TTS synthesis with a single-slab, overflow-checked C++ RAII allocator, eliminating partial-allocation leaks and `malloc(0)` hazards under OOM pressure.
+> * **Projected Embedding Dimension Resolution (`EmbeddingGemma2`):** `argus_model_n_embd()`, `argus_get_embeddings()`, and `argus_eval_embeddings()` now resolve the effective output embedding dimension (`llama_model_n_embd_out`), supporting architectures with dedicated output projection heads (`n_embd_out != n_embd`, such as `EmbeddingGemma2`) alongside explicit `nEmbdOut()` and `nEmbdInp()` accessors.
+> * **KV-Cache Position Shifting (`argus_kv_cache_seq_add` / `shiftCacheSlot`):** Exposes relative KV position shifting across primary and speculative draft contexts while synchronously shifting and pruning coordinate-linked sampler `kv_pos` history for sliding-window ring-buffer generation.
+> * **Pure Preflight Rejection & State Neutrality:** Predictably invalid embedding requests (`argus_eval_embeddings`) and token batches (`argus_decode_batch`) violating non-causal single micro-batch limits (`n_tokens > n_ubatch`) or context limits (`start_pos + n_tokens > n_ctx`) are rejected prior to native context mutation.
+> * **Tokenizer Contract & Parity Alignment:** Aligns `ArgusModel` and `ArgusContext` String tokenizers (`ArgusValidation.allocateUtf8Text`) and `extractEmbeddings(Arena, String, MemorySegment)` using exact-length off-heap UTF-8 Arena allocation (without artificial trailing NUL byte `\0` injection), while preserving zero-allocation `byteSize()` contracts on raw `MemorySegment` overloads.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -34,14 +33,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.3</version>
+        <version>2.0.4</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.3</version>
+        <version>2.0.4</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -51,10 +50,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.3")
+    implementation("cc.projectargus:libargus-core:2.0.4")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.3")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.4")
 }
 ```
 
@@ -371,7 +370,9 @@ int nTokens = model.vocabNTokens(); // Vocabulary capacity
 boolean isEog = model.vocabIsEog(sampledToken); // Native End-Of-Generation verification
 
 // Query model architecture dimensions & parameters
-int nEmbd = model.nEmbd(); // Embedding dimension size (e.g. 1024)
+int nEmbd = model.nEmbd(); // Effective output embedding dimension (e.g. 768 for EmbeddingGemma2, 1024 for Qwen3)
+int nEmbdOut = model.nEmbdOut(); // Explicit output embedding dimension (equivalent to nEmbd())
+int nEmbdInp = model.nEmbdInp(); // Internal backbone embedding dimension (e.g. 2048 for EmbeddingGemma2)
 int nCtxTrain = model.nCtxTrain(); // Context length training ceiling
 int nLayer = model.nLayer(); // Transformer layers count
 int nHead = model.nHead(); // Attention head count
@@ -530,6 +531,7 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **Rollback History Closure** | When `is_kv_rollback == true`, successfully decoded replacement tokens are committed to history and accepted into sampler chains. | `argus_rollback_to_kv_seq()` commits replacement history |
 | **Logits Ownership** | Single-consumption model. Returns `-2` if target sequence was not evaluated last, if logits were already sampled, or if state was mutated. | `argus_sample_token_ext()` returns `-2` |
 | **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned. | `argus_sampler_prime()`, `argus_decode_batch()` |
+| **KV Position Shifting** | Relative position shifts (`delta`) update primary and speculative draft KV caches while shifting/pruning coordinate-linked `kv_pos` history in lockstep. | `argus_kv_cache_seq_add()`, `shiftCacheSlot()` |
 | **Cancellation Handle Safety** | Reference-counted cancellation handles are retained natively via RAII throughout decode loops, preventing unmanaged use-after-free hazards. | `argus_abort_flag_t`, `ArgusAbortFlag` |
 | **Entropy & RNG Seeding** | 32-bit seed (`0xFFFFFFFF` / `-1` for random entropy). Pure greedy argmax when `temperature <= 0.0f`. Distribution sampling when `temperature > 0.0f`. | `argus_sampler_params_t.seed` |
 | **Monotonic RNG Continuity** | Dynamic hyperparameter tuning, partial KV rollbacks, and truncations clone the active distribution sampler RNG state without restarting to draw #0. | `llama_sampler_clone()` on reconfigure/rollback |
@@ -538,7 +540,7 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **Bounded Diagnostics & Copy-Out** | Diagnostic retrieval and export APIs write into caller-bounded buffers with explicit length limits, preventing buffer overruns. | `argus_last_error_message_copy()`, `argus_synthesize_speech_n()` |
 | **Spatial Bounds Validation** | Preflight validation checks non-null addresses, buffer capacities, and overflow-safe sizing prior to native downcalls. | `ArgusValidation` |
 | **Penalty History Replay** | Rebuilding filter chains on reconfiguration or rollback replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
-| **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
+| **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`, `shiftCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
 | **History Introspection** | Zero-allocation real-time queries for retained token count (primed + committed) and uncommitted sample status. | `argus_sampler_get_history_count()`, `argus_sampler_has_pending()` |
 | **Shared Projector Locking** | Native lock hierarchy acquires projector mutex then text context mutex through encoding and embedding consumption; independent projectors remain decoupled. | `argus_eval_multimodal_chunks()` |
 | **Direct FFM Segment Safety** | Preflight validation rejects closed, heap-backed, wrong-thread-confined, short, or misaligned memory segments before unmanaged downcalls. | `ArgusValidation` |
@@ -608,9 +610,9 @@ context.setNThreads(4, 8); // 4 threads for generation, 8 threads for prompt bat
 audioContext.setNThreads(4);
 ```
 
-### M-RoPE Introspection & Automagic KV Cache Rollback
+### M-RoPE Introspection, Automagic KV Cache Rollback & Sliding-Window Shifting
 
-Query multidimensional rotary position topologies and manage KV cache sequence rollbacks for agentic ReAct loops and Longest Common Prefix (LCP) prompt reuse:
+Query multidimensional rotary position topologies, manage KV cache sequence rollbacks for agentic ReAct loops, and execute sliding-window ring-buffer eviction when long-running generation approaches `n_ctx` (`startPos + nTokens <= nCtx`):
 
 ```java
 // 1. Inspect M-RoPE architecture properties on loaded models
@@ -627,6 +629,16 @@ context.clearCacheSlot(0, 128, -1);        // Synchronously clears primary & spe
 // 4. Automagic Prefix Rollback: Submitting a batch at start_pos <= seq_pos_max
 // automatically prunes [start_pos, -1) to guarantee monotonicity without manual clearing:
 int res = context.decodeBatch(newBranchTokens, branchLength, 128, 0, true);
+
+// 5. Sliding-Window Ring-Buffer Eviction (when startPos + nTokens approaches nCtx):
+// Preserve a pinned prefix [0, nKeep), evict [nKeep, nKeep + nDiscard), and shift the suffix left:
+if (context.canShift()) {
+    int nKeep = 64;
+    int nDiscard = 256;
+    context.clearCacheSlot(0, nKeep, nKeep + nDiscard);
+    context.shiftCacheSlot(0, nKeep + nDiscard, -1, -nDiscard);
+    // Next decode continues cleanly at startPos = context.getSeqPosMax(0) + 1
+}
 ```
 
 ### Zero-Rollback Sequence Slot Forking & Hybrid Recurrent Models

@@ -14,6 +14,12 @@ def credential(username, password, scheme):
     if not username or not password: raise ValueError('Missing publication credentials')
     return scheme + ' ' + base64.b64encode((username + ':' + password).encode()).decode()
 
+def _parse_semver(tag):
+    if not isinstance(tag, str):
+        return None
+    m = re.fullmatch(r'v?([0-9]+)\.([0-9]+)\.([0-9]+)', tag.strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
 class GitHub:
     def __init__(self, transport, repository, token):
         if not re.fullmatch(r'[\w.-]+/[\w.-]+', repository) or not token: raise ValueError('Missing GitHub publication configuration')
@@ -21,12 +27,15 @@ class GitHub:
         self.api = 'https://api.github.com/repos/' + repository
     def request(self, method, path, payload=None):
         return self.http.request(method, self.api + path, self.auth, payload)
-    def release(self, tag, source, identity):
+    def _list_releases(self):
         releases = []; page = 1
         while True:
             batch = self.request('GET', '/releases?per_page=100&page=' + str(page)); releases += batch
             if len(batch) < 100: break
             page += 1
+        return releases
+    def release(self, tag, source, identity):
+        releases = self._list_releases()
         candidates = [r for r in releases if (r.get('tag_name') == tag or r.get('name') == tag)]
         found = [r for r in candidates if not r.get('draft')] or candidates
         if len(found) > 1: raise ValueError('Duplicate releases for tag')
@@ -75,7 +84,20 @@ class GitHub:
             # Transport adds no JSON Accept header to digest reads.
             if not self.http.matches(url, meta, self.auth): raise ValueError('GitHub asset disappeared')
     def expose(self, release, state, tag=None):
-        payload = {'draft': False, 'body': self.body(state)}
+        effective_tag = tag or release.get('tag_name') or release.get('name')
+        target_ver = _parse_semver(effective_tag)
+        make_latest = 'true'
+        if target_ver is not None:
+            for existing in self._list_releases():
+                if existing.get('draft') or existing.get('prerelease') or existing.get('id') == release.get('id'):
+                    continue
+                other_ver = _parse_semver(existing.get('tag_name')) or _parse_semver(existing.get('name'))
+                if other_ver is not None and other_ver > target_ver:
+                    make_latest = 'false'
+                    break
+        else:
+            make_latest = 'false'
+        payload = {'draft': False, 'body': self.body(state), 'make_latest': make_latest}
         if tag: payload['tag_name'] = tag
         self.request('PATCH', '/releases/' + str(release['id']), payload)
 

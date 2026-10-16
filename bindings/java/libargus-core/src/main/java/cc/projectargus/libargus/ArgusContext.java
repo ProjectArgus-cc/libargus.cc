@@ -329,6 +329,16 @@ public final class ArgusContext extends ArgusNativeResource {
      * Synchronously decodes a batch of tokens in the context.
      * Mutex-locked inside the native layer to prevent concurrency issues.
      *
+     * <p><b>KV-Cache Window Contract:</b> {@code startPos + nTokens} must not exceed the
+     * configured context window ({@code nCtx}), and the sequence slot must have sufficient
+     * free KV-cache capacity. For long-running or streaming generation approaching {@code nCtx},
+     * callers can implement a sliding-window ring buffer without resetting sequence state:
+     * <ol>
+     *   <li>Evict an older span of tokens after any pinned prefix via {@link #clearCacheSlot(int, int, int)}.</li>
+     *   <li>If {@link #canShift()} is {@code true}, shift the surviving suffix positions left via
+     *       {@link #shiftCacheSlot(int, int, int, int)} to reclaim contiguous position space.</li>
+     * </ol>
+     *
      * @param tokensSeg     tokens to evaluate
      * @param nTokens       number of tokens
      * @param startPos      KV cache offset position
@@ -343,6 +353,7 @@ public final class ArgusContext extends ArgusNativeResource {
     /**
      * Synchronously decodes a batch of tokens in the context with optional early cancellation.
      * Mutex-locked inside the native layer to prevent concurrency issues.
+     * See {@link #decodeBatch(MemorySegment, int, int, int, boolean)} for the KV-cache window contract.
      *
      * @param tokensSeg     tokens to evaluate
      * @param nTokens       number of tokens
@@ -834,6 +845,31 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
+     * Adds an integer position delta to all KV-cache tokens in {@code [p0, p1)} for a sequence slot.
+     * Used after {@link #clearCacheSlot(int, int, int)} to shift remaining KV-cache positions left
+     * (with a negative {@code delta}) and reclaim contiguous position space within {@code nCtx}.
+     * Also synchronizes speculative draft KV-cache positions and coordinate-linked sampler history.
+     *
+     * @param seqId sequence tracking ID (must be in {@code [0, getSeqMax())})
+     * @param p0    start position inclusive (negative is {@code 0})
+     * @param p1    end position exclusive (negative is infinity)
+     * @param delta relative position shift to add (e.g. {@code -evictedCount})
+     * @return true if positions were shifted (or {@code delta == 0} no-op), false on invalid bounds or unsupported architecture
+     */
+    public boolean shiftCacheSlot(int seqId, int p0, int p1, int delta) {
+        ArgusValidation.checkNonNegative(seqId, "seqId");
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            return (boolean) ArgusBindings.argus_kv_cache_seq_add.invokeExact(ctxH, seqId, p0, p1, delta);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to shift KV cache sequence slot positions", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
      * Queries the maximum number of sequence slots allocated for this execution context.
      */
     public int getSeqMax() {
@@ -1278,10 +1314,10 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
-     * Returns the embedding dimension size for the model retained by this execution context.
+     * Returns the effective output embedding dimension size for the model retained by this execution context.
      * Operates safely even if the original Java ArgusModel wrapper has been closed.
      *
-     * @return Model embedding dimension in floats (e.g. 32, 1024, 4096)
+     * @return Model output embedding dimension in floats (e.g. 32, 768, 1024, 4096)
      */
     public int nEmbd() {
         MemorySegment ctxH = acquireReadLease();
@@ -1298,6 +1334,58 @@ public final class ArgusContext extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query model embedding dimension", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Returns the explicit output embedding dimension size for the model retained by this execution context.
+     * Equivalent to {@link #nEmbd()}.
+     *
+     * @return Model output embedding dimension in floats
+     */
+    public int nEmbdOut() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
+            int dim = (int) ArgusBindings.argus_model_n_embd_out.invokeExact(modelH);
+            if (dim <= 0) {
+                ArgusNativeException.throwLastError("argus_model_n_embd_out");
+            }
+            return dim;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model output embedding dimension", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Returns the internal input/backbone embedding dimension size ({@code n_embd_inp}) for the model
+     * retained by this execution context.
+     *
+     * @return Model internal input embedding dimension in floats
+     */
+    public int nEmbdInp() {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
+            int dim = (int) ArgusBindings.argus_model_n_embd_inp.invokeExact(modelH);
+            if (dim <= 0) {
+                ArgusNativeException.throwLastError("argus_model_n_embd_inp");
+            }
+            return dim;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to query model input embedding dimension", t);
         } finally {
             releaseReadLease();
         }

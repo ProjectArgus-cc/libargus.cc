@@ -2066,4 +2066,127 @@ public class ArgusBindingsTest {
             ArgusBackend.free();
         }
     }
+
+    @Test
+    public void testEmbeddingGemma2ProjectedDimensions() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny-gemma-embed2.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "tests/data/tiny-gemma-embed2.gguf not found");
+        Path gemma2Path = root.resolve("tests/data/tiny-gemma-embed2.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined()) {
+            ArgusModel model = ArgusModel.load(arena, gemma2Path, 0, false);
+            assertEquals(16, model.nEmbd(), "nEmbd() must return projected output dimension (16)");
+            assertEquals(16, model.nEmbdOut(), "nEmbdOut() must return projected output dimension (16)");
+            assertEquals(32, model.nEmbdInp(), "nEmbdInp() must return internal backbone dimension (32)");
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(128)
+                .cpuThreads(2)
+                .embeddings(true)
+                .causalAttn(false)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                assertEquals(16, ctx.nEmbd());
+                assertEquals(16, ctx.nEmbdOut());
+                assertEquals(32, ctx.nEmbdInp());
+
+                // gemma-embedding2 is a no-KV-cache architecture: canShift and shiftCacheSlot must return false
+                assertFalse(ctx.canShift());
+                assertFalse(ctx.shiftCacheSlot(0, 0, -1, -1));
+
+                float[] vec = ctx.extractEmbeddings("Testing EmbeddingGemma2 projected output");
+                assertNotNull(vec);
+                assertEquals(16, vec.length);
+                double sumSq = 0.0;
+                for (float v : vec) {
+                    assertFalse(Float.isNaN(v) || Float.isInfinite(v));
+                    sumSq += (double) v * (double) v;
+                }
+                assertTrue(sumSq > 0.0, "EmbeddingGemma2 vector must have strictly positive energy");
+
+                float[] vec2 = ctx.extractEmbeddings("Testing EmbeddingGemma2 projected output");
+                assertArrayEquals(vec, vec2, 1e-6f);
+
+                // Close Java model wrapper and verify retained native model dimension queries still succeed
+                model.close();
+                assertTrue(model.isClosed());
+                assertEquals(16, ctx.nEmbdOut());
+                assertEquals(32, ctx.nEmbdInp());
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
+
+    @Test
+    public void testShiftCacheSlotSlidingWindowRingBuffer() {
+        Path root = Paths.get(".").toAbsolutePath();
+        while (root != null && !Files.exists(root.resolve("tests/data/tiny.gguf"))) {
+            root = root.getParent();
+        }
+        assertNotNull(root, "tests/data/tiny.gguf not found");
+        Path modelPath = root.resolve("tests/data/tiny.gguf");
+
+        ArgusBackend.init();
+        try (Arena arena = Arena.ofConfined();
+             ArgusModel model = ArgusModel.load(arena, modelPath, 0, false)) {
+
+            assertEquals(32, model.nEmbd());
+            assertEquals(32, model.nEmbdOut());
+            assertEquals(32, model.nEmbdInp());
+
+            ArgusContextConfig config = new ArgusContextConfig.Builder(64)
+                .cpuThreads(2)
+                .build();
+
+            try (ArgusContext ctx = ArgusContext.init(arena, model, config)) {
+                assertTrue(ctx.canShift());
+                assertTrue(ctx.shiftCacheSlot(0, 0, -1, 0), "delta == 0 must be a valid no-op");
+                assertFalse(ctx.shiftCacheSlot(0, 2, -1, -5), "Shifting below position 0 must be rejected");
+                assertThrows(IllegalArgumentException.class, () -> ctx.shiftCacheSlot(-1, 0, -1, -1));
+
+                // Decode 6 tokens at [0..5]
+                MemorySegment promptSeg = arena.allocate(ValueLayout.JAVA_INT, 6);
+                int[] promptTokens = { 1, 4, 5, 6, 7, 8 };
+                for (int i = 0; i < promptTokens.length; i++) {
+                    promptSeg.setAtIndex(ValueLayout.JAVA_INT, i, promptTokens[i]);
+                }
+                assertEquals(0, ctx.decodeBatch(promptSeg, 6, 0, 0, true));
+                assertEquals(0, ctx.getSeqPosMin(0));
+                assertEquals(5, ctx.getSeqPosMax(0));
+
+                // Sample token and decode continuation at pos 6
+                int sampled = ctx.sampleToken(0, 0.0f, 1.1f);
+                assertTrue(sampled >= 0);
+                MemorySegment contSeg = arena.allocate(ValueLayout.JAVA_INT, 1);
+                contSeg.setAtIndex(ValueLayout.JAVA_INT, 0, sampled);
+                assertEquals(0, ctx.decodeBatch(contSeg, 1, 6, 0, true));
+                assertEquals(6, ctx.getSeqPosMax(0));
+                assertEquals(1, ctx.getSamplerHistoryCount(0));
+
+                // Reject positive shift that would exceed nCtx (6 + 58 >= 64)
+                assertFalse(ctx.shiftCacheSlot(0, 0, -1, 58));
+
+                // Evict [2, 4) and shift [4, -1) left by -2
+                assertTrue(ctx.clearCacheSlot(0, 2, 4));
+                assertTrue(ctx.shiftCacheSlot(0, 4, -1, -2));
+                assertEquals(0, ctx.getSeqPosMin(0));
+                assertEquals(4, ctx.getSeqPosMax(0));
+                assertEquals(1, ctx.getSamplerHistoryCount(0));
+
+                // Continue decoding at startPos = 5
+                contSeg.setAtIndex(ValueLayout.JAVA_INT, 0, 9);
+                assertEquals(0, ctx.decodeBatch(contSeg, 1, 5, 0, true));
+                assertEquals(5, ctx.getSeqPosMax(0));
+                assertTrue(ctx.sampleToken(0, 0.0f, 1.1f) >= 0);
+            }
+        } finally {
+            ArgusBackend.free();
+        }
+    }
 }
+

@@ -421,4 +421,102 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(release['id'], 42)
         self.assertEqual(state['central'], 'PUBLISHED')
 
+    def test_expose_sets_make_latest_only_when_version_is_highest(self):
+        class HTTP:
+            def __init__(self, existing_releases):
+                self.existing_releases = existing_releases
+                self.patched = []
+            def request(self, method, url, auth=None, payload=None):
+                if method == 'GET' and '/releases?' in url:
+                    return self.existing_releases
+                if method == 'PATCH' and '/releases/' in url:
+                    self.patched.append(payload)
+                    return {}
+                raise AssertionError(f'Unexpected call: {method} {url}')
+
+        state = {'candidate': SOURCE, 'source': SOURCE, 'central': 'PUBLISHED', 'packages': 'verified'}
+        # Case 1: Publishing v2.0.4 when v2.0.3 is currently published -> make_latest == 'true'
+        http_newer = HTTP([{'id': 10, 'tag_name': 'v2.0.3', 'draft': False, 'prerelease': False}])
+        GitHub(http_newer, 'a/b', 'token').expose({'id': 11, 'tag_name': 'v2.0.4'}, state, tag='v2.0.4')
+        self.assertEqual(len(http_newer.patched), 1)
+        self.assertEqual(http_newer.patched[0]['make_latest'], 'true')
+
+        # Case 2: Recovering/publishing v1.9.3 when v2.0.3 is already published -> make_latest == 'false'
+        http_older = HTTP([{'id': 10, 'tag_name': 'v2.0.3', 'draft': False, 'prerelease': False}])
+        GitHub(http_older, 'a/b', 'token').expose({'id': 12, 'tag_name': 'v1.9.3'}, state, tag='v1.9.3')
+        self.assertEqual(len(http_older.patched), 1)
+        self.assertEqual(http_older.patched[0]['make_latest'], 'false')
+
+        # Case 3: Draft or prerelease of v3.0.0 does not block v2.0.4 from being make_latest == 'true'
+        http_draft = HTTP([
+            {'id': 10, 'tag_name': 'v2.0.3', 'draft': False, 'prerelease': False},
+            {'id': 99, 'tag_name': 'v3.0.0', 'draft': True, 'prerelease': False},
+        ])
+        GitHub(http_draft, 'a/b', 'token').expose({'id': 11, 'tag_name': 'v2.0.4'}, state, tag='v2.0.4')
+        self.assertEqual(http_draft.patched[0]['make_latest'], 'true')
+
+    def test_preflight_annotated_and_signed_tag_inspection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / 'repo'
+            root.mkdir()
+            def git(*args):
+                return subprocess.run(
+                    ['git', '-c', 'user.name=Argus fixture', '-c', 'user.email=fixture@example.invalid', *args],
+                    cwd=root, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+                )
+            git('init')
+            (root / 'version.txt').write_text(version())
+            git('add', 'version.txt')
+            git('commit', '-m', 'fixture')
+            tag = 'v' + version()
+
+            # 1. Lightweight tag
+            git('tag', tag)
+            with patch.object(preflight_module, 'ROOT', root):
+                res = preflight_module.preflight(tag)
+                self.assertEqual(res['tag_type'], 'lightweight')
+                self.assertFalse(res['tag_signed'])
+                with patch.dict(os.environ, {'REQUIRE_SIGNED_TAG': '1'}):
+                    with self.assertRaisesRegex(ValueError, 'annotated signed tag'):
+                        preflight_module.preflight(tag)
+
+            # 2. Annotated unsigned tag
+            git('tag', '-d', tag)
+            git('tag', '-a', tag, '-m', 'Release ' + tag)
+            with patch.object(preflight_module, 'ROOT', root):
+                res = preflight_module.preflight(tag)
+                self.assertEqual(res['tag_type'], 'annotated')
+                self.assertFalse(res['tag_signed'])
+                with patch.dict(os.environ, {'REQUIRE_SIGNED_TAG': '1'}):
+                    with self.assertRaisesRegex(ValueError, 'annotated signed tag'):
+                        preflight_module.preflight(tag)
+
+            # 3. Annotated PGP-signed tag
+            git('tag', '-d', tag)
+            home = base / 'gnupg'
+            home.mkdir(mode=0o700)
+            env = {**os.environ, 'GNUPGHOME': str(home)}
+            subprocess.run(
+                ['gpg', '--batch', '--pinentry-mode', 'loopback', '--passphrase', '', '--quick-generate-key',
+                 'Argus fixture <fixture@example.invalid>', 'rsa2048', 'sign', '1d'],
+                env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            subprocess.run(
+                ['git', '-c', 'user.name=Argus fixture', '-c', 'user.email=fixture@example.invalid',
+                 '-c', 'user.signingkey=fixture@example.invalid', 'tag', '-s', tag, '-m', 'Signed ' + tag],
+                cwd=root, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+            with patch.object(preflight_module, 'ROOT', root):
+                with patch.dict(os.environ, {'REQUIRE_SIGNED_TAG': '1'}):
+                    res = preflight_module.preflight(tag)
+                    self.assertEqual(res['tag_type'], 'annotated')
+                    self.assertTrue(res['tag_signed'])
+
+    def test_publish_workflow_global_concurrency_serialization(self):
+        publish_yml = (ROOT / '.github/workflows/publish.yml').read_text(encoding='utf-8')
+        self.assertIn('group: release-publish-global', publish_yml)
+        self.assertIn('cancel-in-progress: false', publish_yml)
+
 if __name__ == '__main__': unittest.main()
+

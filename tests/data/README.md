@@ -4,6 +4,10 @@
 `tiny-embed.gguf` is a synthetic 32-dimensional, one-layer embedding model configured with
 MEAN pooling and non-causal attention for deterministic offline integration testing of
 libargus bidirectional embeddings pipelines without external downloads.
+`tiny-gemma-embed2.gguf` is a synthetic `gemma-embedding2` (EmbeddingGemma2) fixture with a
+32-dimensional transformer backbone (`n_embd = 32`), an 8-dimensional per-layer input projection,
+and a 16-dimensional output projection (`n_embd_out = 16`, MEAN pooling, non-causal no-KV-cache
+attention) for verifying projected-embedding dimension resolution.
 `tiny-mmproj.gguf` is a compatible synthetic CLIP/MLP vision projector with
 8-dimensional vision state, two layers (LLaVA selects the first), four image
 patches and a 32-dimensional projection. It executes real upstream image
@@ -23,5 +27,7 @@ Regeneration must produce these exact SHA-256 values:
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
 | tiny-embed.gguf | 115,104 | 0789433d2682a4678cfcf5d61d7f5366da22e218508dd7ebf748cf1de158b2f0 |
+| tiny-gemma-embed2.gguf | 134,592 | 6707a3fd4ded2d19a73c30fad71f5017ff0fcf3c8db70803c4f6023ba3ffdc6b |
 | tiny-mmproj.gguf | 17,920 | cd6155a72b3b5a0627db7d5b412824f5c4975f787e80272aa8293e173ad56d8a |
 | tiny-video.y4m | 1,210 | 12b8f2799454def8c4a62f1420766b3585204ff5d5e0d68ead31387544f70f0c |
+

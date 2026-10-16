@@ -92,7 +92,11 @@ python3 scripts/release/verify_classifier.py candidate linux-amd64-cpu \
 ```
 
 Preflight requires a clean checkout of the existing tag and exact agreement with
-`version.txt`. A manual release dispatch must use that tag as its workflow ref;
+`version.txt` and `include/libargus.h`. It also inspects the Git tag ref object
+(`tag_type`: `annotated` vs `lightweight`, `tag_signed`: embedded PGP/SSH
+signature presence; set `REQUIRE_SIGNED_TAG=1` to enforce signed annotated tags).
+Maintainers should create release tags as signed or annotated tags (`git tag -s`
+or `git tag -a`). A manual release dispatch must use that tag as its workflow ref;
 it cannot select release bytes from an arbitrary version string. External Action
 pins are full commits with checked tag correspondence and metadata paths. Major
 Action tags can move: update `actions.lock.json` and the documented YAML comments
@@ -117,13 +121,20 @@ assume that naming an environment creates approval/protection rules.
 4. Retrieve every served Maven payload and signature from Central and compare
    hashes, with a bounded propagation wait. Repository-generated checksum
    sidecars may be normalized by the service; the actual payloads/signatures
-   must match. Only then expose the verified GitHub draft.
+   must match. Only then expose the verified GitHub draft, setting `make_latest`
+   to `true` only when the target tag's semantic version is greater than or equal
+   to all existing published non-prerelease tags (preventing recovery or patch
+   runs on older versions from stealing the GitHub `Latest` badge).
 5. Upload the same finalized Maven files to GitHub Packages as a separately
    reported secondary destination. Existing files are accepted only on digest
    equality. Failure marks that destination incomplete and fails the run; it
    does not erase the already successful primary destinations.
 
-Per-version concurrency never cancels an active publisher. The original candidate
+Per-version concurrency (`release-<tag>`) allows validation of distinct tags to
+proceed without cancelling active runs, while the `transport` job in `publish.yml`
+enforces a global publication concurrency group (`release-publish-global`,
+`cancel-in-progress: false`) so concurrent tag publications serialize cleanly at
+the publish gate. The original candidate
 and receipts are retained as workflow artifacts for 90 days, subject to repository
 retention limits. Destination state is saved after each transition in both
 `publication-state.json` and a machine-readable marker in the GitHub release body.

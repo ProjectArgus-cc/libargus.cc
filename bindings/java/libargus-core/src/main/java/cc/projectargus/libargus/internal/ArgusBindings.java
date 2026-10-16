@@ -436,6 +436,14 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
+    public static final MethodHandle argus_model_n_embd_out = bind("argus_model_n_embd_out",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_n_embd_inp = bind("argus_model_n_embd_inp",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+
     public static final MethodHandle argus_model_n_ctx_train = bind("argus_model_n_ctx_train",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
@@ -567,6 +575,10 @@ public final class ArgusBindings {
 
     public static final MethodHandle argus_kv_cache_can_shift = bind("argus_kv_cache_can_shift",
         FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_kv_cache_seq_add = bind("argus_kv_cache_seq_add",
+        FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
     );
 
     public static final MethodHandle argus_kv_cache_seq_cp = bind("argus_kv_cache_seq_cp",

@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 2.0.3
+ * @version 2.0.4
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -678,11 +678,28 @@ ARGUS_API int32_t argus_model_meta_key_by_index(const argus_model_t * model, int
 ARGUS_API int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size);
 
 /**
- * @brief Retrieves the model's embedding dimension.
+ * @brief Retrieves the model's effective output embedding dimension.
+ * For models with an output projection head (e.g. EmbeddingGemma2, Matryoshka embeddings,
+ * or sequence classifiers), this returns the projected output dimension (n_embd_out);
+ * otherwise it returns the internal transformer hidden dimension (n_embd).
  * @param model Reference model weights handler.
- * @return The embedding dimension length, or -1 on failure/not defined.
+ * @return The effective output embedding dimension length, or -1 on failure/not defined.
  */
 ARGUS_API int32_t argus_model_n_embd(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's explicit output embedding dimension (llama_model_n_embd_out).
+ * @param model Reference model weights handler.
+ * @return The output embedding dimension length, or -1 on failure/not defined.
+ */
+ARGUS_API int32_t argus_model_n_embd_out(const argus_model_t * model);
+
+/**
+ * @brief Retrieves the model's internal input/hidden transformer embedding dimension (llama_model_n_embd_inp / llama_model_n_embd).
+ * @param model Reference model weights handler.
+ * @return The internal input/hidden embedding dimension length, or -1 on failure/not defined.
+ */
+ARGUS_API int32_t argus_model_n_embd_inp(const argus_model_t * model);
 
 /**
  * @brief Retrieves the model's training context length limit.
@@ -826,6 +843,15 @@ ARGUS_API int32_t argus_quant_block_size(int32_t type);
 /**
  * @brief Evaluates an unmanaged batch payload through the model's compute graph.
  * This is a synchronized mutating context operation.
+ *
+ * Window Contract:
+ * Callers must satisfy start_pos >= 0, n_tokens > 0, and start_pos + n_tokens <= n_ctx.
+ * Even on interleaved sliding-window attention (ISWA) architectures, dense full-attention
+ * layers remain bounded by the physical context capacity n_ctx. For long-horizon streaming
+ * beyond n_ctx on shift-capable architectures (where argus_kv_cache_can_shift(ctx) is true),
+ * evict old prefix ranges via argus_kv_cache_clear_slot() and shift surviving positions down
+ * via argus_kv_cache_seq_add() before decoding subsequent tokens.
+ *
  * @param ctx Reference execution context.
  * @param batch The specific structural collection of tokens, offsets, and sequence bindings.
  * @return Status code mapping (0 denotes clean execution, non-zero alerts structural errors).
@@ -834,7 +860,8 @@ ARGUS_API int32_t argus_decode_batch(argus_context_t * ctx, const argus_token_ba
 
 /** Direct-buffer equivalent of argus_decode_batch; all borrowed pointers must remain
  * alive for this synchronous call. FFM callers pass buffers as address arguments so
- * the linker can protect their scopes. No additional token-buffer copy is performed. */
+ * the linker can protect their scopes. No additional token-buffer copy is performed.
+ * Enforces the same start_pos + n_tokens <= n_ctx window contract as argus_decode_batch. */
 ARGUS_API int32_t argus_decode_tokens(argus_context_t * ctx, const int32_t * tokens,
     int32_t n_tokens, int32_t start_pos, int32_t seq_id, bool request_logits,
     argus_abort_flag_t * abort_flag);
@@ -989,11 +1016,27 @@ ARGUS_API int32_t argus_sampler_discard_pending(argus_context_t * ctx, int32_t s
 ARGUS_API bool argus_kv_cache_clear_slot(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1);
 
 /**
- * @brief Checks whether the active context KV cache memory supports position shifting (sliding window attention).
+ * @brief Checks whether the active context KV cache memory supports position shifting (RoPE K-shift).
+ * When speculative decoding is enabled, returns true only if both primary and draft KV memories support shifting.
  * @param ctx Reference execution context.
  * @return True if the memory supports shifting, false otherwise.
  */
 ARGUS_API bool argus_kv_cache_can_shift(const argus_context_t * ctx);
+
+/**
+ * @brief Adds a relative position delta to all KV cache tokens in [p0, p1) for a specific sequence slot.
+ * Automatically synchronizes position shifts across speculative draft contexts (if present) and
+ * updates coordinate-linked sampler history/pending kv_pos metadata.
+ * Requires argus_kv_cache_can_shift(ctx) == true.
+ * This is a synchronized mutating context operation.
+ * @param ctx Reference execution context.
+ * @param seq_id Target sequence slot tracking ID (must be >= 0).
+ * @param p0 Starting position offset inclusive (negative is clamped to 0).
+ * @param p1 Ending position offset exclusive (negative represents +infinity).
+ * @param delta Relative position shift to add to each matching cell in [p0, p1).
+ * @return True if the shift succeeded, false if unsupported by architecture or invalid arguments.
+ */
+ARGUS_API bool argus_kv_cache_seq_add(argus_context_t * ctx, int32_t seq_id, int32_t p0, int32_t p1, int32_t delta);
 
 /**
  * @brief Copies all tokens that belong to a source sequence to a destination sequence as a full snapshot.

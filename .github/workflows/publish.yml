@@ -30,6 +30,9 @@ jobs:
   transport:
     runs-on: ubuntu-22.04
     environment: release
+    concurrency:
+      group: release-publish-global
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
