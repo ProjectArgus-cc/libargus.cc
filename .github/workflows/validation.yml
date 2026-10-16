@@ -77,7 +77,7 @@ jobs:
           ./gradlew :libargus-core:test -PskipCMake=true -PnativePath="$PWD/build/$NATIVE_DIR/$LIBRARY" --console=plain
       - name: Preserve Windows JVM crash diagnostics
         if: failure() && runner.os == 'Windows' && matrix.backend == 'cpu'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-jvm-crash-diagnostics
           path: |
@@ -85,7 +85,7 @@ jobs:
             bindings/java/libargus-core/hs_err_pid*.mdmp
           if-no-files-found: ignore
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ matrix.id }}
           path: staging/*
@@ -181,7 +181,7 @@ jobs:
           GPG_PRIVATE_KEY: ${{ inputs.release && secrets.GPG_PRIVATE_KEY || '' }}
           GPG_PASSPHRASE: ${{ inputs.release && secrets.GPG_PASSPHRASE || '' }}
         run: python3 scripts/release/finalize.py
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: upload
         with:
           name: sealed-candidate
@@ -223,7 +223,7 @@ jobs:
           EXTRA=()
           if [ "$RELEASE" != true ]; then EXTRA+=(--development); fi
           python3 scripts/release/verify_classifier.py candidate "$TARGET" "receipts/$TARGET.json" "${EXTRA[@]}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: receipt-${{ matrix.id }}
           path: receipts/*.json
@@ -264,7 +264,7 @@ jobs:
           EXTRA=()
           if [ "$RELEASE" != true ]; then EXTRA+=(--development); fi
           python3 scripts/release/verify_classifier.py candidate aggregate receipts "${EXTRA[@]}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         id: upload
         with:
           name: validated-receipts
