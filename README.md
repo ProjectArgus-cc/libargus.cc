@@ -8,13 +8,13 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.4 Release — Contiguous Batch Ownership, Projected Embedding Dimensions, KV Position Shifting & Release Hardening**
+> **v2.0.5 Release — Projected-Backbone KV Estimation, Multimodal Rollback Pruning, OuteTTS Sequence-0 RAII Isolation & Whisper UTF-8 Hardening**
 > 
-> * **Contiguous RAII Batch Ownership (`argus_owned_batch`):** Replaces all upstream `llama_batch_init` / `llama_batch_free` calls across context initialization, chunked decoding, and TTS synthesis with a single-slab, overflow-checked C++ RAII allocator, eliminating partial-allocation leaks and `malloc(0)` hazards under OOM pressure.
-> * **Projected Embedding Dimension Resolution (`EmbeddingGemma2`):** `argus_model_n_embd()`, `argus_get_embeddings()`, and `argus_eval_embeddings()` now resolve the effective output embedding dimension (`llama_model_n_embd_out`), supporting architectures with dedicated output projection heads (`n_embd_out != n_embd`, such as `EmbeddingGemma2`) alongside explicit `nEmbdOut()` and `nEmbdInp()` accessors.
-> * **KV-Cache Position Shifting (`argus_kv_cache_seq_add` / `shiftCacheSlot`):** Exposes relative KV position shifting across primary and speculative draft contexts while synchronously shifting and pruning coordinate-linked sampler `kv_pos` history for sliding-window ring-buffer generation.
-> * **Pure Preflight Rejection & State Neutrality:** Predictably invalid embedding requests (`argus_eval_embeddings`) and token batches (`argus_decode_batch`) violating non-causal single micro-batch limits (`n_tokens > n_ubatch`) or context limits (`start_pos + n_tokens > n_ctx`) are rejected prior to native context mutation.
-> * **Tokenizer Contract & Parity Alignment:** Aligns `ArgusModel` and `ArgusContext` String tokenizers (`ArgusValidation.allocateUtf8Text`) and `extractEmbeddings(Arena, String, MemorySegment)` using exact-length off-heap UTF-8 Arena allocation (without artificial trailing NUL byte `\0` injection), while preserving zero-allocation `byteSize()` contracts on raw `MemorySegment` overloads.
+> * **Projected-Backbone KV Cache & VRAM Estimation (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`):** Resolves per-token KV cache footprint against the internal transformer attention width (`n_embd_inp`) rather than the projected output dimension (`n_embd_out`), preventing under-estimation on projected-embedding architectures (`EmbeddingGemma2`) while enforcing quantization type validation and 64-bit integer overflow guards.
+> * **Multimodal Prefix Rollback & Sampler History Pruning (`argus_eval_multimodal_chunks`):** Synchronously prunes invalidated KV cache cells (`[n_past, -1)`) across primary and speculative draft contexts and evicts orphaned sampler history (`kv_pos >= n_past`) while preserving decoupled primed tokens (`kv_pos == -1`), with pre-mutation capability checks on recurrent and hybrid architectures.
+> * **OuteTTS Sequence-0 State Isolation & Pre-Vocoder Workspace Sizing (`argus_synthesize_speech_n`):** Resets Sequence 0 sampler state and installs an unconditional RAII scope guard (`seq0_cleanup_guard`) that scrubs Sequence 0 KV caches (`ctx` and `draft_ctx`), logits, and embeddings across all exit paths, while validating workspace buffer capacity prior to vocoder execution.
+> * **Whisper ASR Exact-Fit Capacity, Multi-Byte UTF-8 Preservation & Lease Concurrency (`argus_transcribe_audio`):** Fixes exact-fit buffer boundary comparisons (`<= max_chars`), preserves complete multi-byte UTF-8 sequences at buffer boundaries while cleanly truncating only incomplete trailing code units, and unifies `argus_audio_context` under centralized `argus_guard` and `argus_execution_lock` protection.
+> * **Contiguous RAII Batch Ownership, Projected Embeddings & KV Shifting:** Retains single-slab `argus_owned_batch` allocation across decoding and TTS, `EmbeddingGemma2` dimension resolution (`nEmbdOut()` / `nEmbdInp()`), and relative KV-cache position shifting (`argus_kv_cache_seq_add` / `shiftCacheSlot`).
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
@@ -33,14 +33,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.4</version>
+        <version>2.0.5</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.4</version>
+        <version>2.0.5</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -50,10 +50,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.4")
+    implementation("cc.projectargus:libargus-core:2.0.5")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.4")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.5")
 }
 ```
 
@@ -98,7 +98,7 @@ dependencies {
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
-*   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints and total VRAM requirements without FFI allocation overhead.
+*   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints (resolved against internal attention width `n_embd_inp`) and overflow-checked total VRAM requirements without FFI allocation overhead.
 *   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
 *   **M-RoPE & Multidimensional Rollback Synchronization:** Native detection and position tracking for Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE). Automatically handles multidimensional temporal/spatial position vectors with zero-allocation introspection (`nPosPerEmbd()`, `isMRoPE()`).
 *   **Automagic KV Cache Truncation & Prefix Rollback:** Automatically prunes invalidated KV cache cells on prefix reuse when `start_pos <= seq_pos_max`, establishing strict sequence monotonicity across 1D-RoPE and M-RoPE architectures with synchronized speculative draft context clearing.
@@ -530,22 +530,22 @@ try (Arena sessionArena = Arena.ofConfined()) {
 | **Panama Critical Downcalls** | Pure non-blocking C ABI leaf calls are bound with `Linker.Option.critical(false)`, eliminating JVM safepoint and frame setup overhead on hot paths. | `Linker.Option.critical(false)`, leaf methods in `ArgusBindings` |
 | **Rollback History Closure** | When `is_kv_rollback == true`, successfully decoded replacement tokens are committed to history and accepted into sampler chains. | `argus_rollback_to_kv_seq()` commits replacement history |
 | **Logits Ownership** | Single-consumption model. Returns `-2` if target sequence was not evaluated last, if logits were already sampled, or if state was mutated. | `argus_sample_token_ext()` returns `-2` |
-| **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned. | `argus_sampler_prime()`, `argus_decode_batch()` |
+| **Coordinate Decoupling** | History entries are tagged with `kv_pos`. Primed prompt tokens (`kv_pos = -1`) survive KV rollbacks; only orphaned branch tokens (`kv_pos >= start_pos`) are pruned across text and multimodal rollbacks. | `argus_sampler_prime()`, `argus_decode_batch()`, `argus_eval_multimodal_chunks()` |
 | **KV Position Shifting** | Relative position shifts (`delta`) update primary and speculative draft KV caches while shifting/pruning coordinate-linked `kv_pos` history in lockstep. | `argus_kv_cache_seq_add()`, `shiftCacheSlot()` |
 | **Cancellation Handle Safety** | Reference-counted cancellation handles are retained natively via RAII throughout decode loops, preventing unmanaged use-after-free hazards. | `argus_abort_flag_t`, `ArgusAbortFlag` |
 | **Entropy & RNG Seeding** | 32-bit seed (`0xFFFFFFFF` / `-1` for random entropy). Pure greedy argmax when `temperature <= 0.0f`. Distribution sampling when `temperature > 0.0f`. | `argus_sampler_params_t.seed` |
 | **Monotonic RNG Continuity** | Dynamic hyperparameter tuning, partial KV rollbacks, and truncations clone the active distribution sampler RNG state without restarting to draw #0. | `llama_sampler_clone()` on reconfigure/rollback |
-| **Multimodal Synchronization**| Per-context mutex serialization across chunk evaluation, eliminating races against concurrent text decode, sampling, and KV mutation. | `argus_eval_multimodal_chunks()` holds `ctx->mtx` |
+| **Multimodal Synchronization**| Per-context mutex serialization across chunk evaluation with synchronized KV cache and sampler history rollback pruning (`[n_past, -1)`). | `argus_eval_multimodal_chunks()` holds `ctx->mtx` |
 | **C ABI Exception Barrier** | All native exports are wrapped in `try/catch` barriers; native errors are captured in thread-local storage and mapped to `ArgusNativeException`. | `argus_last_error_code()`, `ArgusNativeException` |
-| **Bounded Diagnostics & Copy-Out** | Diagnostic retrieval and export APIs write into caller-bounded buffers with explicit length limits, preventing buffer overruns. | `argus_last_error_message_copy()`, `argus_synthesize_speech_n()` |
+| **Bounded Diagnostics & Copy-Out** | Diagnostic retrieval, speech synthesis, and ASR transcription write into caller-bounded buffers with exact-fit capacity checks and incomplete-tail UTF-8 truncation. | `argus_last_error_message_copy()`, `argus_synthesize_speech_n()`, `argus_transcribe_audio()` |
 | **Spatial Bounds Validation** | Preflight validation checks non-null addresses, buffer capacities, and overflow-safe sizing prior to native downcalls. | `ArgusValidation` |
 | **Penalty History Replay** | Rebuilding filter chains on reconfiguration or rollback replays surviving sequence tokens via `llama_sampler_accept()`. | Persistent slot history buffer |
-| **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`, `shiftCacheSlot`), decode failure, multimodal projection error, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
+| **Stale Logits Invalidation** | Any KV cache mutation (`clearCacheSlot`, `shiftCacheSlot`), decode failure, multimodal projection error, TTS Sequence-0 cleanup, or slot reset immediately invalidates pending logits. | `invalidate_seq_logits()` |
 | **History Introspection** | Zero-allocation real-time queries for retained token count (primed + committed) and uncommitted sample status. | `argus_sampler_get_history_count()`, `argus_sampler_has_pending()` |
 | **Shared Projector Locking** | Native lock hierarchy acquires projector mutex then text context mutex through encoding and embedding consumption; independent projectors remain decoupled. | `argus_eval_multimodal_chunks()` |
 | **Direct FFM Segment Safety** | Preflight validation rejects closed, heap-backed, wrong-thread-confined, short, or misaligned memory segments before unmanaged downcalls. | `ArgusValidation` |
 | **Zero-Rollback Slot Forking** | KV cache replication combined with persistent sampler history replay and RNG distribution continuity across sequence tracks without native aborts. | `argus_kv_cache_seq_cp()`, `forkSlot()` |
-| **Atomic Rollback Error Signaling** | Rejects unsupported partial cache rollbacks on recurrent architectures, returning `-3` / `STATUS_ROLLBACK_FAILED` without desynchronizing sampler history. | `argus_decode_batch()`, `ARGUS_ERROR_ROLLBACK_FAILED` |
+| **Atomic Rollback Error Signaling** | Rejects unsupported partial cache rollbacks on recurrent architectures across text and multimodal evaluation, returning `-3` / `STATUS_ROLLBACK_FAILED` without desynchronizing sampler history. | `argus_decode_batch()`, `argus_eval_multimodal_chunks()`, `ARGUS_ERROR_ROLLBACK_FAILED` |
 | **Structured ABI Introspection**| Zero-allocation query of version, source revisions, compiler, CPU baseline, feature masks, and wire layout offsets without backend initialization. | `ArgusBackend.getBuildInfo()` |
 
 ---

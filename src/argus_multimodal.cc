@@ -515,8 +515,19 @@ int32_t argus_eval_multimodal_chunks(
         }
         const bool produces_logits = logits_last && terminal_tokens > 0;
 
-        // Reconcile and discard any pending text sample prior to multimodal evaluation
-        discard_slot_pending_preserving_rng(ctx, seq_id);
+#ifdef ARGUS_TESTING
+        const bool is_test_eval = mctx->test_evaluator;
+#else
+        const bool is_test_eval = false;
+#endif
+        if (!is_test_eval && !argus_prune_context_kv_if_rollback(ctx, seq_id, n_past)) {
+            set_last_error(ARGUS_ERROR_ROLLBACK_FAILED,
+                "KV cache rollback failed: partial sequence removal unsupported by model architecture; wipe sequence slot from 0");
+            return ARGUS_DECODE_ROLLBACK_FAILED;
+        }
+
+        // Reconcile sampler history at or beyond n_past and discard any pending text sample
+        argus_prune_slot_from_pos_preserving_rng(ctx, seq_id, n_past);
 
         // Invalidate pending logits and context embeddings before starting multimodal projection evaluation
         ctx->seq_samplers[seq_id].has_logits = false;

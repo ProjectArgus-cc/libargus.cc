@@ -2082,6 +2082,9 @@ public class ArgusBindingsTest {
             assertEquals(16, model.nEmbd(), "nEmbd() must return projected output dimension (16)");
             assertEquals(16, model.nEmbdOut(), "nEmbdOut() must return projected output dimension (16)");
             assertEquals(32, model.nEmbdInp(), "nEmbdInp() must return internal backbone dimension (32)");
+            assertEquals(256L, model.kvBytesPerToken(1, 1), "kvBytesPerToken(F16, F16) must use nEmbdInp (32) rather than nEmbdOut (16)");
+            assertEquals(-1L, model.kvBytesPerToken(-1, 1), "kvBytesPerToken must reject invalid typeK");
+            assertEquals(model.modelSize() + 2560L, model.estimateVramBytes(10, 1, 1));
 
             ArgusContextConfig config = new ArgusContextConfig.Builder(128)
                 .cpuThreads(2)

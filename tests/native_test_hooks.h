@@ -17,5 +17,8 @@ ARGUS_API bool argus_test_has_logits(const argus_context_t * ctx, int32_t seq_id
 ARGUS_API bool argus_test_has_embeddings(const argus_context_t * ctx, int32_t seq_id);
 ARGUS_API void argus_test_set_batch_alloc_fail_step(int32_t step);
 ARGUS_API void argus_test_set_context_batch_scratch_enabled(argus_context_t * ctx, bool enabled);
+ARGUS_API argus_audio_context_t * argus_test_audio(const char * transcript);
+ARGUS_API void argus_test_set_vocoder_override(bool allow);
 }
 void argus_test_allocation_checkpoint();
+

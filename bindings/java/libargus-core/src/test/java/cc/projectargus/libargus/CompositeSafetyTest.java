@@ -64,6 +64,25 @@ class CompositeSafetyTest {
         } finally { ArgusBackend.free(); }
     }
 
+    @Test void publicAudioTranscribeExcludesCloseAndTruncatesUtf8() throws Throwable {
+        ArgusBackend.init();
+        try (Arena setup = Arena.ofShared()) {
+            MethodHandle factory = Linker.nativeLinker().downcallHandle(SymbolLookup.loaderLookup()
+                .find("argus_test_audio").orElseThrow(), FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            MemorySegment transcript = setup.allocateFrom("A\u00e9Z");
+            MemorySegment pointer = (MemorySegment) factory.invokeExact(transcript);
+            MemorySegment pcm = setup.allocate(4 * 4, 4);
+            var constructor = ArgusAudioContext.class.getDeclaredConstructor(MemorySegment.class);
+            constructor.setAccessible(true);
+            try (ArgusAudioContext audio = constructor.newInstance(pointer)) {
+                assertEquals("A\u00e9Z", audio.transcribe(pcm, 4, 5));
+                assertEquals("A", audio.transcribe(pcm, 4, 3));
+                heldCall(7, () -> assertEquals("A\u00e9", audio.transcribe(pcm, 4, 4)), audio);
+                assertTrue(audio.isClosed());
+            }
+        } finally { ArgusBackend.free(); }
+    }
+
     private void heldCall(int event, Runnable operation, ArgusNativeResource... dependencies) throws Throwable {
         try (Arena hooks = Arena.ofShared()) {
             Gate gate = new Gate(event);

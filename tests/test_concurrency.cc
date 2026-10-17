@@ -173,6 +173,22 @@ int main() {
     argus_input_chunks_free(chunks);
     argus_context_free(first); argus_context_free(second); argus_model_free(model);
     CHECK(model_frees == 1);
+
+    auto audio1 = argus_test_audio("alpha");
+    auto audio2 = argus_test_audio("beta");
+    CHECK(audio1 && audio2);
+    arm(7, audio1);
+    char out1[16]{}, out2[16]{}, out_ind[16]{};
+    std::thread ta([&] { CHECK(argus_transcribe_audio(audio1, frames, 4, out1, sizeof(out1)) == 5); });
+    await(entered);
+    done = false;
+    std::thread tb([&] { CHECK(argus_transcribe_audio(audio1, frames, 4, out2, sizeof(out2)) == 5); done = true; });
+    await(contended); CHECK(!done);
+    CHECK(argus_transcribe_audio(audio2, frames, 4, out_ind, sizeof(out_ind)) == 4 && std::strcmp(out_ind, "beta") == 0);
+    release(); ta.join(); tb.join();
+    CHECK(done && std::strcmp(out1, "alpha") == 0 && std::strcmp(out2, "alpha") == 0);
+    argus_audio_free(audio1); argus_audio_free(audio2);
+
     argus_test_set_observer(nullptr);
 
     // Multithreaded logging continuation isolation test:

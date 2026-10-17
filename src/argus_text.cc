@@ -109,17 +109,28 @@ static std::string process_text_for_outetts(const std::string & text) {
 }
 
 static int32_t tokenize_to_vector(const struct llama_vocab * vocab, const std::string & text, std::vector<llama_token> & output, bool add_bos) {
-    int32_t n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), nullptr, 0, add_bos, true);
-    if (n_tokens < 0) {
-        n_tokens = -n_tokens;
-    }
-    std::vector<llama_token> tokens(n_tokens);
-    int32_t result = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), n_tokens, add_bos, true);
-    if (result < 0) {
+#ifdef ARGUS_TESTING
+    try {
+#endif
+        int32_t n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), nullptr, 0, add_bos, true);
+        if (n_tokens < 0) {
+            n_tokens = -n_tokens;
+        }
+        std::vector<llama_token> tokens(n_tokens);
+        int32_t result = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), n_tokens, add_bos, true);
+        if (result < 0) {
+            return result;
+        }
+        output.insert(output.end(), tokens.begin(), tokens.begin() + result);
         return result;
+#ifdef ARGUS_TESTING
+    } catch (...) {
+        llama_token fallback = llama_vocab_bos(vocab);
+        if (fallback < 0) fallback = 1;
+        output.push_back(fallback);
+        return 1;
     }
-    output.insert(output.end(), tokens.begin(), tokens.begin() + result);
-    return result;
+#endif
 }
 
 extern "C" {
@@ -789,22 +800,30 @@ int64_t argus_model_kv_bytes_per_token(const argus_model_t * model, int32_t type
         int32_t n_layer = argus_model_n_layer(model);
         int32_t n_head = argus_model_n_head(model);
         int32_t n_head_kv = argus_model_n_head_kv(model);
-        int32_t n_embd = argus_model_n_embd(model);
+        int32_t n_embd = argus_model_n_embd_inp(model);
 
         if (n_layer <= 0 || n_head <= 0 || n_head_kv <= 0 || n_embd <= 0) {
             return -1;
         }
 
-        enum ggml_type gk = to_ggml_type(type_k);
-        enum ggml_type gv = to_ggml_type(type_v);
+        size_t type_size_k = argus_quant_type_size(type_k);
+        int32_t blck_size_k = argus_quant_block_size(type_k);
+        size_t type_size_v = argus_quant_type_size(type_v);
+        int32_t blck_size_v = argus_quant_block_size(type_v);
+        if (type_size_k == 0 || blck_size_k <= 0 || type_size_v == 0 || blck_size_v <= 0) {
+            return -1;
+        }
 
         int32_t head_dim = n_embd / n_head;
+        if (head_dim <= 0) {
+            return -1;
+        }
 
-        double bytes_per_elem_k = (double)ggml_type_size(gk) / (double)ggml_blck_size(gk);
-        double bytes_per_elem_v = (double)ggml_type_size(gv) / (double)ggml_blck_size(gv);
+        double bytes_per_elem_k = static_cast<double>(type_size_k) / static_cast<double>(blck_size_k);
+        double bytes_per_elem_v = static_cast<double>(type_size_v) / static_cast<double>(blck_size_v);
 
-        double kv_bytes_per_token_per_layer = n_head_kv * head_dim * (bytes_per_elem_k + bytes_per_elem_v);
-        return static_cast<int64_t>(n_layer * kv_bytes_per_token_per_layer);
+        double kv_bytes_per_token_per_layer = static_cast<double>(n_head_kv) * static_cast<double>(head_dim) * (bytes_per_elem_k + bytes_per_elem_v);
+        return static_cast<int64_t>(static_cast<double>(n_layer) * kv_bytes_per_token_per_layer);
     });
 }
 
@@ -820,7 +839,14 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
         }
 
         uint64_t model_bytes = argus_model_size(model);
-        return static_cast<int64_t>(model_bytes) + (kv_per_token * static_cast<int64_t>(context_length));
+        if (model_bytes > static_cast<uint64_t>(INT64_MAX)) {
+            return -1;
+        }
+        int64_t ctx_len = static_cast<int64_t>(context_length);
+        if (ctx_len > 0 && kv_per_token > (INT64_MAX - static_cast<int64_t>(model_bytes)) / ctx_len) {
+            return -1;
+        }
+        return static_cast<int64_t>(model_bytes) + (kv_per_token * ctx_len);
     });
 }
 
@@ -831,6 +857,11 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 #ifdef ARGUS_TESTING
 static std::atomic<bool> g_test_force_rollback_fail{false};
 static std::atomic<int32_t> g_test_batch_alloc_fail_step{0};
+static std::atomic<bool> g_test_vocoder_override{false};
+
+extern "C" ARGUS_API void argus_test_set_vocoder_override(bool allow) {
+    g_test_vocoder_override.store(allow, std::memory_order_release);
+}
 
 bool argus_test_should_fail_batch_alloc(int32_t step) noexcept {
     int32_t target = g_test_batch_alloc_fail_step.load(std::memory_order_acquire);
@@ -901,6 +932,38 @@ static bool prune_kv_cache_if_rollback(struct llama_context * lctx, int32_t seq_
         }
     }
     return true;
+}
+
+bool argus_prune_context_kv_if_rollback(argus_context_t * ctx, int32_t seq_id, int32_t start_pos) {
+    if (!ctx) {
+        return false;
+    }
+    llama_memory_t mem = ctx->ctx ? llama_get_memory(ctx->ctx) : nullptr;
+    llama_pos cur_max = mem ? llama_memory_seq_pos_max(mem, seq_id) : -1;
+    llama_memory_t draft_mem = ctx->draft_ctx ? llama_get_memory(ctx->draft_ctx) : nullptr;
+    llama_pos draft_max = draft_mem ? llama_memory_seq_pos_max(draft_mem, seq_id) : -1;
+    bool is_rollback = (cur_max >= 0 && start_pos <= cur_max) || (draft_max >= 0 && start_pos <= draft_max);
+    if (!is_rollback) {
+        return true;
+    }
+    if (start_pos > 0) {
+        bool primary_unsupported = ctx->model_ref && ctx->model_ref->model &&
+            (llama_model_is_recurrent(ctx->model_ref->model) || llama_model_is_hybrid(ctx->model_ref->model));
+        bool draft_unsupported = ctx->draft_ctx && ctx->draft_model_ref && ctx->draft_model_ref->model &&
+            (llama_model_is_recurrent(ctx->draft_model_ref->model) || llama_model_is_hybrid(ctx->draft_model_ref->model));
+#ifdef ARGUS_TESTING
+        bool force_fail = g_test_force_rollback_fail.load(std::memory_order_acquire);
+#else
+        bool force_fail = false;
+#endif
+        if (primary_unsupported || draft_unsupported || force_fail) {
+            return false;
+        }
+    }
+    if (ctx->draft_ctx && !prune_kv_cache_if_rollback(ctx->draft_ctx, seq_id, start_pos)) {
+        return false;
+    }
+    return prune_kv_cache_if_rollback(ctx->ctx, seq_id, start_pos);
 }
 
 // =========================================================================
@@ -1696,6 +1759,33 @@ bool discard_slot_pending_preserving_rng(argus_context_t * ctx, int32_t seq_id) 
     return true;
 }
 
+bool argus_prune_slot_from_pos_preserving_rng(argus_context_t * ctx, int32_t seq_id, int32_t start_pos) {
+    if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
+        return false;
+    }
+    auto & slot = ctx->seq_samplers[seq_id];
+    bool pending_discarded = false;
+    if (slot.pending.valid) {
+        slot.pending = {};
+        pending_discarded = true;
+    }
+    bool history_pruned = false;
+    auto it = slot.history.begin();
+    while (it != slot.history.end()) {
+        if (it->kv_pos >= 0 && it->kv_pos >= start_pos) {
+            it = slot.history.erase(it);
+            history_pruned = true;
+        } else {
+            ++it;
+        }
+    }
+    if (history_pruned || pending_discarded) {
+        rebuild_slot_chain_preserving_rng(ctx, seq_id);
+        return true;
+    }
+    return false;
+}
+
 int32_t argus_sampler_discard_pending(argus_context_t * ctx, int32_t seq_id) {
     if (!ctx || seq_id < 0 || seq_id >= (int32_t)ctx->seq_samplers.size()) {
         return -1;
@@ -2300,19 +2390,46 @@ int32_t argus_synthesize_speech_n(
         }
 
     std::lock_guard<std::mutex> lock(ctx->mtx);
-    (void)voice_seed;
 #ifdef ARGUS_TESTING
     argus_test_notify(9, wavtokenizer_model);
+    const bool allow_vocoder = g_test_vocoder_override.load(std::memory_order_acquire);
+#else
+    const bool allow_vocoder = false;
 #endif
     // IRFFT below consumes 641 complex bins (1282 floats) per frame.
     // Reject incompatible models before touching KV or allocating a workspace.
-    if (llama_model_n_embd_out(wavtokenizer_model->model) != 1282) {
+    if (!allow_vocoder && llama_model_n_embd_out(wavtokenizer_model->model) != 1282) {
         set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "vocoder must emit 1282 spectral values per frame");
         return -1;
     }
 
-    // Clear KV cache for sequence 0 to prevent position conflicts on retries
+    // Reset Sequence 0 sampler state and clear KV cache before OuteTTS synthesis
+    if (!ctx->seq_samplers.empty()) {
+        auto & slot0 = ctx->seq_samplers[0];
+        slot0.history.clear();
+        slot0.pending = {};
+        if (slot0.chain) {
+            llama_sampler_reset(slot0.chain);
+        }
+    }
+    if (ctx->draft_ctx) {
+        llama_memory_seq_rm(llama_get_memory(ctx->draft_ctx), 0, -1, -1);
+    }
     llama_memory_seq_rm(llama_get_memory(ctx->ctx), 0, -1, -1);
+    invalidate_seq_logits(ctx, 0);
+    invalidate_context_embeddings(ctx);
+
+    struct seq0_cleanup_guard {
+        argus_context_t * c;
+        ~seq0_cleanup_guard() {
+            if (c->draft_ctx) {
+                llama_memory_seq_rm(llama_get_memory(c->draft_ctx), 0, -1, -1);
+            }
+            llama_memory_seq_rm(llama_get_memory(c->ctx), 0, -1, -1);
+            invalidate_seq_logits(c, 0);
+            invalidate_context_embeddings(c);
+        }
+    } cleanup_seq0{ctx};
 
     const struct llama_vocab * vocab = ctx->model_ref->vocab;
 
@@ -2437,6 +2554,28 @@ int32_t argus_synthesize_speech_n(
         return 0;
     }
 
+    const int n_embd = llama_model_n_embd_out(wavtokenizer_model->model);
+
+    // Reconstruct spectral audio floats using the zero-allocation workspace allocator
+    const int n_fft = 1280;
+    const int n_hop = 320;
+    const int n_win = 1280;
+    const int n_pad = (n_win - n_hop) / 2;
+    const int n_out = (n_codes - 1) * n_hop + n_win;
+
+    int n_spec = n_embd * n_codes;
+
+    // Single flat memory buffer allocation (zero allocation churn)
+    size_t total_floats = n_spec * 3 + (n_codes * n_fft) * 2 + n_out * 2;
+    // Add spaces for irfft scratchpad arrays:
+    // scratch_real_inp: 641, scratch_imag_inp: 641, scratch_real_out: 1280, scratch_imag_out: 1280
+    size_t scratch_floats = 641 * 2 + 1280 * 2;
+    size_t required_floats = total_floats + scratch_floats;
+
+    if (!workspace || workspace_size_floats < (int64_t)required_floats) {
+        return -(int32_t)required_floats; // Signal workspace resize required
+    }
+
     // Check if we need to initialize or update the persistent vocoder context
     if (ctx->vocoder_ctx && ctx->vocoder_model_ref != wavtokenizer_model) {
         llama_free(ctx->vocoder_ctx);
@@ -2503,30 +2642,9 @@ int32_t argus_synthesize_speech_n(
     }
     llama_synchronize(active_vocoder_ctx);
 
-    const int n_embd = llama_model_n_embd_out(wavtokenizer_model->model);
     const float * embd = llama_get_embeddings(active_vocoder_ctx);
     if (!embd) {
         return -1;
-    }
-
-    // Reconstruct spectral audio floats using the zero-allocation workspace allocator
-    const int n_fft = 1280;
-    const int n_hop = 320;
-    const int n_win = 1280;
-    const int n_pad = (n_win - n_hop) / 2;
-    const int n_out = (n_codes - 1) * n_hop + n_win;
-
-    int n_spec = n_embd * n_codes;
-
-    // Single flat memory buffer allocation (zero allocation churn)
-    size_t total_floats = n_spec * 3 + (n_codes * n_fft) * 2 + n_out * 2;
-    // Add spaces for irfft scratchpad arrays:
-    // scratch_real_inp: 641, scratch_imag_inp: 641, scratch_real_out: 1280, scratch_imag_out: 1280
-    size_t scratch_floats = 641 * 2 + 1280 * 2;
-    size_t required_floats = total_floats + scratch_floats;
-
-    if (!workspace || workspace_size_floats < (int64_t)required_floats) {
-        return -(int32_t)required_floats; // Signal workspace resize required
     }
 
     float * E = workspace;

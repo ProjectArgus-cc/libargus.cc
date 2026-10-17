@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 2.0.4
+ * @version 2.0.5
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 

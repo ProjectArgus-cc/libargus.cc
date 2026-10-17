@@ -1508,12 +1508,22 @@ int main(int argc, char ** argv) {
                 ARGUS_CHECK(std::abs(g_out[i] - g_out2[i]) < 1e-6f);
             }
 
+            // Projected embedding KV estimation must use n_embd_inp (32), not n_embd_out (16):
+            // 2 layers * 2 kv_heads * (32 / 2 head_dim) * (2B K + 2B V) = 256 bytes/token (not 128)
+            int64_t gemma2_kv_bpt = argus_model_kv_bytes_per_token(gemma2_model, ARGUS_KV_TYPE_F16, ARGUS_KV_TYPE_F16);
+            ARGUS_CHECK(gemma2_kv_bpt == 256);
+            ARGUS_CHECK(argus_model_kv_bytes_per_token(gemma2_model, -1, ARGUS_KV_TYPE_F16) == -1);
+            ARGUS_CHECK(argus_model_kv_bytes_per_token(gemma2_model, ARGUS_KV_TYPE_F16, 999) == -1);
+            ARGUS_CHECK(argus_model_estimate_vram_bytes(gemma2_model, 10, -1, ARGUS_KV_TYPE_F16) == -1);
+            int64_t gemma2_vram = argus_model_estimate_vram_bytes(gemma2_model, 10, ARGUS_KV_TYPE_F16, ARGUS_KV_TYPE_F16);
+            ARGUS_CHECK(gemma2_vram == static_cast<int64_t>(argus_model_size(gemma2_model)) + 2560);
+
             argus_context_free(gemma2_ctx);
             argus_model_free(gemma2_model);
-            std::cout << "  - EmbeddingGemma2 projected dimensions (n_embd=16, n_embd_out=16, n_embd_inp=32) and deterministic extraction verified." << std::endl;
+            std::cout << "  - EmbeddingGemma2 projected dimensions (n_embd=16, n_embd_out=16, n_embd_inp=32), KV bytes/token (256B), and deterministic extraction verified." << std::endl;
         }
 
-        // 7.18d. Multimodal Chunk Evaluation Embedding Invalidation Verification
+        // 7.18d. Multimodal Chunk Evaluation Embedding Invalidation & Rollback Pruning Verification
         {
             const char * mmproj_candidates[] = {
                 "tests/data/tiny-mmproj.gguf",
@@ -1572,12 +1582,153 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_get_embeddings(mm_ctx, 0, mm_emb, 32) == -1);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_STATE);
 
+            // Populate decoupled primed token (kv_pos = -1) and two committed tokens at kv_pos = 8 and kv_pos = 9
+            int32_t primed_toks[] = { 2 };
+            ARGUS_CHECK(argus_sampler_prime(mm_ctx, 0, primed_toks, 1) == 0);
+            int32_t pre_s1 = 4;
+            ARGUS_CHECK(argus_decode_tokens(mm_ctx, &pre_s1, 1, 7, 0, true, nullptr) == 0);
+            int32_t s1 = argus_sample_token(mm_ctx, 0, 0.0f, 1.0f);
+            ARGUS_CHECK(s1 >= 0);
+            ARGUS_CHECK(argus_decode_tokens(mm_ctx, &s1, 1, 8, 0, true, nullptr) == 0); // auto-commits s1 at kv_pos = 8
+            int32_t s2 = argus_sample_token(mm_ctx, 0, 0.0f, 1.0f);
+            ARGUS_CHECK(s2 >= 0);
+            ARGUS_CHECK(argus_decode_tokens(mm_ctx, &s2, 1, 9, 0, true, nullptr) == 0); // auto-commits s2 at kv_pos = 9
+            int32_t s3 = argus_sample_token(mm_ctx, 0, 0.0f, 1.0f); // pending sample
+            ARGUS_CHECK(s3 >= 0);
+            ARGUS_CHECK(argus_sampler_has_pending(mm_ctx, 0));
+            ARGUS_CHECK(argus_sampler_get_history_count(mm_ctx, 0) == 3);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(mm_ctx, 0) == 9);
+
+#ifdef ARGUS_TESTING
+            // Forced rollback failure must abort before mutating KV cache, sampler history, or pending sample
+            argus_test_set_force_rollback_fail(true);
+            ARGUS_CHECK(argus_eval_multimodal_chunks(proj, mm_ctx, chunks, 9, 0, 8, true, &new_n_past) == ARGUS_DECODE_ROLLBACK_FAILED);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_ROLLBACK_FAILED);
+            argus_test_set_force_rollback_fail(false);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(mm_ctx, 0) == 9);
+            ARGUS_CHECK(argus_sampler_get_history_count(mm_ctx, 0) == 3);
+            ARGUS_CHECK(argus_sampler_has_pending(mm_ctx, 0));
+#endif
+
+            // Rollback multimodal evaluation to n_past = 9:
+            // - Prunes committed history at kv_pos >= 9 (s2 at kv_pos = 9)
+            // - Preserves decoupled primed token (kv_pos = -1) and surviving prefix token (s1 at kv_pos = 8)
+            // - Discards pending sample (s3)
+            ARGUS_CHECK(argus_eval_multimodal_chunks(proj, mm_ctx, chunks, 9, 0, 8, true, &new_n_past) == 0);
+            ARGUS_CHECK(new_n_past == 13);
+            ARGUS_CHECK(!argus_sampler_has_pending(mm_ctx, 0));
+            ARGUS_CHECK(argus_sampler_get_history_count(mm_ctx, 0) == 2);
+#ifdef ARGUS_TESTING
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(mm_ctx, 0, 0) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_token(mm_ctx, 0, 0) == 2);
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(mm_ctx, 0, 1) == 8);
+            ARGUS_CHECK(argus_test_sampler_get_history_token(mm_ctx, 0, 1) == s1);
+#endif
+
+            // Rollback multimodal evaluation to n_past = 1:
+            // Physical KV cache high-water mark must shrink from 12 to 4 (1 + 4 - 1), and kv_pos = 8 must be pruned
+            ARGUS_CHECK(argus_eval_multimodal_chunks(proj, mm_ctx, chunks, 1, 0, 8, true, &new_n_past) == 0);
+            ARGUS_CHECK(new_n_past == 5);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(mm_ctx, 0) == 4);
+            ARGUS_CHECK(argus_sampler_get_history_count(mm_ctx, 0) == 1);
+#ifdef ARGUS_TESTING
+            ARGUS_CHECK(argus_test_sampler_get_history_kv_pos(mm_ctx, 0, 0) == -1);
+            ARGUS_CHECK(argus_test_sampler_get_history_token(mm_ctx, 0, 0) == 2);
+#endif
+
             argus_input_chunks_free(chunks);
             argus_bitmap_free(bmp);
             argus_multimodal_free(proj);
             argus_context_free(mm_ctx);
-            std::cout << "  - Multimodal chunk evaluation stale embedding invalidation verified." << std::endl;
+            std::cout << "  - Multimodal chunk evaluation stale embedding invalidation and rollback pruning verified." << std::endl;
         }
+
+#ifdef ARGUS_TESTING
+        // 7.18e. TTS Sequence 0 State Reset & RAII Cleanup Guard Verification
+        {
+            // Populate Sequence 0 on ctx (which also has draft_ctx attached) with KV cells, committed history, pending sample, and logits
+            argus_kv_cache_clear_slot(ctx, 0, -1, -1);
+            int32_t tts_pre_toks[] = { 1, 4, 5 };
+            ARGUS_CHECK(argus_decode_tokens(ctx, tts_pre_toks, 3, 0, 0, true, nullptr) == 0);
+            int32_t tts_s1 = argus_sample_token(ctx, 0, 0.0f, 1.0f);
+            ARGUS_CHECK(tts_s1 >= 0);
+            ARGUS_CHECK(argus_decode_tokens(ctx, &tts_s1, 1, 3, 0, true, nullptr) == 0);
+            int32_t tts_s2 = argus_sample_token(ctx, 0, 0.0f, 1.0f);
+            ARGUS_CHECK(tts_s2 >= 0);
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == 3);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 1);
+            ARGUS_CHECK(argus_sampler_has_pending(ctx, 0));
+
+            float pcm_buf[256] = {};
+            argus_test_set_vocoder_override(true);
+            int32_t tts_rc = argus_synthesize_speech_n(ctx, model, "hello", 5, 42, pcm_buf, 256, nullptr, 0);
+            argus_test_set_vocoder_override(false);
+            ARGUS_CHECK(tts_rc == 0);
+
+            // Sequence 0 KV cache (primary and draft), sampler history, pending token, and logits must be clean on exit
+            ARGUS_CHECK(argus_kv_cache_seq_pos_max(ctx, 0) == -1);
+            ARGUS_CHECK(argus_sampler_get_history_count(ctx, 0) == 0);
+            ARGUS_CHECK(!argus_sampler_has_pending(ctx, 0));
+            ARGUS_CHECK(argus_test_draft_seq_pos_max(ctx, 0) == -1);
+            ARGUS_CHECK(!argus_test_has_logits(ctx, 0));
+            ARGUS_CHECK(!argus_test_has_embeddings(ctx, 0));
+            std::cout << "  - TTS Sequence 0 sampler reset and RAII KV cleanup guard verified." << std::endl;
+        }
+#endif
+
+#ifdef ARGUS_TESTING
+        // 7.18f. Audio Transcription Exact-Fit & Multi-Byte UTF-8 Boundary Truncation Verification
+        {
+            const float dummy_pcm[4] = { 0.0f, 0.1f, -0.1f, 0.0f };
+            char out_buf[32];
+
+            // 1. Exact-fit ASCII ("hello", 5 bytes + 1 NUL = 6 bytes) must not truncate
+            argus_audio_context_t * a_exact = argus_test_audio("hello");
+            ARGUS_CHECK(a_exact != nullptr);
+            std::memset(out_buf, 0x7F, sizeof(out_buf));
+            ARGUS_CHECK(argus_transcribe_audio(a_exact, dummy_pcm, 4, out_buf, 6) == 5);
+            ARGUS_CHECK(std::strcmp(out_buf, "hello") == 0);
+            argus_audio_free(a_exact);
+
+            // 2. Complete 2-byte UTF-8 character at buffer end ("A\xC3\xA9" = "Aé", 3 bytes)
+            //    - max_chars = 4 (exact fit: 3 bytes + NUL): must preserve "Aé" (3 bytes)
+            //    - max_chars = 4 on "A\xC3\xA9Z" (4 bytes, truncated to 3 bytes + NUL): "Aé" ends on complete 2-byte sequence and MUST NOT be stripped!
+            argus_audio_context_t * a_utf8_2 = argus_test_audio("A\xC3\xA9Z");
+            ARGUS_CHECK(a_utf8_2 != nullptr);
+            std::memset(out_buf, 0x7F, sizeof(out_buf));
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_2, dummy_pcm, 4, out_buf, 4) == 3);
+            ARGUS_CHECK(std::strcmp(out_buf, "A\xC3\xA9") == 0);
+            //    - max_chars = 3 on "A\xC3\xA9Z" (remaining_space = 2 -> "A\xC3", incomplete 2-byte char): must strip "\xC3" -> "A" (1 byte)
+            std::memset(out_buf, 0x7F, sizeof(out_buf));
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_2, dummy_pcm, 4, out_buf, 3) == 1);
+            ARGUS_CHECK(std::strcmp(out_buf, "A") == 0);
+            argus_audio_free(a_utf8_2);
+
+            // 3. 3-byte UTF-8 character ("A\xE2\x82\xACZ" = "A€Z", 5 bytes)
+            argus_audio_context_t * a_utf8_3 = argus_test_audio("A\xE2\x82\xACZ");
+            ARGUS_CHECK(a_utf8_3 != nullptr);
+            //    - max_chars = 5 (remaining_space = 4 -> "A\xE2\x82\xAC", complete 3-byte char): must preserve "A€" (4 bytes)
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_3, dummy_pcm, 4, out_buf, 5) == 4);
+            ARGUS_CHECK(std::strcmp(out_buf, "A\xE2\x82\xAC") == 0);
+            //    - max_chars = 4 (remaining_space = 3 -> "A\xE2\x82", incomplete 3-byte char): must strip to "A" (1 byte)
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_3, dummy_pcm, 4, out_buf, 4) == 1);
+            ARGUS_CHECK(std::strcmp(out_buf, "A") == 0);
+            argus_audio_free(a_utf8_3);
+
+            // 4. 4-byte UTF-8 character ("A\xF0\x9D\x84\x9EZ" = "A𝄞Z", 6 bytes)
+            argus_audio_context_t * a_utf8_4 = argus_test_audio("A\xF0\x9D\x84\x9EZ");
+            ARGUS_CHECK(a_utf8_4 != nullptr);
+            //    - max_chars = 6 (remaining_space = 5 -> "A\xF0\x9D\x84\x9E", complete 4-byte char): must preserve 5 bytes
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_4, dummy_pcm, 4, out_buf, 6) == 5);
+            ARGUS_CHECK(std::strcmp(out_buf, "A\xF0\x9D\x84\x9E") == 0);
+            //    - max_chars = 5 (remaining_space = 4 -> "A\xF0\x9D\x84", incomplete 4-byte char): must strip to "A" (1 byte)
+            ARGUS_CHECK(argus_transcribe_audio(a_utf8_4, dummy_pcm, 4, out_buf, 5) == 1);
+            ARGUS_CHECK(std::strcmp(out_buf, "A") == 0);
+            argus_audio_free(a_utf8_4);
+
+            std::cout << "  - Audio transcription exact-fit capacity and UTF-8 multi-byte boundary truncation verified." << std::endl;
+        }
+#endif
 
         // 7.19. Cleanup
         argus_context_free(ctx);

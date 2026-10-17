@@ -207,4 +207,43 @@ struct argus_context {
 // Internal helper to discard a sequence slot's pending sample and rebuild its chain
 extern "C" bool discard_slot_pending_preserving_rng(argus_context_t * ctx, int32_t seq_id);
 
+// Internal helper to discard pending sample and prune committed history entries at kv_pos >= start_pos,
+// rebuilding the slot sampler chain at most once while preserving RNG state.
+extern "C" bool argus_prune_slot_from_pos_preserving_rng(argus_context_t * ctx, int32_t seq_id, int32_t start_pos);
+
+// Internal helper to prune KV cache tail [start_pos, -1) across draft and primary contexts on rollback.
+extern "C" bool argus_prune_context_kv_if_rollback(argus_context_t * ctx, int32_t seq_id, int32_t start_pos);
+
+// Pure UTF-8 boundary truncation helper: backtracks only if a trailing multi-byte sequence is incomplete.
+inline int32_t argus_utf8_truncate_incomplete_tail(char * out_text, int32_t total_written_chars) noexcept {
+    if (!out_text || total_written_chars <= 0) {
+        return 0;
+    }
+    int32_t idx = total_written_chars - 1;
+    while (idx >= 0 && (static_cast<uint8_t>(out_text[idx]) & 0xC0) == 0x80) {
+        idx--;
+    }
+    if (idx < 0) {
+        out_text[0] = '\0';
+        return 0;
+    }
+    uint8_t lead = static_cast<uint8_t>(out_text[idx]);
+    if ((lead & 0x80) != 0) {
+        int32_t expected_len = 0;
+        if ((lead & 0xE0) == 0xC0) expected_len = 2;
+        else if ((lead & 0xF0) == 0xE0) expected_len = 3;
+        else if ((lead & 0xF8) == 0xF0) expected_len = 4;
+        else {
+            out_text[idx] = '\0';
+            return idx;
+        }
+        if (total_written_chars - idx < expected_len) {
+            out_text[idx] = '\0';
+            return idx;
+        }
+    }
+    return total_written_chars;
+}
+
 #endif // ARGUS_INTERNAL_H
+
