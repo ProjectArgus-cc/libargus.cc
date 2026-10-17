@@ -76,7 +76,7 @@ static std::string process_text_for_outetts(const std::string & text) {
     std::string processed;
     for (char c : text) {
         if (std::isalnum(static_cast<unsigned char>(c))) {
-            processed += std::tolower(static_cast<unsigned char>(c));
+            processed += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         } else {
             processed += ' ';
         }
@@ -108,16 +108,27 @@ static std::string process_text_for_outetts(const std::string & text) {
     return result;
 }
 
+#ifdef ARGUS_TESTING
+static std::atomic<bool> g_test_vocoder_override{false};
+#endif
+
 static int32_t tokenize_to_vector(const struct llama_vocab * vocab, const std::string & text, std::vector<llama_token> & output, bool add_bos) {
 #ifdef ARGUS_TESTING
+    if (g_test_vocoder_override.load(std::memory_order_acquire)) {
+        llama_token fallback = llama_vocab_bos(vocab);
+        if (fallback < 0) fallback = 1;
+        output.push_back(fallback);
+        return 1;
+    }
     try {
 #endif
-        int32_t n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), nullptr, 0, add_bos, true);
+        const int32_t text_len = static_cast<int32_t>(text.length());
+        int32_t n_tokens = llama_tokenize(vocab, text.c_str(), text_len, nullptr, 0, add_bos, true);
         if (n_tokens < 0) {
             n_tokens = -n_tokens;
         }
         std::vector<llama_token> tokens(n_tokens);
-        int32_t result = llama_tokenize(vocab, text.c_str(), text.length(), tokens.data(), n_tokens, add_bos, true);
+        int32_t result = llama_tokenize(vocab, text.c_str(), text_len, tokens.data(), n_tokens, add_bos, true);
         if (result < 0) {
             return result;
         }
@@ -857,7 +868,6 @@ int64_t argus_model_estimate_vram_bytes(const argus_model_t * model, int32_t con
 #ifdef ARGUS_TESTING
 static std::atomic<bool> g_test_force_rollback_fail{false};
 static std::atomic<int32_t> g_test_batch_alloc_fail_step{0};
-static std::atomic<bool> g_test_vocoder_override{false};
 
 extern "C" ARGUS_API void argus_test_set_vocoder_override(bool allow) {
     g_test_vocoder_override.store(allow, std::memory_order_release);
@@ -2491,7 +2501,7 @@ int32_t argus_synthesize_speech_n(
     }
 
     std::vector<llama_token> generated_codes;
-    int n_past = prompt_inp.size();
+    int n_past = static_cast<int>(prompt_inp.size());
     int n_decode = 0;
     const int n_predict = 4096;
 
@@ -2549,7 +2559,7 @@ int32_t argus_synthesize_speech_n(
         }
     }
 
-    const int n_codes = vocoder_codes.size();
+    const int n_codes = static_cast<int>(vocoder_codes.size());
     if (n_codes == 0) {
         return 0;
     }

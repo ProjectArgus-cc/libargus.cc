@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.5 Release — Projected-Backbone KV Estimation, Multimodal Rollback Pruning, OuteTTS Sequence-0 RAII Isolation & Whisper UTF-8 Hardening**
+> **v2.0.6 Release — Projected-Backbone KV Estimation, Multimodal Rollback Pruning, OuteTTS Sequence-0 RAII Isolation & Whisper UTF-8 Hardening**
 > 
 > * **Projected-Backbone KV Cache & VRAM Estimation (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`):** Resolves per-token KV cache footprint against the internal transformer attention width (`n_embd_inp`) rather than the projected output dimension (`n_embd_out`), preventing under-estimation on projected-embedding architectures (`EmbeddingGemma2`) while enforcing quantization type validation and 64-bit integer overflow guards.
 > * **Multimodal Prefix Rollback & Sampler History Pruning (`argus_eval_multimodal_chunks`):** Synchronously prunes invalidated KV cache cells (`[n_past, -1)`) across primary and speculative draft contexts and evicts orphaned sampler history (`kv_pos >= n_past`) while preserving decoupled primed tokens (`kv_pos == -1`), with pre-mutation capability checks on recurrent and hybrid architectures.
@@ -33,14 +33,14 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.5</version>
+        <version>2.0.6</version>
     </dependency>
 
     <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.5</version>
+        <version>2.0.6</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -50,10 +50,10 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.5")
+    implementation("cc.projectargus:libargus-core:2.0.6")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.5")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.6")
 }
 ```
 
