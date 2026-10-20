@@ -76,45 +76,28 @@ public final class ArgusValidation {
      * @throws IllegalArgumentException if count is negative or multiplication overflows
      */
     public static long multiplyExactBytes(long count, long elementSize, String paramName) {
-        if (count < 0) {
-            throw new IllegalArgumentException(paramName + " count must be non-negative: " + count);
-        }
-        try {
-            return Math.multiplyExact(count, elementSize);
-        } catch (ArithmeticException e) {
-            throw new IllegalArgumentException("Byte size calculation overflow for " + paramName + ": " + count + " * " + elementSize, e);
-        }
+        return ArgusCommonValidation.multiplyExactBytes(count, elementSize, paramName);
     }
 
     /**
      * Asserts that a value is positive (> 0).
      */
     public static void checkPositive(long value, String paramName) {
-        if (value <= 0) {
-            throw new IllegalArgumentException(paramName + " must be strictly positive: " + value);
-        }
+        ArgusCommonValidation.checkPositive(value, paramName);
     }
 
     /**
      * Asserts that a value is non-negative (>= 0).
      */
     public static void checkNonNegative(long value, String paramName) {
-        if (value < 0) {
-            throw new IllegalArgumentException(paramName + " must be non-negative: " + value);
-        }
+        ArgusCommonValidation.checkNonNegative(value, paramName);
     }
 
     /**
      * Asserts that a value fits within a signed 32-bit integer range [0, Integer.MAX_VALUE].
      */
     public static int checkIntBounds(long value, String paramName) {
-        if (value < 0 || value > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException(String.format(
-                "%s exceeds 32-bit integer boundary: %d (max allowed: %d)",
-                paramName, value, Integer.MAX_VALUE
-            ));
-        }
-        return (int) value;
+        return ArgusCommonValidation.checkIntBounds(value, paramName);
     }
 
     /**

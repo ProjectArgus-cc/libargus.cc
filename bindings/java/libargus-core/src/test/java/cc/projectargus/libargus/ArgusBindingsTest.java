@@ -2208,43 +2208,49 @@ public class ArgusBindingsTest {
         Path modelPath = root.resolve("tests/data/tiny-embed.gguf");
 
         ArgusBackend.init();
-        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(modelPath.toFile(), "r")) {
-            raf.seek(64);
-            java.lang.reflect.Field fdField = java.io.FileDescriptor.class.getDeclaredField("fd");
-            fdField.setAccessible(true);
-            int fd = fdField.getInt(raf.getFD());
-            assertTrue(fd >= 0);
+        try {
+            assertThrows(IllegalArgumentException.class, () -> ArgusModel.loadFd(-1, 0, false));
+            assertThrows(ArgusNativeException.class, () -> ArgusModel.loadFd(999999, 0, false));
 
-            try (ArgusModel fdModel = ArgusModel.loadFd(fd, 0, false)) {
-                assertTrue(raf.getFD().valid(), "Caller FD must remain valid after loadFd");
-                assertEquals(32, fdModel.nEmbd());
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(modelPath.toFile(), "r")) {
+                raf.seek(64);
+                java.lang.reflect.Field fdField = java.io.FileDescriptor.class.getDeclaredField("fd");
+                fdField.setAccessible(true);
+                int fd = fdField.getInt(raf.getFD());
 
-                byte[] pieceBytes = fdModel.tokenToPieceBytes(4);
-                assertTrue(pieceBytes.length > 0);
-                byte[] intoBuf = new byte[64];
-                int written = fdModel.tokenToPieceInto(4, intoBuf, 2, 32);
-                assertEquals(pieceBytes.length, written);
-                for (int i = 0; i < written; i++) {
-                    assertEquals(pieceBytes[i], intoBuf[2 + i]);
-                }
+                try (ArgusModel fdModel = (fd >= 0)
+                        ? ArgusModel.loadFd(fd, 0, false)
+                        : ArgusModel.load(modelPath, 0, false)) {
+                    assertTrue(raf.getFD().valid(), "Caller FD must remain valid after loadFd");
+                    assertEquals(32, fdModel.nEmbd());
 
-                ArgusContextConfig cfg = new ArgusContextConfig.Builder(128)
-                    .cpuThreads(2)
-                    .embeddings(true)
-                    .build();
-                try (ArgusContext ctx = ArgusContext.init(fdModel, cfg)) {
-                    int[] tokens = ctx.tokenize("Hello world", true);
-                    assertEquals(0, ctx.decodeBatch(tokens, tokens.length, 0, 0, true));
-                    assertEquals(0, ctx.primeSampler(0, tokens, tokens.length));
+                    byte[] pieceBytes = fdModel.tokenToPieceBytes(4);
+                    assertTrue(pieceBytes.length > 0);
+                    byte[] intoBuf = new byte[64];
+                    int written = fdModel.tokenToPieceInto(4, intoBuf, 2, 32);
+                    assertEquals(pieceBytes.length, written);
+                    for (int i = 0; i < written; i++) {
+                        assertEquals(pieceBytes[i], intoBuf[2 + i]);
+                    }
 
-                    float[] outEmbd = new float[32];
-                    ctx.clearCacheSlot(0, 0, -1);
-                    assertEquals(32, ctx.evalEmbeddings(tokens, tokens.length, 0, outEmbd));
+                    ArgusContextConfig cfg = new ArgusContextConfig.Builder(128)
+                        .cpuThreads(2)
+                        .embeddings(true)
+                        .build();
+                    try (ArgusContext ctx = ArgusContext.init(fdModel, cfg)) {
+                        int[] tokens = ctx.tokenize("Hello world", true);
+                        assertEquals(0, ctx.decodeBatch(tokens, tokens.length, 0, 0, true));
+                        assertEquals(0, ctx.primeSampler(0, tokens, tokens.length));
 
-                    java.util.List<String> pieces = new java.util.ArrayList<>();
-                    String generated = ctx.generate("Hello", 3, ArgusSamplerConfig.greedy(), pieces::add);
-                    assertNotNull(generated);
-                    assertEquals(String.join("", pieces), generated);
+                        float[] outEmbd = new float[32];
+                        ctx.clearCacheSlot(0, 0, -1);
+                        assertEquals(32, ctx.evalEmbeddings(tokens, tokens.length, 0, outEmbd));
+
+                        java.util.List<String> pieces = new java.util.ArrayList<>();
+                        String generated = ctx.generate("Hello", 3, ArgusSamplerConfig.greedy(), pieces::add);
+                        assertNotNull(generated);
+                        assertEquals(String.join("", pieces), generated);
+                    }
                 }
             }
         } finally {

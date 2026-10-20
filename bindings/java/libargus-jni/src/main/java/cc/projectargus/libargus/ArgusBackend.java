@@ -1,12 +1,11 @@
 package cc.projectargus.libargus;
 
+import cc.projectargus.libargus.internal.ArgusBackendSupport;
 import cc.projectargus.libargus.internal.ArgusJni;
 import cc.projectargus.libargus.internal.ArgusJniValidation;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -14,13 +13,13 @@ import java.util.Map;
  * via the JDK 17+ / Android-compatible JNI bridge.
  */
 public final class ArgusBackend {
-    public static final long FEATURE_CPU_ACCEL = 1L << 0;
-    public static final long FEATURE_CPU       = FEATURE_CPU_ACCEL;
-    public static final long FEATURE_CUDA      = 1L << 1;
-    public static final long FEATURE_ROCM      = 1L << 2;
-    public static final long FEATURE_VULKAN    = 1L << 3;
-    public static final long FEATURE_METAL     = 1L << 4;
-    public static final long FEATURE_SYCL      = 1L << 5;
+    public static final long FEATURE_CPU_ACCEL = ArgusBackendSupport.FEATURE_CPU_ACCEL;
+    public static final long FEATURE_CPU       = ArgusBackendSupport.FEATURE_CPU;
+    public static final long FEATURE_CUDA      = ArgusBackendSupport.FEATURE_CUDA;
+    public static final long FEATURE_ROCM      = ArgusBackendSupport.FEATURE_ROCM;
+    public static final long FEATURE_VULKAN    = ArgusBackendSupport.FEATURE_VULKAN;
+    public static final long FEATURE_METAL     = ArgusBackendSupport.FEATURE_METAL;
+    public static final long FEATURE_SYCL      = ArgusBackendSupport.FEATURE_SYCL;
 
     private static boolean initialized = false;
 
@@ -163,35 +162,11 @@ public final class ArgusBackend {
     }
 
     public static void main(String[] args) {
-        String expectedTarget = args.length > 0 ? args[0] : null;
-        System.out.println("[ArgusBackend-JNI] Version: " + getVersion());
-        System.out.println("[ArgusBackend-JNI] Extracted/Loaded dir: " + ArgusJni.EXTRACTED_DIR);
-        long features = getBuildFeatures();
-        System.out.println("[ArgusBackend-JNI] Build features bitmask: 0x" + Long.toHexString(features));
-        if ((features & FEATURE_CPU) != 0) System.out.println("  - CPU");
-        if ((features & FEATURE_CUDA) != 0) System.out.println("  - CUDA");
-        if ((features & FEATURE_ROCM) != 0) System.out.println("  - ROCm/HIP");
-        if ((features & FEATURE_VULKAN) != 0) System.out.println("  - Vulkan");
-        if ((features & FEATURE_METAL) != 0) System.out.println("  - Metal");
-
-        if (expectedTarget != null && !expectedTarget.isEmpty()) {
-            long expected = expectedFeatureMask(expectedTarget);
-            if (features != expected) {
-                System.err.println("ARGUS_FEATURE_MISMATCH expected=" + expected + " actual=" + features);
-                System.exit(3);
-            }
-        }
+        ArgusBackendSupport.runCliProbe("ArgusBackend-JNI", getVersion(), ArgusJni.EXTRACTED_DIR, getBuildFeatures(), args);
     }
 
     public static long expectedFeatureMask(String target) {
-        return switch (target.toLowerCase(Locale.ROOT)) {
-            case "cpu" -> FEATURE_CPU;
-            case "cuda" -> FEATURE_CPU | FEATURE_CUDA;
-            case "rocm", "hip" -> FEATURE_CPU | FEATURE_ROCM;
-            case "vulkan" -> FEATURE_CPU | FEATURE_VULKAN;
-            case "metal" -> FEATURE_CPU | FEATURE_METAL;
-            default -> throw new IllegalArgumentException("Unknown backend: " + target);
-        };
+        return ArgusBackendSupport.expectedFeatureMask(target);
     }
 
     /**
@@ -199,20 +174,6 @@ public final class ArgusBackend {
      */
     public static Map<String, String> getBuildInfo() {
         String raw = ArgusJni.decodeUtf8(ArgusJni.nativeBuildInfo());
-        if (raw == null || raw.isEmpty()) {
-            throw new IllegalStateException("Cannot read native build metadata");
-        }
-        Map<String, String> info = new LinkedHashMap<>();
-        for (String line : raw.split("\\n")) {
-            if (line.isEmpty()) {
-                continue;
-            }
-            int separator = line.indexOf('=');
-            if (separator <= 0 || info.put(line.substring(0, separator), line.substring(separator + 1)) != null) {
-                throw new IllegalStateException("Invalid build metadata");
-            }
-        }
-        info.put("features", Long.toString(getBuildFeatures()));
-        return Map.copyOf(info);
+        return Map.copyOf(ArgusBackendSupport.parseBuildInfo(raw, getBuildFeatures()));
     }
 }

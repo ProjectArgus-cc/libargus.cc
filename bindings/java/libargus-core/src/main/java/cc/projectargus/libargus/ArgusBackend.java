@@ -1,5 +1,6 @@
 package cc.projectargus.libargus;
 
+import cc.projectargus.libargus.internal.ArgusBackendSupport;
 import cc.projectargus.libargus.internal.ArgusBindings;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
@@ -22,13 +23,13 @@ import java.util.function.IntSupplier;
  * Handles the process-global compute backends (CUDA, CPU, Metal) registry and telemetry.
  */
 public final class ArgusBackend {
-    public static final long FEATURE_CPU_ACCEL = 1L << 0;
-    public static final long FEATURE_CPU       = FEATURE_CPU_ACCEL;
-    public static final long FEATURE_CUDA      = 1L << 1;
-    public static final long FEATURE_ROCM      = 1L << 2;
-    public static final long FEATURE_VULKAN    = 1L << 3;
-    public static final long FEATURE_METAL     = 1L << 4;
-    public static final long FEATURE_SYCL      = 1L << 5;
+    public static final long FEATURE_CPU_ACCEL = ArgusBackendSupport.FEATURE_CPU_ACCEL;
+    public static final long FEATURE_CPU       = ArgusBackendSupport.FEATURE_CPU;
+    public static final long FEATURE_CUDA      = ArgusBackendSupport.FEATURE_CUDA;
+    public static final long FEATURE_ROCM      = ArgusBackendSupport.FEATURE_ROCM;
+    public static final long FEATURE_VULKAN    = ArgusBackendSupport.FEATURE_VULKAN;
+    public static final long FEATURE_METAL     = ArgusBackendSupport.FEATURE_METAL;
+    public static final long FEATURE_SYCL      = ArgusBackendSupport.FEATURE_SYCL;
 
     private static boolean initialized = false;
 
@@ -455,35 +456,11 @@ public final class ArgusBackend {
      * @param args optional args[0] specifies expected backend target: "cpu", "cuda", "rocm", "vulkan", "metal"
      */
     public static void main(String[] args) {
-        String expectedTarget = args.length > 0 ? args[0] : null;
-        System.out.println("[ArgusBackend] Version: " + getVersion());
-        System.out.println("[ArgusBackend] Extracted/Loaded dir: " + ArgusBindings.EXTRACTED_DIR);
-        long features = getBuildFeatures();
-        System.out.println("[ArgusBackend] Build features bitmask: 0x" + Long.toHexString(features));
-        if ((features & FEATURE_CPU) != 0) System.out.println("  - CPU");
-        if ((features & FEATURE_CUDA) != 0) System.out.println("  - CUDA");
-        if ((features & FEATURE_ROCM) != 0) System.out.println("  - ROCm/HIP");
-        if ((features & FEATURE_VULKAN) != 0) System.out.println("  - Vulkan");
-        if ((features & FEATURE_METAL) != 0) System.out.println("  - Metal");
-
-        if (expectedTarget != null && !expectedTarget.isEmpty()) {
-            long expected = expectedFeatureMask(expectedTarget);
-            if (features != expected) {
-                System.err.println("ARGUS_FEATURE_MISMATCH expected=" + expected + " actual=" + features);
-                System.exit(3);
-            }
-        }
+        ArgusBackendSupport.runCliProbe("ArgusBackend", getVersion(), ArgusBindings.EXTRACTED_DIR, getBuildFeatures(), args);
     }
 
     public static long expectedFeatureMask(String target) {
-        return switch (target.toLowerCase(java.util.Locale.ROOT)) {
-            case "cpu" -> FEATURE_CPU;
-            case "cuda" -> FEATURE_CPU | FEATURE_CUDA;
-            case "rocm", "hip" -> FEATURE_CPU | FEATURE_ROCM;
-            case "vulkan" -> FEATURE_CPU | FEATURE_VULKAN;
-            case "metal" -> FEATURE_CPU | FEATURE_METAL;
-            default -> throw new IllegalArgumentException("Unknown backend: " + target);
-        };
+        return ArgusBackendSupport.expectedFeatureMask(target);
     }
 
     /** Build metadata only; does not initialize drivers or perform device execution. */
@@ -492,13 +469,7 @@ public final class ArgusBackend {
             MemorySegment out = arena.allocate(4096);
             int required = (int) ArgusBindings.argus_build_info_copy.invokeExact(out, 4096);
             if (required < 0 || required >= 4096) throw new IllegalStateException("Invalid build metadata size");
-            java.util.Map<String, String> info = new java.util.LinkedHashMap<>();
-            for (String line : out.getString(0).split("\\n")) {
-                int separator = line.indexOf('=');
-                if (separator <= 0 || info.put(line.substring(0, separator), line.substring(separator + 1)) != null)
-                    throw new IllegalStateException("Invalid build metadata");
-            }
-            info.put("features", Long.toString(getBuildFeatures()));
+            java.util.Map<String, String> info = ArgusBackendSupport.parseBuildInfo(out.getString(0), getBuildFeatures());
             if (!cc.projectargus.libargus.internal.ArgusLayouts.diagnosticAbi().equals(info.get("abi_layouts")))
                 throw new IllegalStateException("Native ABI layout differs from Java layouts");
             return java.util.Map.copyOf(info);

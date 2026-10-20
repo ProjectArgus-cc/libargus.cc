@@ -1,7 +1,11 @@
+import java.security.MessageDigest
+
 plugins {
     base
     id("com.gradleup.nmcp.aggregation") version "1.6.1"
 }
+
+val canonicalVersion = file("version.txt").readText().trim()
 
 // Build-time controls for hardware acceleration (e.g. CUDA, Metal, ROCm/HIP, Vulkan)
 val useCuda = project.findProperty("cuda")?.toString()?.lowercase().let { it == "true" || it == "on" }
@@ -87,6 +91,9 @@ repositories {
 }
 
 subprojects {
+    group = "cc.projectargus"
+    version = canonicalVersion
+
     repositories {
         mavenCentral()
     }
@@ -99,6 +106,61 @@ subprojects {
         configure<JavaPluginExtension> {
             withSourcesJar()
             withJavadocJar()
+        }
+
+        configure<SourceSetContainer> {
+            named("main") {
+                resources.srcDir(layout.buildDirectory.dir("generated/resources"))
+            }
+        }
+
+        if (project.name in setOf("libargus-common", "libargus-core", "libargus-jni")) {
+            val copyVersionFile = tasks.register<Copy>("copyVersionFile") {
+                from("${rootProject.projectDir}/version.txt")
+                into(layout.buildDirectory.dir("generated/resources"))
+            }
+            val copyBuildInfo = tasks.register("copyBuildInfo") {
+                val source = providers.gradleProperty("sourceRevision").orElse("local")
+                val header = rootProject.file("include/libargus.h")
+                val destination = layout.buildDirectory.file("generated/resources/argus-build.properties")
+                inputs.property("source", source)
+                inputs.property("version", project.version.toString())
+                inputs.file(header)
+                outputs.file(destination)
+                doLast {
+                    val revision = source.get()
+                    require(revision == "local" || revision.matches(Regex("[0-9a-f]{40}"))) { "Invalid sourceRevision" }
+                    // Git may check out the public header with CRLF on Windows. Match the
+                    // native CMake fingerprint so ABI identity reflects declarations, not
+                    // platform-specific line endings.
+                    val canonicalHeader = header.readText(Charsets.UTF_8).replace("\r\n", "\n")
+                    val fingerprint = MessageDigest.getInstance("SHA-256").digest(canonicalHeader.toByteArray(Charsets.UTF_8))
+                        .joinToString("") { "%02x".format(it) }
+                    val output = destination.get().asFile
+                    output.parentFile.mkdirs()
+                    output.writeText("version=${project.version}\nsource=$revision\nabi_header_sha256=$fingerprint\n")
+                }
+            }
+            tasks.named("processResources") {
+                dependsOn(copyVersionFile, copyBuildInfo)
+            }
+            tasks.named("sourcesJar") {
+                dependsOn(copyVersionFile, copyBuildInfo)
+            }
+        }
+
+        if (project.name.startsWith("libargus-native-")) {
+            configure<JavaPluginExtension> {
+                toolchain {
+                    languageVersion.set(JavaLanguageVersion.of(22))
+                }
+            }
+            tasks.withType<JavaCompile>().configureEach {
+                options.release.set(17)
+            }
+            dependencies {
+                "implementation"(project(":libargus-common"))
+            }
         }
 
         tasks.withType<AbstractArchiveTask>().configureEach {

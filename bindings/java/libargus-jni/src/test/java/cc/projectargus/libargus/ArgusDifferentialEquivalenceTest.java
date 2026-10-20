@@ -32,7 +32,9 @@ public class ArgusDifferentialEquivalenceTest {
         "cc.projectargus.libargus.internal.ArgusNativeLoader",
         "cc.projectargus.libargus.internal.AbstractNativeResource",
         "cc.projectargus.libargus.internal.AbstractNativeResource$HandleAction",
-        "cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder"
+        "cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder",
+        "cc.projectargus.libargus.internal.ArgusCommonValidation",
+        "cc.projectargus.libargus.internal.ArgusBackendSupport"
     );
 
     private static URLClassLoader createIsolatedCoreClassLoader() throws Exception {
@@ -53,7 +55,11 @@ public class ArgusDifferentialEquivalenceTest {
                         && !SHARED_COMMON_CLASSES.contains(name)) {
                         Class<?> c = findLoadedClass(name);
                         if (c == null) {
-                            c = findClass(name);
+                            try {
+                                c = findClass(name);
+                            } catch (ClassNotFoundException ignored) {
+                                return super.loadClass(name, resolve);
+                            }
                         }
                         if (resolve) {
                             resolveClass(c);

@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.1.0 Release — Unified Native Binary & First-Class JDK 17+ JNI Bindings (`libargus-jni`), `argus_model_load_fd` Descriptor Ingestion, Stateful UTF-8 Streaming Generation (`ArgusUtf8StreamDecoder`), and 100% Panama FFM / JNI Subsystem Parity**
+> **v2.1.1 Release — Unified Native Binary & First-Class JDK 17+ JNI Bindings (`libargus-jni`), `argus_model_load_fd` Descriptor Ingestion (with Win32 UCRT Parameter Containment), Stateful UTF-8 Streaming Generation (`ArgusUtf8StreamDecoder`), and 100% Panama FFM / JNI Subsystem Parity**
 > 
 > * **Unified Single-Binary Native Architecture (`libargus.so` / `argus.dll` / `libargus.dylib`):** Compiles JNI entrypoints (`src/jni/argus_jni.cc`) directly into the primary `argus` shared library alongside the C ABI, eliminating dual-library (`System.loadLibrary`) symbol resolution races on Android `dlopen` namespaces and desktop JVMs.
 > * **First-Class JDK 17+ JNI & Common Artifacts (`libargus-jni`, `libargus-common`):** Publishes `--release 17` bytecode modules to Maven Central alongside `:libargus-core` (`--release 22`) and retargets all 8 `:libargus-native-*` SPI provider JARs to `--release 17`, enabling automatic native library extraction across both Panama FFM and JNI consumers.
@@ -33,7 +33,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.1.0</version>
+        <version>2.1.1</version>
     </dependency>
 
     <!-- Option B: JDK 17+ / Android JNI Bindings & High-Level API -->
@@ -41,7 +41,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-jni</artifactId>
-        <version>2.1.0</version>
+        <version>2.1.1</version>
     </dependency>
     -->
 
@@ -49,7 +49,7 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.1.0</version>
+        <version>2.1.1</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -59,13 +59,13 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ```kotlin
 dependencies {
     // Option A: JDK 22+ Project Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.1.0")
+    implementation("cc.projectargus:libargus-core:2.1.1")
 
     // Option B: JDK 17+ / Android JNI Bindings & High-Level API
-    // implementation("cc.projectargus:libargus-jni:2.1.0")
+    // implementation("cc.projectargus:libargus-jni:2.1.1")
 
     // Optional: Platform Native Runtime Provider (Automatic SPI Extraction for both FFM & JNI)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.1.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.1.1")
 }
 ```
 

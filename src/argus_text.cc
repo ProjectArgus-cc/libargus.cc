@@ -27,6 +27,7 @@
 #include "argus_dsp.h"
 #include <limits>
 #include <cstdio>
+#include <cstdlib>
 #ifdef _WIN32
 #include <io.h>
 #else
@@ -187,80 +188,97 @@ void argus_model_free(argus_model_t * model) {
     argus_model_release(model);
 }
 
-argus_model_t * argus_model_load(const argus_model_params_t * params) {
+#ifdef _WIN32
+struct scoped_win32_crt_param_guard {
+    _invalid_parameter_handler prev;
+    static void __cdecl ignore_invalid_param(
+        const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t) noexcept {}
+    scoped_win32_crt_param_guard() noexcept
+        : prev(_set_thread_local_invalid_parameter_handler(&ignore_invalid_param)) {}
+    ~scoped_win32_crt_param_guard() noexcept {
+        _set_thread_local_invalid_parameter_handler(prev);
+    }
+};
+#endif
+
+static struct llama_model_params make_llama_model_params(const argus_model_params_t * params) {
+    struct llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = params->gpu_layers;
+    if (params->use_mlock) {
+        mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+    }
+    return mparams;
+}
+
+static argus_model_t * wrap_llama_model(struct llama_model * model) {
     try {
-        clear_last_error();
+        argus_model_t * argus_model_ptr = new argus_model();
+        argus_model_ptr->refs = 1;
+        argus_model_ptr->model = model;
+        argus_model_ptr->vocab = llama_model_get_vocab(model);
+        argus_backend_resource_inc();
+        return argus_model_ptr;
+    } catch (...) {
+        llama_model_free(model);
+        throw;
+    }
+}
+
+argus_model_t * argus_model_load(const argus_model_params_t * params) {
+    return argus_guard(ARGUS_ERROR_MODEL_LOAD, static_cast<argus_model_t *>(nullptr),
+        "unknown native exception during model load", [&]() -> argus_model_t * {
         if (!params || !params->model_path) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "model params or model path is NULL");
             return nullptr;
         }
 
-        struct llama_model_params mparams = llama_model_default_params();
-        mparams.n_gpu_layers = params->gpu_layers;
-        if (params->use_mlock) {
-            mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
-        }
-
-        struct llama_model * model = llama_model_load_from_file(params->model_path, mparams);
+        struct llama_model * model = llama_model_load_from_file(params->model_path, make_llama_model_params(params));
         if (!model) {
             set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to load llama model from file");
             return nullptr;
         }
 
-        argus_model_t * argus_model_ptr = nullptr;
-        try {
-            argus_model_ptr = new argus_model();
-            argus_model_ptr->refs = 1;
-            argus_model_ptr->model = model;
-            argus_model_ptr->vocab = llama_model_get_vocab(model);
-            argus_backend_resource_inc();
-            return argus_model_ptr;
-        } catch (...) {
-            llama_model_free(model);
-            throw;
-        }
-    } catch (const std::bad_alloc & e) {
-        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
-    } catch (const std::exception & e) {
-        set_last_error(ARGUS_ERROR_MODEL_LOAD, e.what());
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during model load");
-    }
-    return nullptr;
+        return wrap_llama_model(model);
+    });
 }
 
 argus_model_t * argus_model_load_fd(int32_t fd, const argus_model_params_t * params) {
-    try {
-        clear_last_error();
+    return argus_guard(ARGUS_ERROR_MODEL_LOAD, static_cast<argus_model_t *>(nullptr),
+        "unknown native exception during model load from fd", [&]() -> argus_model_t * {
         if (fd < 0 || !params) {
             set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid fd or model params is NULL");
             return nullptr;
         }
 
+        FILE * file = nullptr;
 #ifdef _WIN32
-        int dup_fd = _dup(fd);
-        if (dup_fd < 0) {
-            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
-            return nullptr;
+        {
+            scoped_win32_crt_param_guard crt_guard;
+            int dup_fd = _dup(fd);
+            if (dup_fd < 0) {
+                set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
+                return nullptr;
+            }
+            file = _fdopen(dup_fd, "rb");
+            if (!file) {
+                _close(dup_fd);
+                set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to open stream from duplicated file descriptor");
+                return nullptr;
+            }
         }
-        FILE * file = _fdopen(dup_fd, "rb");
 #else
         int dup_fd = dup(fd);
         if (dup_fd < 0) {
             set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
             return nullptr;
         }
-        FILE * file = fdopen(dup_fd, "rb");
-#endif
+        file = fdopen(dup_fd, "rb");
         if (!file) {
-#ifdef _WIN32
-            _close(dup_fd);
-#else
             close(dup_fd);
-#endif
             set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to open stream from duplicated file descriptor");
             return nullptr;
         }
+#endif
 
         struct file_close_guard {
             FILE * f;
@@ -276,38 +294,14 @@ argus_model_t * argus_model_load_fd(int32_t fd, const argus_model_params_t * par
             return nullptr;
         }
 
-        struct llama_model_params mparams = llama_model_default_params();
-        mparams.n_gpu_layers = params->gpu_layers;
-        if (params->use_mlock) {
-            mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
-        }
-
-        struct llama_model * model = llama_model_load_from_file_ptr(file, mparams);
+        struct llama_model * model = llama_model_load_from_file_ptr(file, make_llama_model_params(params));
         if (!model) {
             set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to load llama model from file pointer");
             return nullptr;
         }
 
-        argus_model_t * argus_model_ptr = nullptr;
-        try {
-            argus_model_ptr = new argus_model();
-            argus_model_ptr->refs = 1;
-            argus_model_ptr->model = model;
-            argus_model_ptr->vocab = llama_model_get_vocab(model);
-            argus_backend_resource_inc();
-            return argus_model_ptr;
-        } catch (...) {
-            llama_model_free(model);
-            throw;
-        }
-    } catch (const std::bad_alloc & e) {
-        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
-    } catch (const std::exception & e) {
-        set_last_error(ARGUS_ERROR_MODEL_LOAD, e.what());
-    } catch (...) {
-        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during model load from fd");
-    }
-    return nullptr;
+        return wrap_llama_model(model);
+    });
 }
 
 // =========================================================================

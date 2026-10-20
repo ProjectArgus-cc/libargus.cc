@@ -19,13 +19,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class ArgusJniTest {
 
-    private static Path findTestModelPath() {
+    private static Path findProjectRoot() {
         Path root = Paths.get(System.getProperty("argus.root", "")).toAbsolutePath();
         while (root != null && !Files.exists(root.resolve("tests/data/tiny-embed.gguf"))) {
             root = root.getParent();
         }
         assertNotNull(root, "Could not locate project root containing tests/data/tiny-embed.gguf");
-        return root.resolve("tests/data/tiny-embed.gguf");
+        return root;
+    }
+
+    private static Path findTestModelPath() {
+        return findProjectRoot().resolve("tests/data/tiny-embed.gguf");
     }
 
     private static int extractPosixFd(FileDescriptor fdObj) throws Exception {
@@ -35,7 +39,7 @@ public class ArgusJniTest {
     }
 
     @Test
-    public void testBackendLifecycleAndBuildInfo() {
+    public void testBackendLifecycleAndBuildInfo() throws Exception {
         assertTrue(ArgusBackend.init(), "ArgusBackend.init() should succeed");
         assertTrue(ArgusBackend.isInitialized(), "ArgusBackend.isInitialized() should be true");
         assertTrue(ArgusBackend.getCount() > 0, "At least CPU backend must be registered");
@@ -47,11 +51,12 @@ public class ArgusJniTest {
             assertFalse(name.isEmpty());
         }
 
+        String expectedVersion = Files.readString(findProjectRoot().resolve("version.txt")).trim();
         assertTrue(ArgusBackend.hasFeature(ArgusBackend.FEATURE_CPU));
-        assertEquals("2.1.0", ArgusBackend.getVersion());
+        assertEquals(expectedVersion, ArgusBackend.getVersion());
 
         Map<String, String> buildInfo = ArgusBackend.getBuildInfo();
-        assertEquals("2.1.0", buildInfo.get("version"));
+        assertEquals(expectedVersion, buildInfo.get("version"));
         assertNotNull(buildInfo.get("abi_header_sha256"));
         assertEquals(64, buildInfo.get("abi_header_sha256").length());
     }
@@ -119,22 +124,27 @@ public class ArgusJniTest {
             assertNull(model.getMetadataValue("non.existent.key.xyz"));
         }
 
-        // 2. loadFd with pre-seeked non-zero offset & immediate caller FD closure
-        ArgusModel fdModel;
+        // 2. loadFd with pre-seeked non-zero offset & immediate caller FD closure (on POSIX JVMs where FileDescriptor.fd >= 0)
+        ArgusModel fdModel = null;
         try (RandomAccessFile raf = new RandomAccessFile(modelPath.toFile(), "r")) {
             raf.seek(128); // Intentionally advance offset past GGUF magic header
             int rawFd = extractPosixFd(raf.getFD());
-            fdModel = ArgusModel.loadFd(rawFd, 0, false);
+            if (rawFd >= 0) {
+                fdModel = ArgusModel.loadFd(rawFd, 0, false);
+            }
         }
-        // Caller's RandomAccessFile is now closed; fdModel must remain 100% functional
-        try (ArgusModel m = fdModel) {
-            assertTrue(m.vocabNTokens() > 0);
-            int[] tokens = m.tokenize("Hello world", true);
-            assertTrue(tokens.length > 0);
+        if (fdModel != null) {
+            // Caller's RandomAccessFile is now closed; fdModel must remain 100% functional
+            try (ArgusModel m = fdModel) {
+                assertTrue(m.vocabNTokens() > 0);
+                int[] tokens = m.tokenize("Hello world", true);
+                assertTrue(tokens.length > 0);
+            }
         }
 
         // 3. Invalid FD and corrupt file FD error handling without FD leaks
         assertThrows(IllegalArgumentException.class, () -> ArgusModel.loadFd(-1, 0, false));
+        assertThrows(ArgusNativeException.class, () -> ArgusModel.loadFd(999999, 0, false));
 
         Path corruptTemp = Files.createTempFile("argus_corrupt_", ".gguf");
         try {
@@ -144,7 +154,9 @@ public class ArgusJniTest {
             for (int i = 0; i < 32; i++) {
                 try (RandomAccessFile raf = new RandomAccessFile(corruptTemp.toFile(), "r")) {
                     int rawFd = extractPosixFd(raf.getFD());
-                    assertThrows(ArgusNativeException.class, () -> ArgusModel.loadFd(rawFd, 0, false));
+                    if (rawFd >= 0) {
+                        assertThrows(ArgusNativeException.class, () -> ArgusModel.loadFd(rawFd, 0, false));
+                    }
                 }
             }
         } finally {

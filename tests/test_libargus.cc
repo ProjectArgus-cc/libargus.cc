@@ -19,9 +19,11 @@
 #include <atomic>
 #include <mutex>
 #include <cmath>
-#if !defined(_WIN32)
-#include <unistd.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
 
 #define ARGUS_CHECK(cond) \
@@ -1808,20 +1810,30 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_model_load_fd(999999, &fd_params) == nullptr);
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_MODEL_LOAD);
 
-#if !defined(_WIN32)
-            int raw_fd = open(valid_model_path, O_RDONLY);
+#ifdef _WIN32
+            auto open_rdonly_fd = [](const char * path) -> int { return _open(path, _O_RDONLY | _O_BINARY); };
+            auto seek_fd = [](int fd, long offset) -> long { return _lseek(fd, offset, SEEK_SET); };
+            auto dup_fd_fn = [](int fd) -> int { return _dup(fd); };
+            auto close_fd_fn = [](int fd) -> int { return _close(fd); };
+#else
+            auto open_rdonly_fd = [](const char * path) -> int { return open(path, O_RDONLY); };
+            auto seek_fd = [](int fd, long offset) -> long { return static_cast<long>(lseek(fd, offset, SEEK_SET)); };
+            auto dup_fd_fn = [](int fd) -> int { return dup(fd); };
+            auto close_fd_fn = [](int fd) -> int { return close(fd); };
+#endif
+            int raw_fd = open_rdonly_fd(valid_model_path);
             ARGUS_CHECK(raw_fd >= 0);
 
             // Advance file offset to non-zero position (128 bytes) to verify argus_model_load_fd rewinds to 0
-            ARGUS_CHECK(lseek(raw_fd, 128, SEEK_SET) == 128);
+            ARGUS_CHECK(seek_fd(raw_fd, 128) == 128);
 
-            int probe_before = dup(raw_fd);
+            int probe_before = dup_fd_fn(raw_fd);
             ARGUS_CHECK(probe_before >= 0);
-            close(probe_before);
+            close_fd_fn(probe_before);
 
             for (int iter = 0; iter < 64; ++iter) {
                 if (iter % 2 == 1) {
-                    ARGUS_CHECK(lseek(raw_fd, 64, SEEK_SET) == 64);
+                    ARGUS_CHECK(seek_fd(raw_fd, 64) == 64);
                 }
                 argus_model_t * fd_model = argus_model_load_fd(raw_fd, &fd_params);
                 ARGUS_CHECK(fd_model != nullptr);
@@ -1842,12 +1854,11 @@ int main(int argc, char ** argv) {
             }
 
             // Caller's original raw_fd must still be valid and zero duplicated FDs may have leaked across 64 loads
-            int probe_after = dup(raw_fd);
+            int probe_after = dup_fd_fn(raw_fd);
             ARGUS_CHECK(probe_after == probe_before);
-            close(probe_after);
-            close(raw_fd);
+            close_fd_fn(probe_after);
+            close_fd_fn(raw_fd);
             std::cout << "  - argus_model_load_fd (offset rewind + 64-iteration zero-FD-leak check) and token_to_piece upper bound verified." << std::endl;
-#endif
         }
 
         // 7.21. Ref-counted Model Ownership & Deferred Backend Teardown

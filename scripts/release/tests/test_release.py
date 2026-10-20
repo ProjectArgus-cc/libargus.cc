@@ -187,6 +187,7 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'tag commit'): preflight_module.preflight(tag)
 
     def test_header_version_consistency(self):
+        preflight_module.validate_header_version(ROOT)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / 'version.txt').write_text('1.9.2\n')
