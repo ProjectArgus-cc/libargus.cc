@@ -21,6 +21,13 @@
 #include <cmath>
 #include <fcntl.h>
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -1811,10 +1818,26 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_MODEL_LOAD);
 
 #ifdef _WIN32
-            auto open_rdonly_fd = [](const char * path) -> int { return _open(path, _O_RDONLY | _O_BINARY); };
-            auto seek_fd = [](int fd, long offset) -> long { return _lseek(fd, offset, SEEK_SET); };
-            auto dup_fd_fn = [](int fd) -> int { return _dup(fd); };
-            auto close_fd_fn = [](int fd) -> int { return _close(fd); };
+            // On Windows, test_libargus.exe is linked with /MT (static CRT), whereas external
+            // callers allocate CRT file descriptors in the OS-shared Universal CRT (ucrtbase.dll).
+            // Resolve _open/_lseek/_dup/_close from ucrtbase.dll to exercise the cross-CRT
+            // kernel HANDLE bridge inside argus_model_load_fd.
+            HMODULE h_ucrt = LoadLibraryW(L"ucrtbase.dll");
+            ARGUS_CHECK(h_ucrt != nullptr);
+            using ucrt_open_fn  = int (__cdecl *)(const char *, int, ...);
+            using ucrt_lseek_fn = long (__cdecl *)(int, long, int);
+            using ucrt_dup_fn   = int (__cdecl *)(int);
+            using ucrt_close_fn = int (__cdecl *)(int);
+            auto ucrt_open  = reinterpret_cast<ucrt_open_fn>(GetProcAddress(h_ucrt, "_open"));
+            auto ucrt_lseek = reinterpret_cast<ucrt_lseek_fn>(GetProcAddress(h_ucrt, "_lseek"));
+            auto ucrt_dup   = reinterpret_cast<ucrt_dup_fn>(GetProcAddress(h_ucrt, "_dup"));
+            auto ucrt_close = reinterpret_cast<ucrt_close_fn>(GetProcAddress(h_ucrt, "_close"));
+            ARGUS_CHECK(ucrt_open != nullptr && ucrt_lseek != nullptr && ucrt_dup != nullptr && ucrt_close != nullptr);
+
+            auto open_rdonly_fd = [ucrt_open](const char * path) -> int { return ucrt_open(path, _O_RDONLY | _O_BINARY, 0); };
+            auto seek_fd = [ucrt_lseek](int fd, long offset) -> long { return ucrt_lseek(fd, offset, SEEK_SET); };
+            auto dup_fd_fn = [ucrt_dup](int fd) -> int { return ucrt_dup(fd); };
+            auto close_fd_fn = [ucrt_close](int fd) -> int { return ucrt_close(fd); };
 #else
             auto open_rdonly_fd = [](const char * path) -> int { return open(path, O_RDONLY); };
             auto seek_fd = [](int fd, long offset) -> long { return static_cast<long>(lseek(fd, offset, SEEK_SET)); };
@@ -1858,6 +1881,9 @@ int main(int argc, char ** argv) {
             ARGUS_CHECK(probe_after == probe_before);
             close_fd_fn(probe_after);
             close_fd_fn(raw_fd);
+#ifdef _WIN32
+            FreeLibrary(h_ucrt);
+#endif
             std::cout << "  - argus_model_load_fd (offset rewind + 64-iteration zero-FD-leak check) and token_to_piece upper bound verified." << std::endl;
         }
 

@@ -29,7 +29,15 @@
 #include <cstdio>
 #include <cstdlib>
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <io.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -152,6 +160,111 @@ static int32_t tokenize_to_vector(const struct llama_vocab * vocab, const std::s
 #endif
 }
 
+#ifdef _WIN32
+struct scoped_win32_crt_param_guard {
+    using set_handler_fn = _invalid_parameter_handler (__cdecl *)(_invalid_parameter_handler);
+
+    _invalid_parameter_handler prev_local;
+    set_handler_fn             ucrt_set_handler;
+    _invalid_parameter_handler prev_ucrt;
+
+    static void __cdecl ignore_invalid_param(
+        const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t) noexcept {}
+
+    explicit scoped_win32_crt_param_guard(HMODULE h_ucrt = nullptr) noexcept
+        : prev_local(_set_thread_local_invalid_parameter_handler(&ignore_invalid_param)),
+          ucrt_set_handler(nullptr),
+          prev_ucrt(nullptr) {
+        if (h_ucrt) {
+            ucrt_set_handler = reinterpret_cast<set_handler_fn>(
+                GetProcAddress(h_ucrt, "_set_thread_local_invalid_parameter_handler"));
+            if (ucrt_set_handler) {
+                prev_ucrt = ucrt_set_handler(&ignore_invalid_param);
+            }
+        }
+    }
+
+    ~scoped_win32_crt_param_guard() noexcept {
+        if (ucrt_set_handler) {
+            ucrt_set_handler(prev_ucrt);
+        }
+        _set_thread_local_invalid_parameter_handler(prev_local);
+    }
+};
+
+/**
+ * Duplicates a caller-provided CRT file descriptor into argus.dll's static CRT (/MT).
+ *
+ * Because argus.dll is linked with /MT (static libucrt) to remain zero-dependency,
+ * its internal CRT descriptor table (__pioinfo) is isolated from the host process's
+ * shared Universal CRT (ucrtbase.dll / ucrtbased.dll). We first probe the process's
+ * loaded ucrtbase module to extract the underlying Win32 kernel HANDLE via _get_osfhandle,
+ * duplicate that kernel HANDLE via DuplicateHandle, and import it into argus.dll's
+ * static CRT via _open_osfhandle. If the descriptor was not allocated in ucrtbase,
+ * we fall back to _dup(fd) in argus.dll's local static CRT.
+ */
+static int dup_win32_fd_into_static_crt(int32_t fd) noexcept {
+    HMODULE h_ucrt = GetModuleHandleW(L"ucrtbase.dll");
+    if (!h_ucrt) {
+        h_ucrt = GetModuleHandleW(L"ucrtbased.dll");
+    }
+
+    scoped_win32_crt_param_guard crt_guard(h_ucrt);
+
+    if (h_ucrt) {
+        using get_osfhandle_fn = intptr_t (__cdecl *)(int);
+        auto ucrt_get_osfhandle = reinterpret_cast<get_osfhandle_fn>(
+            GetProcAddress(h_ucrt, "_get_osfhandle"));
+        if (ucrt_get_osfhandle) {
+            intptr_t osf_handle = ucrt_get_osfhandle(fd);
+            if (osf_handle != -1 && osf_handle != -2 && osf_handle != 0) {
+                HANDLE dup_handle = INVALID_HANDLE_VALUE;
+                if (DuplicateHandle(
+                        GetCurrentProcess(),
+                        reinterpret_cast<HANDLE>(osf_handle),
+                        GetCurrentProcess(),
+                        &dup_handle,
+                        0,
+                        FALSE,
+                        DUPLICATE_SAME_ACCESS)) {
+                    int dup_fd = _open_osfhandle(
+                        reinterpret_cast<intptr_t>(dup_handle), _O_RDONLY | _O_BINARY);
+                    if (dup_fd >= 0) {
+                        return dup_fd;
+                    }
+                    CloseHandle(dup_handle);
+                }
+            }
+        }
+    }
+
+    return _dup(fd);
+}
+#endif
+
+static struct llama_model_params make_llama_model_params(const argus_model_params_t * params) {
+    struct llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = params->gpu_layers;
+    if (params->use_mlock) {
+        mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+    }
+    return mparams;
+}
+
+static argus_model_t * wrap_llama_model(struct llama_model * model) {
+    try {
+        argus_model_t * argus_model_ptr = new argus_model();
+        argus_model_ptr->refs = 1;
+        argus_model_ptr->model = model;
+        argus_model_ptr->vocab = llama_model_get_vocab(model);
+        argus_backend_resource_inc();
+        return argus_model_ptr;
+    } catch (...) {
+        llama_model_free(model);
+        throw;
+    }
+}
+
 extern "C" {
 
 // =========================================================================
@@ -188,42 +301,6 @@ void argus_model_free(argus_model_t * model) {
     argus_model_release(model);
 }
 
-#ifdef _WIN32
-struct scoped_win32_crt_param_guard {
-    _invalid_parameter_handler prev;
-    static void __cdecl ignore_invalid_param(
-        const wchar_t *, const wchar_t *, const wchar_t *, unsigned int, uintptr_t) noexcept {}
-    scoped_win32_crt_param_guard() noexcept
-        : prev(_set_thread_local_invalid_parameter_handler(&ignore_invalid_param)) {}
-    ~scoped_win32_crt_param_guard() noexcept {
-        _set_thread_local_invalid_parameter_handler(prev);
-    }
-};
-#endif
-
-static struct llama_model_params make_llama_model_params(const argus_model_params_t * params) {
-    struct llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = params->gpu_layers;
-    if (params->use_mlock) {
-        mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
-    }
-    return mparams;
-}
-
-static argus_model_t * wrap_llama_model(struct llama_model * model) {
-    try {
-        argus_model_t * argus_model_ptr = new argus_model();
-        argus_model_ptr->refs = 1;
-        argus_model_ptr->model = model;
-        argus_model_ptr->vocab = llama_model_get_vocab(model);
-        argus_backend_resource_inc();
-        return argus_model_ptr;
-    } catch (...) {
-        llama_model_free(model);
-        throw;
-    }
-}
-
 argus_model_t * argus_model_load(const argus_model_params_t * params) {
     return argus_guard(ARGUS_ERROR_MODEL_LOAD, static_cast<argus_model_t *>(nullptr),
         "unknown native exception during model load", [&]() -> argus_model_t * {
@@ -253,12 +330,12 @@ argus_model_t * argus_model_load_fd(int32_t fd, const argus_model_params_t * par
         FILE * file = nullptr;
 #ifdef _WIN32
         {
-            scoped_win32_crt_param_guard crt_guard;
-            int dup_fd = _dup(fd);
+            int dup_fd = dup_win32_fd_into_static_crt(fd);
             if (dup_fd < 0) {
                 set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
                 return nullptr;
             }
+            scoped_win32_crt_param_guard crt_guard;
             file = _fdopen(dup_fd, "rb");
             if (!file) {
                 _close(dup_fd);
