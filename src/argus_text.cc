@@ -26,6 +26,13 @@
 #include "argus_execution_lock.h"
 #include "argus_dsp.h"
 #include <limits>
+#include <cstdio>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#include <fcntl.h>
+#endif
 
 static void fill_hann_window(int length, bool periodic, float * output) {
     int offset = -1;
@@ -218,6 +225,87 @@ argus_model_t * argus_model_load(const argus_model_params_t * params) {
         set_last_error(ARGUS_ERROR_MODEL_LOAD, e.what());
     } catch (...) {
         set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during model load");
+    }
+    return nullptr;
+}
+
+argus_model_t * argus_model_load_fd(int32_t fd, const argus_model_params_t * params) {
+    try {
+        clear_last_error();
+        if (fd < 0 || !params) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid fd or model params is NULL");
+            return nullptr;
+        }
+
+#ifdef _WIN32
+        int dup_fd = _dup(fd);
+        if (dup_fd < 0) {
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
+            return nullptr;
+        }
+        FILE * file = _fdopen(dup_fd, "rb");
+#else
+        int dup_fd = dup(fd);
+        if (dup_fd < 0) {
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to duplicate file descriptor");
+            return nullptr;
+        }
+        FILE * file = fdopen(dup_fd, "rb");
+#endif
+        if (!file) {
+#ifdef _WIN32
+            _close(dup_fd);
+#else
+            close(dup_fd);
+#endif
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to open stream from duplicated file descriptor");
+            return nullptr;
+        }
+
+        struct file_close_guard {
+            FILE * f;
+            ~file_close_guard() {
+                if (f) {
+                    std::fclose(f);
+                }
+            }
+        } fg{file};
+
+        if (std::fseek(file, 0, SEEK_SET) != 0) {
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to seek duplicated file descriptor to offset 0");
+            return nullptr;
+        }
+
+        struct llama_model_params mparams = llama_model_default_params();
+        mparams.n_gpu_layers = params->gpu_layers;
+        if (params->use_mlock) {
+            mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+        }
+
+        struct llama_model * model = llama_model_load_from_file_ptr(file, mparams);
+        if (!model) {
+            set_last_error(ARGUS_ERROR_MODEL_LOAD, "failed to load llama model from file pointer");
+            return nullptr;
+        }
+
+        argus_model_t * argus_model_ptr = nullptr;
+        try {
+            argus_model_ptr = new argus_model();
+            argus_model_ptr->refs = 1;
+            argus_model_ptr->model = model;
+            argus_model_ptr->vocab = llama_model_get_vocab(model);
+            argus_backend_resource_inc();
+            return argus_model_ptr;
+        } catch (...) {
+            llama_model_free(model);
+            throw;
+        }
+    } catch (const std::bad_alloc & e) {
+        set_last_error(ARGUS_ERROR_OUT_OF_MEMORY, e.what());
+    } catch (const std::exception & e) {
+        set_last_error(ARGUS_ERROR_MODEL_LOAD, e.what());
+    } catch (...) {
+        set_last_error(ARGUS_ERROR_INTERNAL, "unknown native exception during model load from fd");
     }
     return nullptr;
 }
@@ -564,7 +652,8 @@ int32_t argus_tokenize(const argus_model_t * model, const char * text, int32_t *
 
 int32_t argus_token_to_piece(const argus_model_t * model, int32_t token, char * out_buf, int32_t buf_size) {
     return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_token_to_piece", [&]() -> int32_t {
-        if (!model || !model->vocab || !out_buf || buf_size <= 0 || token < 0) {
+        if (!model || !model->vocab || !out_buf || buf_size <= 0 || token < 0 || token >= llama_vocab_n_tokens(model->vocab)) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments or token out of vocabulary range");
             return -1;
         }
         return llama_token_to_piece(model->vocab, token, out_buf, buf_size, 0, true);
@@ -603,7 +692,8 @@ int32_t argus_vocab_n_tokens(const argus_model_t * model) {
 
 bool argus_vocab_is_eog(const argus_model_t * model, int32_t token) {
     return argus_guard(ARGUS_ERROR_INTERNAL, false, "argus_vocab_is_eog", [&]() -> bool {
-        return (model && model->vocab && token >= 0) ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
+        return (model && model->vocab && token >= 0 && token < llama_vocab_n_tokens(model->vocab))
+            ? llama_vocab_is_eog(model->vocab, (llama_token)token) : false;
     });
 }
 
@@ -638,6 +728,7 @@ int32_t argus_model_meta_count(const argus_model_t * model) {
 int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
     return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_key_by_index", [&]() -> int32_t {
         if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_model_meta_key_by_index");
             return -1;
         }
         return llama_model_meta_key_by_index(model->model, index, buf, (size_t)buf_size);
@@ -647,6 +738,7 @@ int32_t argus_model_meta_key_by_index(const argus_model_t * model, int32_t index
 int32_t argus_model_meta_val_str_by_index(const argus_model_t * model, int32_t index, char * buf, int32_t buf_size) {
     return argus_guard(ARGUS_ERROR_INTERNAL, -1, "argus_model_meta_val_str_by_index", [&]() -> int32_t {
         if (!model || !model->model || !buf || buf_size <= 0 || index < 0) {
+            set_last_error(ARGUS_ERROR_INVALID_ARGUMENT, "invalid arguments to argus_model_meta_val_str_by_index");
             return -1;
         }
         return llama_model_meta_val_str_by_index(model->model, index, buf, (size_t)buf_size);

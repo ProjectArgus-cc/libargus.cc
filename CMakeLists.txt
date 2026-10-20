@@ -5,6 +5,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.txt" LIBARGUS_VERSION_RAW)
 string(STRIP "${LIBARGUS_VERSION_RAW}" LIBARGUS_VERSION)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/version.txt")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/libargus.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/jni/argus_jni.cc")
 
 project(libargus VERSION ${LIBARGUS_VERSION} LANGUAGES C CXX)
 
@@ -121,6 +122,9 @@ set(ARGUS_SOURCES
         src/argus_audio.cc
         src/argus_multimodal.cc
 )
+if(ARGUS_JNI_ENABLED)
+    list(APPEND ARGUS_SOURCES src/jni/argus_jni.cc)
+endif()
 
 # Standardize build output artifact locations across multi-config generators
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

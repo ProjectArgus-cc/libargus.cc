@@ -1,46 +1,55 @@
 # libargus
-## An unmanaged native AI execution runtime engineered for zero-allocation steady-state inference, consolidating Vision, Speech, and LLM compute pipelines behind a single Project Panama FFM boundary.
+## An unmanaged native AI execution runtime engineered for zero-allocation steady-state inference, consolidating Vision, Speech, and LLM compute pipelines behind unified Project Panama FFM (JDK 22+) and JNI (JDK 17+ / Android) boundaries.
 
 [![Release Pipeline](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
-[![JDK Target](https://img.shields.io/badge/JDK-22%2B%20Panama%20FFM-orange.svg)](https://openjdk.org/jeps/454)
+[![JDK Target](https://img.shields.io/badge/JDK-22%2B%20Panama%20FFM%20%7C%2017%2B%20JNI-orange.svg)](https://openjdk.org/jeps/454)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 > [!NOTE]
-> **v2.0.6 Release — Projected-Backbone KV Estimation, Multimodal Rollback Pruning, OuteTTS Sequence-0 RAII Isolation & Whisper UTF-8 Hardening**
+> **v2.1.0 Release — Unified Native Binary & First-Class JDK 17+ JNI Bindings (`libargus-jni`), `argus_model_load_fd` Descriptor Ingestion, Stateful UTF-8 Streaming Generation (`ArgusUtf8StreamDecoder`), and 100% Panama FFM / JNI Subsystem Parity**
 > 
-> * **Projected-Backbone KV Cache & VRAM Estimation (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`):** Resolves per-token KV cache footprint against the internal transformer attention width (`n_embd_inp`) rather than the projected output dimension (`n_embd_out`), preventing under-estimation on projected-embedding architectures (`EmbeddingGemma2`) while enforcing quantization type validation and 64-bit integer overflow guards.
-> * **Multimodal Prefix Rollback & Sampler History Pruning (`argus_eval_multimodal_chunks`):** Synchronously prunes invalidated KV cache cells (`[n_past, -1)`) across primary and speculative draft contexts and evicts orphaned sampler history (`kv_pos >= n_past`) while preserving decoupled primed tokens (`kv_pos == -1`), with pre-mutation capability checks on recurrent and hybrid architectures.
-> * **OuteTTS Sequence-0 State Isolation & Pre-Vocoder Workspace Sizing (`argus_synthesize_speech_n`):** Resets Sequence 0 sampler state and installs an unconditional RAII scope guard (`seq0_cleanup_guard`) that scrubs Sequence 0 KV caches (`ctx` and `draft_ctx`), logits, and embeddings across all exit paths, while validating workspace buffer capacity prior to vocoder execution.
-> * **Whisper ASR Exact-Fit Capacity, Multi-Byte UTF-8 Preservation & Lease Concurrency (`argus_transcribe_audio`):** Fixes exact-fit buffer boundary comparisons (`<= max_chars`), preserves complete multi-byte UTF-8 sequences at buffer boundaries while cleanly truncating only incomplete trailing code units, and unifies `argus_audio_context` under centralized `argus_guard` and `argus_execution_lock` protection.
-> * **Contiguous RAII Batch Ownership, Projected Embeddings & KV Shifting:** Retains single-slab `argus_owned_batch` allocation across decoding and TTS, `EmbeddingGemma2` dimension resolution (`nEmbdOut()` / `nEmbdInp()`), and relative KV-cache position shifting (`argus_kv_cache_seq_add` / `shiftCacheSlot`).
+> * **Unified Single-Binary Native Architecture (`libargus.so` / `argus.dll` / `libargus.dylib`):** Compiles JNI entrypoints (`src/jni/argus_jni.cc`) directly into the primary `argus` shared library alongside the C ABI, eliminating dual-library (`System.loadLibrary`) symbol resolution races on Android `dlopen` namespaces and desktop JVMs.
+> * **First-Class JDK 17+ JNI & Common Artifacts (`libargus-jni`, `libargus-common`):** Publishes `--release 17` bytecode modules to Maven Central alongside `:libargus-core` (`--release 22`) and retargets all 8 `:libargus-native-*` SPI provider JARs to `--release 17`, enabling automatic native library extraction across both Panama FFM and JNI consumers.
+> * **100% Subsystem Parity & Zero-Copy `DirectByteBuffer` JNI Overloads:** Delivers complete functional symmetry across `ArgusBackend`, `ArgusModel`, `ArgusContext`, `ArgusAudioContext`, `ArgusMultimodalContext`, `ArgusBitmap`, `ArgusVideo`, `ArgusVideoItem`, `ArgusInputChunks`, and `ArgusAbortFlag`, with `GetDirectBufferAddress` overloads for zero-copy off-heap audio, image, token, and embedding buffers in JNI.
+> * **POSIX / Android File Descriptor Model Loading (`argus_model_load_fd`, `ArgusModel.loadFd`):** Loads GGUF weights directly from detached OS file descriptors (e.g., Android `ParcelFileDescriptor.detachFd()`), with unconditional `fseek(fp, 0, SEEK_SET)` rewinding and RAII `fclose` / `_close` ownership guarantees across all exit paths.
+> * **GC-Friendly JNI Bridge, Standard UTF-8 Transport & Stateful Stream Decoding (`ArgusUtf8StreamDecoder`):** Eliminates `GetPrimitiveArrayCritical` GC-pinning stalls during inference, replaces Modified UTF-8 (`GetStringUTFChars`) string marshaling with exact Standard UTF-8 `byte[]` slices for supplementary Unicode (emoji/CJK), and adds stateful multi-byte UTF-8 boundary assembly in `ArgusContext.generate(...)` across both `:libargus-core` and `:libargus-jni`.
 
 `libargus` is an ultra-lean, high-performance, model-agnostic inference wrapper engineered to consolidate LLM text generation, Whisper-based speech-to-text (ASR), Speech-LLM text-to-speech (TTS), and **bleeding-edge Multimodal (Vision, Audio, and Video) encoding and evaluation** pipelines into a single process-global native execution runtime.
 
-Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** compute engines, `libargus` provides a unified, thread-safe C API designed explicitly for frictionless, zero-copy compilation alongside modern unmanaged orchestration frameworks, featuring out-of-the-box structural alignment for the JDK 22+ **Project Panama Foreign Function & Memory (FFM) API**.
+Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** compute engines, `libargus` provides a unified, thread-safe C API designed explicitly for frictionless, zero-copy compilation alongside modern unmanaged orchestration frameworks, featuring out-of-the-box structural alignment for both the JDK 22+ **Project Panama Foreign Function & Memory (FFM) API** (`libargus-core`) and **JDK 17+ / Android JNI** (`libargus-jni`).
 
 ---
 
 ## Installation & Dependency Setup
 
-`libargus` is distributed on Maven Central for JDK 22+ (Project Panama FFM).
+`libargus` is distributed on Maven Central for **JDK 22+ (Project Panama FFM)** via `libargus-core` and **JDK 17+ / Android (JNI)** via `libargus-jni`. Both bindings share the same `--release 17` configuration types (`libargus-common`) and platform native SPI providers (`libargus-native-*`).
 
 ### Maven (`pom.xml`)
 ```xml
 <dependencies>
-    <!-- Core Java Panama FFM Bindings & High-Level API -->
+    <!-- Option A: JDK 22+ Project Panama FFM Bindings & High-Level API -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.0.6</version>
+        <version>2.1.0</version>
     </dependency>
 
-    <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction) -->
+    <!-- Option B: JDK 17+ / Android JNI Bindings & High-Level API -->
+    <!--
+    <dependency>
+        <groupId>cc.projectargus</groupId>
+        <artifactId>libargus-jni</artifactId>
+        <version>2.1.0</version>
+    </dependency>
+    -->
+
+    <!-- Optional: Platform Native Runtime Provider (Automatic SPI Extraction for both FFM & JNI) -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.0.6</version>
+        <version>2.1.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -49,19 +58,22 @@ Built directly on top of the modular **GGML** and **llama.cpp (libmtmd)** comput
 ### Gradle (`build.gradle.kts`)
 ```kotlin
 dependencies {
-    // Core Java Panama FFM Bindings & High-Level API
-    implementation("cc.projectargus:libargus-core:2.0.6")
+    // Option A: JDK 22+ Project Panama FFM Bindings & High-Level API
+    implementation("cc.projectargus:libargus-core:2.1.0")
 
-    // Optional: Platform Native Runtime Provider (Automatic SPI Extraction)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.0.6")
+    // Option B: JDK 17+ / Android JNI Bindings & High-Level API
+    // implementation("cc.projectargus:libargus-jni:2.1.0")
+
+    // Optional: Platform Native Runtime Provider (Automatic SPI Extraction for both FFM & JNI)
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.1.0")
 }
 ```
 
 
 > [!TIP]
-> **JVM Runtime Requirement:** Because `libargus` leverages Project Panama Foreign Function & Memory (FFM) downcalls, you must pass `--enable-native-access=ALL-UNNAMED` to your JVM execution arguments.
+> **JVM Runtime Requirement:** When using `libargus-core` (Project Panama FFM), pass `--enable-native-access=ALL-UNNAMED` to your JVM execution arguments. `libargus-jni` runs on standard JDK 17+ and Android runtimes without preview or native-access flags.
 > 
-> **Platform Native Runtimes:** Precompiled SPI runtime artifacts are published to Maven Central for:
+> **Platform Native Runtimes (`--release 17`):** Precompiled SPI runtime artifacts are published to Maven Central for:
 > * `libargus-native-linux-cpu`
 > * `libargus-native-linux-cuda`
 > * `libargus-native-linux-rocm`
@@ -71,25 +83,26 @@ dependencies {
 > * `libargus-native-windows-vulkan`
 > * `libargus-native-macos-metal`
 > 
-> If compiling the native C++ library from source, you only need `libargus-core` and can pass `-Dcc.projectargus.libargus.path=/path/to/libargus.so` or place the binary on `java.library.path`.
+> If compiling the native C++ library from source, you only need `libargus-core` or `libargus-jni` and can pass `-Dcc.projectargus.libargus.path=/path/to/libargus.so` or place the binary on `java.library.path`.
 
 ---
 
 ## Core Architectural Pillars
 
 *   **Process-Global Backend Singularity:** Eliminates VRAM fragmentation and multi-context driver race conditions by orchestrating a singular, shared initialization pathway (`ggml_backend_load_all()`) across text, audio, speech, and multimodal subsystems.
-*   **Thread-Safe Native Handle Leasing:** Wraps unmanaged pointers in `ArgusNativeResource` backed by `ReentrantReadWriteLock`. Downcalls acquire shared read leases via try-with-resources `try (var lease = res.lease())` or functional `withHandle(Function)` during Panama FFM invocations while `close()` acquires an exclusive write lease to invalidate handles, deterministically preventing use-after-free, concurrent closure races, and accidental lease leaks.
+*   **Unified Single-Binary C ABI & JNI Surface:** Compiles C ABI exports and `Java_cc_projectargus_libargus_jni_*` entrypoints into a single shared library (`libargus.so` / `argus.dll` / `libargus.dylib`), avoiding multi-library dynamic linker races while sharing a unified `AbstractNativeResource` read/write lease hierarchy across `:libargus-core` and `:libargus-jni`.
+*   **Thread-Safe Native Handle Leasing:** Wraps unmanaged pointers in `AbstractNativeResource` (`ArgusNativeResource` for Panama `MemorySegment` and `ArgusJniResource` for `long` handles) backed by `ReentrantReadWriteLock`. Downcalls acquire shared read leases via try-with-resources `try (var lease = res.lease())` or functional `withHandle(Function)` during invocations while `close()` acquires an exclusive write lease to invalidate handles, deterministically preventing use-after-free, concurrent closure races, and accidental lease leaks.
 *   **Project Panama Critical Downcalls & Architectural Allowlist:** Strictly restricts `Linker.Option.critical(false)` via `CRITICAL_ALLOWLIST` to 4 pure, atomic, non-blocking C ABI leaf operations (`argus_build_features`, `argus_abort_flag_is_requested`, `argus_last_error_code`, `argus_clear_error`). All other operations use standard downcalls, eliminating JNI/Panama safepoint costs on hot leaves without risking JVM hang or heap deadlocks.
 *   **Independent Context Policy & Enforceable Native Model Ownership:** Context memory states (`argus_context_t`) retain their underlying `argus_model_t` reference via `argus_model_retain` / `argus_model_release`. Java `ArgusContext` queries model handles via `argus_context_get_model` under context read lease, allowing contexts to remain fully operational even if the initial Java `ArgusModel` wrapper is closed. Deferred backend teardown (`g_backend_active_resources`) ensures memory safety during out-of-order JVM shutdown.
 *   **Panama FFM Shared Arena Concurrency Safety:** Employs an internal, context-owned `Arena.ofShared()` protected by reentrant lifecycle locks. Multi-threaded worker pools can concurrently dispatch downcalls on shared contexts without tripping `WrongThreadException`.
 *   **C ABI Exception Containment & Structured Diagnostics:** Fallible native operations contain C++ exceptions and report errors through bounded thread-local diagnostics (`argus_last_error_code`, `argus_last_error_message`), mapped cleanly into `ArgusNativeException` on the Java side.
 *   **Bounded Buffer C ABI Diagnostics & Copy-Out:** Eliminates unbounded off-heap pointer traversals and buffer overrun hazards with explicit length-bearing diagnostic retrieval (`argus_last_error_message_copy`) and bounded string and audio exports (`argus_synthesize_speech_n`, `argus_model_meta_val_str_n`).
-*   **Spatial Memory Boundary Enforcement:** Validates `MemorySegment` boundaries and offsets prior to native downcalls via `ArgusValidation`, rejecting invalid Java buffer extents before the FFM call. Raw C pointers remain subject to caller-owned extent and lifetime contracts.
-*   **Decoupled Weights & Execution:** Separates model weight loading (`argus_model_t`) from evaluation context memory states (`argus_context_t`), allowing model reuse across multiple concurrent sessions.
+*   **Spatial Memory Boundary Enforcement:** Validates `MemorySegment`, `DirectByteBuffer`, and primitive array boundaries and offsets prior to native calls via `ArgusValidation` and 64-bit JNI bounds guards, rejecting invalid Java buffer extents before entering the compute engine.
+*   **Decoupled Weights & Execution:** Separates model weight loading (`argus_model_t`, via filesystem paths or detached OS file descriptors `argus_model_load_fd`) from evaluation context memory states (`argus_context_t`), allowing model reuse across multiple concurrent sessions.
 *   **Bleeding-Edge Multimodal Projectors:** Integrates the new `libmtmd` C++ engine to ingest raw bitmaps, audio PCM arrays, and video files/streams. Tokenizes prompts and media into a unified chunk sequence, executes projection on the GPU, and automatically configures M-RoPE position grids and non-causal attention matrices.
 *   **Video Iteration & Scratch Carrier:** Streams video through FFmpeg subprocesses into raw RGB frames and timestamp text. `ArgusVideoItem` reuses scratch storage; bitmap wrappers, strings and other per-read objects can still allocate.
 *   **Pointers-Only FFM Alignment:** Replaces pass-by-value and volatile C++ polymorphic boundaries with strictly aligned, flat C functions accepting pointers. Structure padding is manually packed to prevent compilers from injecting alignment gaps (exact 56-byte `argus_sampler_params_t`).
-*   **Direct borrowed buffers:** Token decode passes the caller's native `MemorySegment` directly to FFM without copying the token tape. Input tokens may be read-only. Other APIs can allocate strings, wrappers, scoped objects or native workspace; see the measured allocation scope below.
+*   **Direct borrowed buffers:** Token decode passes the caller's native `MemorySegment` (or `DirectByteBuffer` in JNI) directly to the native runtime without copying the token tape. Input tokens may be read-only. Other APIs can allocate strings, wrappers, scoped objects or native workspace; see the measured allocation scope below.
 *   **Selective Concurrency Locking:** Integrates context-level mutex synchronization to allow thread-safe decoding and context operations while enabling fully lock-free, concurrent tokenizer accesses on read-only models.
 *   **Persistent Sampler & Sequence Isolation:** Caches unmanaged sampler chains per sequence slot, preserving token history sequences for repetition penalties and DRY n-gram suppression across decoding passes while retaining reusable sampler state. Reconfiguration, rollback and upstream execution can allocate.
 *   **Deterministic Stochastic Seeding & RNG Continuity:** Exposes 32-bit RNG seeds with seamless state preservation across parameter and logit bias mutations alongside temperature, top-p, min-p, top-k, repetition, frequency, presence, and DRY penalty hyperparameter envelopes.
@@ -98,14 +111,14 @@ dependencies {
 *   **Dynamic Sequence Slot Sizing & Unified KV Sharing:** Automatically allocates 100% of context memory to single-sequence generation (`seq_max = 1`) while supporting dynamic cross-sequence KV cell sharing (`kv_unified = true`) across speculative drafting and MTP tracks.
 *   **KV Cache Quantization:** Supports native configurations (`type_k` and `type_v` cache enums) to offload memory footprints to Q8_0, Q4_0, or other optimized formats.
 *   **Vocab & GGUF Metadata Introspection:** Exposes safe, unmanaged boundaries to lookup special vocab tokens (BOS, EOS, EOT, PAD), verify End-Of-Generation (EOG) conditions, and dynamically enumerate GGUF dictionary entries.
-*   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints (resolved against internal attention width `n_embd_inp`) and overflow-checked total VRAM requirements without FFI allocation overhead.
-*   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C & Project Panama FFM APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
+*   **Native VRAM Budgeting & Structural Introspection:** Exposes safe, unmanaged C & Project Panama FFM / JNI functions (`argus_model_kv_bytes_per_token`, `argus_model_estimate_vram_bytes`, `argus_model_size`) to calculate dynamic per-token KV footprints (resolved against internal attention width `n_embd_inp`) and overflow-checked total VRAM requirements without FFI allocation overhead.
+*   **Dynamic Context CPU Thread Scaling:** Exposes thread-safe C, Panama FFM, and JNI APIs (`argus_set_n_threads`, `argus_get_n_threads`, `argus_get_n_threads_batch`, `argus_audio_set_n_threads`) allowing CPU power governors to dynamically tune single-token decoding and batch prefilling thread allocations on live contexts without tearing down contexts or purging KV state.
 *   **M-RoPE & Multidimensional Rollback Synchronization:** Native detection and position tracking for Multimodal Rotary Position Embeddings (M-RoPE / IM-RoPE). Automatically handles multidimensional temporal/spatial position vectors with zero-allocation introspection (`nPosPerEmbd()`, `isMRoPE()`).
 *   **Automagic KV Cache Truncation & Prefix Rollback:** Automatically prunes invalidated KV cache cells on prefix reuse when `start_pos <= seq_pos_max`, establishing strict sequence monotonicity across 1D-RoPE and M-RoPE architectures with synchronized speculative draft context clearing.
 *   **Model Topology Introspection & Recurrent Safety:** Introspects recurrent, hybrid attention, and diffusion architectures natively (`isRecurrent`, `isHybrid`, `isDiffusion`, `canShift`) to prevent native $X < Y$ aborts, returning `STATUS_ROLLBACK_FAILED` cleanly while keeping sampler history uncorrupted.
 *   **Zero-Rollback Sequence Slot Forking & Sampler Continuity:** Clones KV cache states and active sampler distributions without partial cache rollback (`argus_kv_cache_seq_cp`, `copySequenceSlot`, `forkSlot`), enabling tree-search, speculative branching, and ReAct agent loops with zero additional VRAM overhead when `kv_unified = true`.
-*   **Diagnostic Logging & Zero-Overhead Redirection:** Silences upstream C++ `stderr` pollution by default (`ARGUS_LOG_WARN`) across `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd`. Features lock-free relaxed atomic hot-path checks, thread-local continuation tracking (`ARGUS_LOG_CONT`), environment variable overrides (`LIBARGUS_LOG_LEVEL`), and foreign callback exception barriers for user-defined and Panama upcall handlers.
-*   **Programmatic Performance Telemetry:** Exposes hardware- and scheduler-synchronized execution metrics (`argus_context_get_perf`, `argus_context_reset_perf`, `ArgusPerfTimings`) over a zero-implicit-padding 48-byte struct, eliminating terminal log scraping while capturing accurate prompt and generation timings and throughput rates.
+*   **Diagnostic Logging & Zero-Overhead Redirection:** Silences upstream C++ `stderr` pollution by default (`ARGUS_LOG_WARN`) across `llama.cpp`, `ggml`, `whisper.cpp`, and `libmtmd`. Features lock-free relaxed atomic hot-path checks, thread-local continuation tracking (`ARGUS_LOG_CONT`), environment variable overrides (`LIBARGUS_LOG_LEVEL`), and foreign callback exception barriers for user-defined Panama upcall and JNI global-ref handlers.
+*   **Programmatic Performance Telemetry:** Exposes hardware- and scheduler-synchronized execution metrics (`argus_context_get_perf`, `argus_context_reset_perf`, `ArgusPerfTimings`) over a zero-implicit-padding 56-byte struct, eliminating terminal log scraping while capturing accurate prompt and generation timings and throughput rates.
 
 ---
 
@@ -119,32 +132,35 @@ libargus/
 ├── src/
 │   ├── argus_internal.h   # Shared private structures (model, context, abort flag)
 │   ├── argus_common.cc    # Global backend lifecycles & hardware registries
-│   ├── argus_text.cc      # Llama model/context handling, speculative loops & TTS
+│   ├── argus_text.cc      # Llama model/context handling, FD loading, speculative loops & TTS
 │   ├── argus_audio.cc     # Whisper model contexts & transcription (ASR)
-│   └── argus_multimodal.cc# Multimodal context, media loaders, video pipes, and evaluation
-└── bindings/java/libargus-core/ # Idiomatic Project Panama FFM binding module
-    └── src/main/java/cc/projectargus/libargus/
-        ├── ArgusBackend.java          # Global device telemetry, build feature flags & backend lifecycle
-        ├── ArgusLogLevel.java         # Diagnostic logging severity tiers matching native ggml levels
-        ├── ArgusLogCallback.java      # Functional interface for custom log handler callbacks
-        ├── ArgusModel.java            # Leased unmanaged GGUF weights manager (AutoCloseable)
-        ├── ArgusContext.java          # Shared-arena text evaluation context session (AutoCloseable)
-        ├── ArgusContextConfig.java    # Text context generation parameters
-        ├── ArgusSamplerConfig.java    # Extended sampling configuration parameters
-        ├── ArgusPerfTimings.java      # Immutable execution telemetry metrics record
-        ├── ArgusAudioContext.java     # Whisper speech-to-text transcription engine (AutoCloseable)
-        ├── ArgusMultimodalContext.java# Loaded multimodal projector context (AutoCloseable)
-        ├── ArgusBitmap.java           # Raw/parsed RGB pixel or PCM audio sample buffer (AutoCloseable)
-        ├── ArgusVideo.java            # Frame iterator for video files or buffer pipes (AutoCloseable)
-        ├── ArgusVideoItem.java        # Reusable frame/timestamp carrier with preallocated off-heap scratch
-        ├── ArgusInputChunks.java      # Tokenized multimodal prompt chunks container (AutoCloseable)
-        ├── ArgusAbortFlag.java        # Native reference-counted atomic cancellation flag (AutoCloseable)
-        ├── ArgusNativeException.java  # Thread-local native error exception wrapper
-        └── internal/
-            ├── ArgusLayouts.java      # Panama C-to-Java struct layout definitions
-            ├── ArgusBindings.java     # Dynamic shared library method handle loader & critical downcalls
-            ├── ArgusNativeResource.java# Read/write lock lease manager protecting native pointers across downcalls
-            └── ArgusValidation.java   # MemorySegment bounds and spatial proof validator
+│   ├── argus_multimodal.cc# Multimodal context, media loaders, video pipes, and evaluation
+│   └── jni/
+│       └── argus_jni.cc   # Unified JNI bridge compiled directly into libargus
+└── bindings/java/
+    ├── libargus-common/   # Shared JDK 17+ records, builders, UTF-8 stream decoder & SPI loader
+    │   └── src/main/java/cc/projectargus/libargus/
+    │       ├── ArgusSamplerConfig.java
+    │       ├── ArgusPerfTimings.java
+    │       ├── ArgusLogLevel.java
+    │       ├── ArgusLogCallback.java
+    │       ├── ArgusNativeException.java
+    │       ├── internal/ (AbstractNativeResource, ArgusNativeLoader, ArgusUtf8StreamDecoder)
+    │       └── spi/NativeLibraryProvider.java
+    ├── libargus-core/     # JDK 22+ Project Panama FFM binding module
+    │   └── src/main/java/cc/projectargus/libargus/
+    │       ├── ArgusBackend.java, ArgusModel.java, ArgusContext.java, ArgusContextConfig.java
+    │       ├── ArgusAudioContext.java, ArgusMultimodalContext.java
+    │       ├── ArgusBitmap.java, ArgusVideo.java, ArgusVideoItem.java
+    │       ├── ArgusInputChunks.java, ArgusAbortFlag.java
+    │       └── internal/ (ArgusLayouts, ArgusBindings, ArgusNativeResource, ArgusValidation)
+    └── libargus-jni/      # JDK 17+ / Android drop-in JNI binding module (100% subsystem parity)
+        └── src/main/java/cc/projectargus/libargus/
+            ├── ArgusBackend.java, ArgusModel.java, ArgusContext.java, ArgusContextConfig.java
+            ├── ArgusAudioContext.java, ArgusMultimodalContext.java
+            ├── ArgusBitmap.java, ArgusVideo.java, ArgusVideoItem.java
+            ├── ArgusInputChunks.java, ArgusAbortFlag.java
+            └── internal/ (ArgusJni, ArgusJniResource, ArgusJniValidation)
 ```
 
 ---
@@ -171,7 +187,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON -DGGML_HIP=ON
 cmake --build build --config Release -j $(nproc)
 
 # 4. Cross-Platform Vulkan Acceleration
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DARGUS_PORTABLE=ON -DGGML_VULKAN=ON
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON
 cmake --build build --config Release -j $(nproc)
 
 # Or compile CMake directly via Gradle with hardware accelerator flags:
@@ -216,13 +232,40 @@ public class Main {
                  .build();
                  
              try (ArgusContext context = ArgusContext.init(arena, model, config)) {
-                 // Run text evaluation & generation loop...
+                 // High-level streaming generation with stateful UTF-8 decoding
+                 ArgusSamplerConfig sampler = new ArgusSamplerConfig.Builder().temperature(0.7f).build();
+                 String response = context.generate("Explain quantum entanglement:", 256, sampler, piece -> {
+                     System.out.print(piece);
+                     return true; // Return false to stop generation early
+                 });
              }
         } finally {
              // Tear down native backend drivers
              ArgusBackend.free();
         }
     }
+}
+```
+
+### JDK 17+ & Android Drop-In JNI Bindings (`libargus-jni`)
+For environments running on JDK 17–21 or Android (where Project Panama FFM is unavailable), `libargus-jni` provides a drop-in, package-compatible (`cc.projectargus.libargus.*`) object model backed by `ArgusJniResource` and zero-copy `DirectByteBuffer` overloads:
+
+```java
+import cc.projectargus.libargus.ArgusBackend;
+import cc.projectargus.libargus.ArgusContext;
+import cc.projectargus.libargus.ArgusContextConfig;
+import cc.projectargus.libargus.ArgusModel;
+import cc.projectargus.libargus.ArgusSamplerConfig;
+
+// Load via detached OS file descriptor (e.g., Android ParcelFileDescriptor.detachFd()) or Path
+try (ArgusModel model = ArgusModel.loadFd(detachedFd, 99, false);
+     ArgusContext context = ArgusContext.init(model, new ArgusContextConfig.Builder(4096).build())) {
+
+    ArgusSamplerConfig sampler = new ArgusSamplerConfig.Builder().temperature(0.0f).build();
+    String output = context.generate("Hello from JNI!", 128, sampler, piece -> {
+        System.out.print(piece);
+        return true;
+    });
 }
 ```
 
@@ -683,7 +726,7 @@ The same reusable validation workflow serves PRs and releases. Required lanes in
 cmake -B build -DARGUS_PORTABLE=ON -DARGUS_TESTING=ON -DARGUS_MEDIA_REQUIRED=ON
 cmake --build build -j4
 ctest --test-dir build --output-on-failure
-./gradlew :libargus-core:test -PskipCMake=true -PnativeTesting=true \
+./gradlew :libargus-common:test :libargus-core:test :libargus-jni:test -PskipCMake=true -PnativeTesting=true \
   -PnativePath="$PWD/build/lib/libargus_test.so" -PtestJdk=22
 python3 -m unittest discover -s scripts/release/tests -v
 python3 scripts/release/pins.py

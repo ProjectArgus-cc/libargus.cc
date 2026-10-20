@@ -36,6 +36,8 @@ repositories {
 }
 
 dependencies {
+    api(project(":libargus-common"))
+
     // JUnit 5 for verification and integration testing
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -89,13 +91,14 @@ tasks.test {
     val testJdk = providers.gradleProperty("testJdk").orElse("22")
     javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(testJdk.get())) })
     providers.gradleProperty("nativePath").orNull?.let {
-        systemProperty("cc.projectargus.libargus.path", file(it).absolutePath)
+        val resolved = if (file(it).exists()) file(it) else rootProject.file(it)
+        systemProperty("cc.projectargus.libargus.path", resolved.absolutePath)
     }
     systemProperty("argus.testing", providers.gradleProperty("nativeTesting").orElse("false").get())
     systemProperty("argus.root", rootProject.projectDir.absolutePath)
     
     // Enable native access warning suppression for FFM downcalls in test suite
-    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    jvmArgs("--enable-native-access=ALL-UNNAMED", "--add-opens=java.base/java.io=ALL-UNNAMED")
     testLogging {
         events("started", "failed", "skipped")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

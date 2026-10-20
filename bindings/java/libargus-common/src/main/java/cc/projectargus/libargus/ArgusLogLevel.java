@@ -35,4 +35,8 @@ public enum ArgusLogLevel {
         }
         return NONE;
     }
+
+    public static ArgusLogLevel fromCode(int code) {
+        return fromValue(code);
+    }
 }

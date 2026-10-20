@@ -35,6 +35,21 @@ public final class ArgusAudioContext extends ArgusNativeResource {
     }
 
     /**
+     * Initializes a Whisper transcribing session context using a temporary confined arena.
+     *
+     * @param whisperModelPath path to the local Whisper GGUF weights
+     * @param cpuThreads       CPU thread limit for tensor operations
+     * @param gpuLayers        number of encoder/decoder layers to run in VRAM
+     * @return an active ArgusAudioContext
+     */
+    public static ArgusAudioContext init(String whisperModelPath, int cpuThreads, int gpuLayers) {
+        Objects.requireNonNull(whisperModelPath, "whisperModelPath");
+        try (Arena localArena = Arena.ofConfined()) {
+            return init(localArena, whisperModelPath, cpuThreads, gpuLayers);
+        }
+    }
+
+    /**
      * Initializes a Whisper transcribing session context.
      *
      * @param arena            allocation scope for configurations
@@ -72,6 +87,26 @@ public final class ArgusAudioContext extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to execute native audio initialization", t);
+        }
+    }
+
+    /**
+     * Synchronously transcribes a float PCM array containing 16kHz audio samples.
+     */
+    public String transcribe(float[] pcm, int sampleCount, int maxChars) {
+        Objects.requireNonNull(pcm, "pcm");
+        ArgusValidation.checkNonNegative(sampleCount, "sampleCount");
+        ArgusValidation.checkPositive(maxChars, "maxChars");
+        if (sampleCount > pcm.length) {
+            throw new IllegalArgumentException("sampleCount (" + sampleCount + ") exceeds pcm.length (" + pcm.length + ")");
+        }
+        if (sampleCount == 0) {
+            return "";
+        }
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment pcmSeg = local.allocate(ValueLayout.JAVA_FLOAT, sampleCount);
+            MemorySegment.copy(pcm, 0, pcmSeg, ValueLayout.JAVA_FLOAT, 0, sampleCount);
+            return transcribe(pcmSeg, sampleCount, maxChars);
         }
     }
 

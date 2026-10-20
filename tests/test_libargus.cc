@@ -1793,7 +1793,64 @@ int main(int argc, char ** argv) {
             std::cout << "  - Build features bitmask verified (0x" << std::hex << features << std::dec << ")." << std::endl;
         }
 
-        // 7.18. Ref-counted Model Ownership & Deferred Backend Teardown
+        // 7.20. File-Descriptor Model Loading (argus_model_load_fd) & Vocab Upper-Bound Verification
+        {
+            argus_model_params_t fd_params = {};
+            fd_params.model_path = nullptr;
+            fd_params.gpu_layers = 0;
+            fd_params.use_mlock = false;
+
+            // Negative / invalid FD and null params rejection
+            ARGUS_CHECK(argus_model_load_fd(-1, &fd_params) == nullptr);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_model_load_fd(0, nullptr) == nullptr);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+            ARGUS_CHECK(argus_model_load_fd(999999, &fd_params) == nullptr);
+            ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_MODEL_LOAD);
+
+#if !defined(_WIN32)
+            int raw_fd = open(valid_model_path, O_RDONLY);
+            ARGUS_CHECK(raw_fd >= 0);
+
+            // Advance file offset to non-zero position (128 bytes) to verify argus_model_load_fd rewinds to 0
+            ARGUS_CHECK(lseek(raw_fd, 128, SEEK_SET) == 128);
+
+            int probe_before = dup(raw_fd);
+            ARGUS_CHECK(probe_before >= 0);
+            close(probe_before);
+
+            for (int iter = 0; iter < 64; ++iter) {
+                if (iter % 2 == 1) {
+                    ARGUS_CHECK(lseek(raw_fd, 64, SEEK_SET) == 64);
+                }
+                argus_model_t * fd_model = argus_model_load_fd(raw_fd, &fd_params);
+                ARGUS_CHECK(fd_model != nullptr);
+                ARGUS_CHECK(argus_model_n_embd(fd_model) == 32);
+
+                if (iter == 0) {
+                    char piece_buf[64] = {};
+                    int32_t n_vocab = argus_vocab_n_tokens(fd_model);
+                    ARGUS_CHECK(n_vocab > 0);
+                    // Upper vocab bound rejection
+                    ARGUS_CHECK(argus_token_to_piece(fd_model, n_vocab, piece_buf, sizeof(piece_buf)) == -1);
+                    ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+                    ARGUS_CHECK(argus_token_to_piece(fd_model, -1, piece_buf, sizeof(piece_buf)) == -1);
+                    ARGUS_CHECK(argus_last_error_code() == ARGUS_ERROR_INVALID_ARGUMENT);
+                }
+
+                argus_model_free(fd_model);
+            }
+
+            // Caller's original raw_fd must still be valid and zero duplicated FDs may have leaked across 64 loads
+            int probe_after = dup(raw_fd);
+            ARGUS_CHECK(probe_after == probe_before);
+            close(probe_after);
+            close(raw_fd);
+            std::cout << "  - argus_model_load_fd (offset rewind + 64-iteration zero-FD-leak check) and token_to_piece upper bound verified." << std::endl;
+#endif
+        }
+
+        // 7.21. Ref-counted Model Ownership & Deferred Backend Teardown
         {
             argus_model_params_t mparams = {};
             mparams.model_path = valid_model_path;

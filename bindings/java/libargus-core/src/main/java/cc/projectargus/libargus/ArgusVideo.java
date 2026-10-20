@@ -45,6 +45,15 @@ public final class ArgusVideo extends ArgusNativeResource {
     }
 
     /**
+     * Prepares a video processing session from a file using a temporary confined arena.
+     */
+    public static ArgusVideo loadFile(ArgusMultimodalContext mctx, Path filePath, float fpsTarget, long timestampIntervalMs) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return loadFile(localArena, mctx, filePath, fpsTarget, timestampIntervalMs);
+        }
+    }
+
+    /**
      * Prepares a video processing session from a file.
      */
     public static ArgusVideo loadFile(Arena arena, ArgusMultimodalContext mctx, Path filePath, float fpsTarget, long timestampIntervalMs) {
@@ -67,6 +76,15 @@ public final class ArgusVideo extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusVideo from file: " + filePath, t);
+        }
+    }
+
+    /**
+     * Prepares a video processing session from an in-memory buffer using a temporary confined arena.
+     */
+    public static ArgusVideo loadBuffer(ArgusMultimodalContext mctx, byte[] buffer, float fpsTarget, long timestampIntervalMs) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return loadBuffer(localArena, mctx, buffer, fpsTarget, timestampIntervalMs);
         }
     }
 

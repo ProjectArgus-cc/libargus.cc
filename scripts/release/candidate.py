@@ -95,14 +95,15 @@ def build(maven, downloads, destination, source, signing_key=None, development=F
         archive.parent.mkdir(exist_ok=True)
         write_zip(archive, {r['library']: native})
         native_records.append(info)
-    if len(jar_paths) != 27:
-        raise ValueError('Expected exactly 27 JARs')
-    with ZipFile(jar_paths[f'libargus-core-{v}.jar']) as z:
-        core_info = dict(line.split('=', 1) for line in z.read('argus-build.properties').decode().splitlines())
-    if core_info['version'] != v or (not development and core_info['source'] != source):
-        raise ValueError('Core JAR build identity mismatch')
-    if any(core_info['abi_header_sha256'] != n['build']['abi_header_sha256'] for n in native_records):
-        raise ValueError('Core/native ABI header identities differ')
+    if len(jar_paths) != 33:
+        raise ValueError('Expected exactly 33 JARs')
+    for java_mod in ('libargus-common', 'libargus-core', 'libargus-jni'):
+        with ZipFile(jar_paths[f'{java_mod}-{v}.jar']) as z:
+            mod_info = dict(line.split('=', 1) for line in z.read('argus-build.properties').decode().splitlines())
+        if mod_info['version'] != v or (not development and mod_info['source'] != source):
+            raise ValueError('Core JAR build identity mismatch')
+        if any(mod_info['abi_header_sha256'] != n['build']['abi_header_sha256'] for n in native_records):
+            raise ValueError('Core/native ABI header identities differ')
     if not development and not signing_key:
         raise ValueError('Release candidates require signatures')
     for payload in artifacts:
@@ -174,7 +175,7 @@ def verify(directory, require_release=True):
                     if digest_stream(stream) != info['sha256']: raise ValueError('Embedded native digest mismatch')
     expected_assets = {f'jars/{m}-{manifest["version"]}{suffix}.jar' for m in modules() for suffix in ('', '-sources', '-javadoc')}
     expected_assets |= {f'native/libargus-{manifest["version"]}-{r["id"]}.zip' for r in targets()}
-    if set(manifest['assets']) != expected_assets or len(manifest['assets']) != 35:
+    if set(manifest['assets']) != expected_assets or len(manifest['assets']) != 41:
         raise ValueError('Incorrect release asset set')
     expected_checksums = ''.join(f'{digest(directory / name)}  {Path(name).name}\n' for name in manifest['assets'] + ['manifest.json'])
     if (directory / 'checksums.txt').read_text() != expected_checksums:

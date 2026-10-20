@@ -287,12 +287,10 @@ public final class ArgusContext extends ArgusNativeResource {
     }
 
     /**
-     * Converts a single token ID to its text representation (piece).
-     * Operates on the execution context's retained model reference, allowing this method
-     * to continue functioning even if the original Java ArgusModel wrapper has been closed.
-     * This operation is lock-free and read-only.
+     * Converts a single token ID into its raw UTF-8 byte sequence using the retained model reference.
+     * Supports arbitrary-length token pieces via 2-tier buffer resizing.
      */
-    public String tokenToPiece(int token) {
+    public byte[] tokenToPieceBytes(int token) {
         MemorySegment ctxH = acquireReadLease();
         try (Arena local = Arena.ofConfined()) {
             MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
@@ -308,18 +306,73 @@ public final class ArgusContext extends ArgusNativeResource {
                 bufSeg,
                 bufSize
             );
-
-            if (result < 0) {
-                return "";
+            if (result < 0 && result != Integer.MIN_VALUE) {
+                int lastErr = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                if (lastErr == 0) {
+                    int required = -result;
+                    if (required > 0 && required <= 16 * 1024 * 1024) {
+                        bufSeg = local.allocate(required);
+                        result = (int) ArgusBindings.argus_token_to_piece.invokeExact(
+                            modelH,
+                            token,
+                            bufSeg,
+                            required
+                        );
+                    }
+                }
             }
-
+            if (result <= 0) {
+                return new byte[0];
+            }
             byte[] bytes = new byte[result];
-            MemorySegment.copy(bufSeg, ValueLayout.JAVA_BYTE, 0, 
+            MemorySegment.copy(bufSeg, ValueLayout.JAVA_BYTE, 0,
                 MemorySegment.ofArray(bytes), ValueLayout.JAVA_BYTE, 0, result);
-            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            return bytes;
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
-            throw new RuntimeException("Failed to convert token " + token + " to piece", t);
+            throw new RuntimeException("Failed to convert token " + token + " to piece bytes", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Converts a single token ID to its text representation (piece).
+     * Operates on the execution context's retained model reference, allowing this method
+     * to continue functioning even if the original Java ArgusModel wrapper has been closed.
+     * This operation is lock-free and read-only.
+     */
+    public String tokenToPiece(int token) {
+        byte[] bytes = tokenToPieceBytes(token);
+        if (bytes.length == 0) {
+            return "";
+        }
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Converts a single token ID into raw UTF-8 bytes written directly into a caller-supplied byte array.
+     */
+    public int tokenToPieceInto(int token, byte[] dst, int offset, int maxLen) {
+        Objects.requireNonNull(dst, "dst");
+        if (offset < 0 || maxLen <= 0 || (long) offset + (long) maxLen > dst.length) {
+            throw new IllegalArgumentException("Invalid slice bounds: offset=" + offset + ", maxLen=" + maxLen + ", dst.length=" + dst.length);
+        }
+        MemorySegment ctxH = acquireReadLease();
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
+            MemorySegment bufSeg = local.allocate(maxLen);
+            int res = (int) ArgusBindings.argus_token_to_piece.invokeExact(modelH, token, bufSeg, maxLen);
+            if (res > 0) {
+                MemorySegment.copy(bufSeg, ValueLayout.JAVA_BYTE, 0, dst, offset, res);
+            }
+            return res;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to convert token " + token + " into byte array", t);
         } finally {
             releaseReadLease();
         }
@@ -1523,5 +1576,332 @@ public final class ArgusContext extends ArgusNativeResource {
             MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, result, 0, written);
         }
         return result;
+    }
+
+    /**
+     * Checks if the given token ID is an End-Of-Generation (EOG) token using the context's retained model.
+     */
+    public boolean vocabIsEog(int token) {
+        MemorySegment ctxH = acquireReadLease();
+        try {
+            MemorySegment modelH = (MemorySegment) ArgusBindings.argus_context_get_model.invokeExact(ctxH);
+            if (modelH.equals(MemorySegment.NULL)) {
+                throw new IllegalStateException("Execution context has no retained model");
+            }
+            return (boolean) ArgusBindings.argus_vocab_is_eog.invokeExact(modelH, token);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to check EOG token: " + token, t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Synchronously decodes a batch of tokens from a primitive Java int array.
+     */
+    public int decodeBatch(int[] tokens, int nTokens, int startPos, int seqId, boolean requestLogits) {
+        return decodeBatch(tokens, nTokens, startPos, seqId, requestLogits, (ArgusAbortFlag) null);
+    }
+
+    /**
+     * Synchronously decodes a batch of tokens from a primitive Java int array with optional early cancellation.
+     */
+    public int decodeBatch(int[] tokens, int nTokens, int startPos, int seqId, boolean requestLogits, ArgusAbortFlag abortFlag) {
+        Objects.requireNonNull(tokens, "tokens");
+        ArgusValidation.checkNonNegative(nTokens, "nTokens");
+        if (nTokens > tokens.length) {
+            throw new IllegalArgumentException("nTokens (" + nTokens + ") exceeds tokens.length (" + tokens.length + ")");
+        }
+        if (nTokens == 0) {
+            return 0;
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment tokensSeg = localArena.allocate(ValueLayout.JAVA_INT, nTokens);
+            MemorySegment.copy(tokens, 0, tokensSeg, ValueLayout.JAVA_INT, 0, nTokens);
+            return decodeBatch(tokensSeg, nTokens, startPos, seqId, requestLogits, abortFlag);
+        }
+    }
+
+    /**
+     * Samples the next token ID applying logit biases from primitive arrays.
+     */
+    public int sampleTokenWithBias(int seqId, float temperature, float repeatPenalty,
+                                   int[] biasTokens, float[] biasValues, int biasCount) {
+        ArgusValidation.checkNonNegative(biasCount, "biasCount");
+        if (biasCount == 0) {
+            return sampleToken(seqId, temperature, repeatPenalty);
+        }
+        Objects.requireNonNull(biasTokens, "biasTokens");
+        Objects.requireNonNull(biasValues, "biasValues");
+        if (biasCount > biasTokens.length || biasCount > biasValues.length) {
+            throw new IllegalArgumentException("biasCount exceeds bias array length");
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment biasSeg = localArena.allocate(ArgusLayouts.LOGIT_BIAS, biasCount);
+            long stride = ArgusLayouts.LOGIT_BIAS.byteSize();
+            for (int i = 0; i < biasCount; i++) {
+                biasSeg.set(ValueLayout.JAVA_INT, i * stride, biasTokens[i]);
+                biasSeg.set(ValueLayout.JAVA_FLOAT, i * stride + 4, biasValues[i]);
+            }
+            return sampleTokenWithBias(seqId, temperature, repeatPenalty, biasSeg, biasCount);
+        }
+    }
+
+    /**
+     * Samples the next token ID using extended sampler configuration and logit biases from primitive arrays.
+     */
+    public int sampleTokenWithBias(int seqId, ArgusSamplerConfig config,
+                                   int[] biasTokens, float[] biasValues, int biasCount) {
+        Objects.requireNonNull(config, "config");
+        ArgusValidation.checkNonNegative(biasCount, "biasCount");
+        if (biasCount == 0) {
+            return sampleToken(seqId, config);
+        }
+        Objects.requireNonNull(biasTokens, "biasTokens");
+        Objects.requireNonNull(biasValues, "biasValues");
+        if (biasCount > biasTokens.length || biasCount > biasValues.length) {
+            throw new IllegalArgumentException("biasCount exceeds bias array length");
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment biasSeg = localArena.allocate(ArgusLayouts.LOGIT_BIAS, biasCount);
+            long stride = ArgusLayouts.LOGIT_BIAS.byteSize();
+            for (int i = 0; i < biasCount; i++) {
+                biasSeg.set(ValueLayout.JAVA_INT, i * stride, biasTokens[i]);
+                biasSeg.set(ValueLayout.JAVA_FLOAT, i * stride + 4, biasValues[i]);
+            }
+            return sampleTokenWithBias(seqId, config, biasSeg, biasCount);
+        }
+    }
+
+    /**
+     * Primes a sequence slot's sampler history from a primitive int array of tokens.
+     */
+    public int primeSampler(int seqId, int[] tokens, int nTokens) {
+        Objects.requireNonNull(tokens, "tokens");
+        ArgusValidation.checkNonNegative(nTokens, "nTokens");
+        if (nTokens > tokens.length) {
+            throw new IllegalArgumentException("nTokens (" + nTokens + ") exceeds tokens.length (" + tokens.length + ")");
+        }
+        if (nTokens == 0) {
+            return 0;
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment tokensSeg = localArena.allocate(ValueLayout.JAVA_INT, nTokens);
+            MemorySegment.copy(tokens, 0, tokensSeg, ValueLayout.JAVA_INT, 0, nTokens);
+            return primeSampler(seqId, tokensSeg, nTokens);
+        }
+    }
+
+    /**
+     * Synthesizes speech from a Java String into a caller-provided float array.
+     */
+    public int synthesizeSpeech(ArgusModel wavtokenizerModel, String text, int voiceSeed, float[] outPcm, int maxSamples) {
+        Objects.requireNonNull(text, "text");
+        Objects.requireNonNull(outPcm, "outPcm");
+        ArgusValidation.checkNonNegative(maxSamples, "maxSamples");
+        if (maxSamples > outPcm.length) {
+            throw new IllegalArgumentException("maxSamples (" + maxSamples + ") exceeds outPcm.length (" + outPcm.length + ")");
+        }
+        if (maxSamples == 0) {
+            return 0;
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment textSeg = ArgusValidation.allocateUtf8Text(localArena, text);
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, maxSamples);
+            int written = synthesizeSpeech(wavtokenizerModel, textSeg, voiceSeed, outSeg, maxSamples);
+            if (written > 0) {
+                MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, outPcm, 0, written);
+            }
+            return written;
+        }
+    }
+
+    /**
+     * Synthesizes speech from a Java String and returns a newly allocated float array of the exact sample count.
+     */
+    public float[] synthesizeSpeech(ArgusModel wavtokenizerModel, String text, int voiceSeed, int maxSamples) {
+        Objects.requireNonNull(text, "text");
+        ArgusValidation.checkPositive(maxSamples, "maxSamples");
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment textSeg = ArgusValidation.allocateUtf8Text(localArena, text);
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, maxSamples);
+            int written = synthesizeSpeech(wavtokenizerModel, textSeg, voiceSeed, outSeg, maxSamples);
+            if (written <= 0) {
+                return new float[0];
+            }
+            float[] result = new float[written];
+            MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, result, 0, written);
+            return result;
+        }
+    }
+
+    /**
+     * Retrieves the embedding vector for a specific sequence ID into a caller-provided float array.
+     */
+    public int getEmbeddings(int seqId, float[] outEmbeddings, int maxFloats) {
+        Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+        ArgusValidation.checkNonNegative(maxFloats, "maxFloats");
+        if (maxFloats > outEmbeddings.length) {
+            throw new IllegalArgumentException("maxFloats (" + maxFloats + ") exceeds outEmbeddings.length (" + outEmbeddings.length + ")");
+        }
+        if (maxFloats == 0) {
+            return 0;
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, maxFloats);
+            int written = getEmbeddings(seqId, outSeg, maxFloats);
+            if (written < 0) {
+                ArgusNativeException.checkStatus(written, "argus_get_embeddings");
+            }
+            if (written > 0) {
+                MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, outEmbeddings, 0, written);
+            }
+            return written;
+        }
+    }
+
+    /**
+     * Retrieves the embedding vector for sequence 0 into a caller-provided float array.
+     */
+    public int getEmbeddings(float[] outEmbeddings, int maxFloats) {
+        return getEmbeddings(0, outEmbeddings, maxFloats);
+    }
+
+    /**
+     * Retrieves the embedding vector for a specific sequence ID as a newly allocated float array.
+     */
+    public float[] getEmbeddings(int seqId) {
+        int dim = nEmbd();
+        float[] out = new float[dim];
+        int written = getEmbeddings(seqId, out, dim);
+        if (written != dim) {
+            throw new IllegalStateException("Incomplete embedding retrieval: expected " + dim + " floats, got " + written);
+        }
+        return out;
+    }
+
+    /**
+     * Retrieves the embedding vector for sequence 0 as a newly allocated float array.
+     */
+    public float[] getEmbeddings() {
+        return getEmbeddings(0);
+    }
+
+    /**
+     * Evaluates a pre-tokenized int array on a specified sequence slot and retrieves the embedding vector into outEmbeddings.
+     */
+    public int evalEmbeddings(int[] tokens, int nTokens, int seqId, float[] outEmbeddings) {
+        Objects.requireNonNull(tokens, "tokens");
+        Objects.requireNonNull(outEmbeddings, "outEmbeddings");
+        if (nTokens <= 0 || nTokens > tokens.length) {
+            throw new IllegalArgumentException("Invalid nTokens: " + nTokens + " for tokens.length=" + tokens.length);
+        }
+        int requiredDim = nEmbd();
+        if (outEmbeddings.length < requiredDim) {
+            throw new IllegalArgumentException("outEmbeddings capacity (" + outEmbeddings.length +
+                " floats) is insufficient for model embedding dimension (" + requiredDim + " floats)");
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment tokensSeg = localArena.allocate(ValueLayout.JAVA_INT, nTokens);
+            MemorySegment.copy(tokens, 0, tokensSeg, ValueLayout.JAVA_INT, 0, nTokens);
+            MemorySegment outSeg = localArena.allocate(ValueLayout.JAVA_FLOAT, outEmbeddings.length);
+            int written = evalEmbeddings(tokensSeg, nTokens, seqId, outSeg);
+            MemorySegment.copy(outSeg, ValueLayout.JAVA_FLOAT, 0, outEmbeddings, 0, written);
+            return written;
+        }
+    }
+
+    /**
+     * Evaluates a pre-tokenized int array on sequence slot 0 and retrieves the embedding vector into outEmbeddings.
+     */
+    public int evalEmbeddings(int[] tokens, int nTokens, float[] outEmbeddings) {
+        return evalEmbeddings(tokens, nTokens, 0, outEmbeddings);
+    }
+
+    /**
+     * High-level convenience method to generate text from a prompt using stateful multi-byte UTF-8 streaming.
+     *
+     * @param prompt    input text prompt
+     * @param maxTokens maximum number of tokens to generate
+     * @param config    sampler configuration
+     * @param onPiece   optional streaming callback invoked for each decoded UTF-8 text chunk
+     * @return complete generated text string
+     */
+    public String generate(String prompt, int maxTokens, ArgusSamplerConfig config, java.util.function.Consumer<String> onPiece) {
+        return generate(prompt, maxTokens, config, onPiece, null);
+    }
+
+    /**
+     * High-level convenience method to generate text from a prompt using stateful multi-byte UTF-8 streaming
+     * and optional cooperative cancellation.
+     *
+     * @param prompt    input text prompt
+     * @param maxTokens maximum number of tokens to generate
+     * @param config    sampler configuration
+     * @param onPiece   optional streaming callback invoked for each decoded UTF-8 text chunk
+     * @param abortFlag optional cancellation flag
+     * @return complete generated text string
+     */
+    public String generate(String prompt, int maxTokens, ArgusSamplerConfig config,
+                           java.util.function.Consumer<String> onPiece, ArgusAbortFlag abortFlag) {
+        Objects.requireNonNull(prompt, "prompt");
+        Objects.requireNonNull(config, "config");
+        ArgusValidation.checkNonNegative(maxTokens, "maxTokens");
+        if (maxTokens == 0) {
+            return "";
+        }
+
+        clearCacheSlot(0, 0, -1);
+        resetSampler(0);
+
+        int[] promptTokens = tokenize(prompt, true);
+        if (promptTokens.length == 0) {
+            throw new IllegalArgumentException("Prompt tokenized to 0 tokens");
+        }
+
+        int prefillStatus = decodeBatch(promptTokens, promptTokens.length, 0, 0, true, abortFlag);
+        if (prefillStatus == STATUS_CANCELLED) {
+            return "";
+        }
+        if (prefillStatus != 0) {
+            ArgusNativeException.checkStatus(prefillStatus, "argus_decode_tokens");
+        }
+        primeSampler(0, promptTokens, promptTokens.length);
+
+        cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder decoder =
+            new cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder(true);
+        int[] singleToken = new int[1];
+        int currentPos = promptTokens.length;
+
+        for (int step = 0; step < maxTokens; step++) {
+            if (abortFlag != null && abortFlag.isAborted()) {
+                break;
+            }
+            int nextToken = sampleToken(0, config);
+            if (nextToken < 0) {
+                ArgusNativeException.checkStatus(nextToken, "argus_sample_token_ext");
+            }
+            if (vocabIsEog(nextToken)) {
+                break;
+            }
+
+            byte[] pieceBytes = tokenToPieceBytes(nextToken);
+            decoder.accept(pieceBytes, 0, pieceBytes.length, onPiece);
+
+            if (step + 1 < maxTokens) {
+                singleToken[0] = nextToken;
+                int stepStatus = decodeBatch(singleToken, 1, currentPos, 0, true, abortFlag);
+                if (stepStatus == STATUS_CANCELLED) {
+                    break;
+                }
+                if (stepStatus != 0) {
+                    ArgusNativeException.checkStatus(stepStatus, "argus_decode_tokens");
+                }
+                currentPos++;
+            }
+        }
+
+        return decoder.finish(onPiece);
     }
 }

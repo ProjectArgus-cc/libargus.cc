@@ -16,7 +16,9 @@ def run(directory, row, java='java', development=False):
     manifest = verify(directory, require_release=not development)
     v = manifest['version']
     classifier = (directory / 'jars' / f'{row["module"]}-{v}.jar').resolve()
+    common = (directory / 'jars' / f'libargus-common-{v}.jar').resolve()
     core = (directory / 'jars' / f'libargus-core-{v}.jar').resolve()
+    jni = (directory / 'jars' / f'libargus-jni-{v}.jar').resolve()
     native = next(n for n in manifest['natives'] if n['target'] == row['id'])
     with ZipFile(classifier) as z:
         provider = z.read('META-INF/services/cc.projectargus.libargus.spi.NativeLibraryProvider').decode().strip()
@@ -27,7 +29,7 @@ def run(directory, row, java='java', development=False):
             root = Path(temporary)
             command = [java, '--enable-native-access=ALL-UNNAMED', '-Dcc.projectargus.libargus.verifySpi=true',
                        '-Dcc.projectargus.libargus.nativeDir=' + str(root / 'native'),
-                       '-cp', os.pathsep.join((str(core), str(classifier))),
+                       '-cp', os.pathsep.join((str(common), str(core), str(classifier))),
                        'cc.projectargus.libargus.ClassifierVerifier', expected]
             if expected == row['backend'] and row['backend'] == 'cpu':
                 command.append(str(ROOT / 'tests/data/tiny.gguf'))
@@ -63,7 +65,8 @@ def run(directory, row, java='java', development=False):
             result.pop('native_path')
             results.append(result)
     return {'schema': 1, 'target': row['id'], 'manifest_sha256': digest(directory / 'manifest.json'),
-            'source': manifest['source'], 'core_sha256': digest(core), 'classifier_sha256': digest(classifier),
+            'source': manifest['source'], 'common_sha256': digest(common), 'core_sha256': digest(core),
+            'jni_sha256': digest(jni), 'classifier_sha256': digest(classifier),
             'native_sha256': native['sha256'], 'positive': results[0], 'negative': results[1]}
 
 def aggregate(directory, receipts, development=False):
@@ -78,8 +81,9 @@ def aggregate(directory, receipts, development=False):
         seen.add(identity); row = expected[identity]
         if r['manifest_sha256'] != digest(directory / 'manifest.json') or r['source'] != manifest['source']:
             raise ValueError('Receipt is for a different candidate')
-        for key, module in (('core_sha256', 'libargus-core'), ('classifier_sha256', row['module'])):
-            if r[key] != digest(directory / 'jars' / f'{module}-{manifest["version"]}.jar'):
+        for key, module in (('common_sha256', 'libargus-common'), ('core_sha256', 'libargus-core'),
+                            ('jni_sha256', 'libargus-jni'), ('classifier_sha256', row['module'])):
+            if r.get(key) != digest(directory / 'jars' / f'{module}-{manifest["version"]}.jar'):
                 raise ValueError('Receipt JAR mismatch')
         native = next(n for n in manifest['natives'] if n['target'] == identity)
         if r['native_sha256'] != native['sha256'] or r['positive']['result'] != 'ok' or r['negative']['result'] != 'feature_mismatch':

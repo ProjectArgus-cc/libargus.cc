@@ -44,14 +44,15 @@ def fixture(root):
         info = {'target': row['id'], 'sha256': digest(dest / row['library']), 'features': row['mask'],
                 'build': {'source': SOURCE, 'version': v, 'cpu_baseline': row['baseline'], 'abi_header_sha256': '0' * 64}}
         (dest / 'native.json').write_text(json.dumps(info))
+    java_mods = {'libargus-common', 'libargus-core', 'libargus-jni'}
     for module in modules():
         dest = maven / 'cc/projectargus' / module / v; dest.mkdir(parents=True)
         for suffix in ('', '-sources', '-javadoc'):
             with ZipFile(dest / f'{module}-{v}{suffix}.jar', 'w') as z:
                 z.writestr('META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\n')
-                if module == 'libargus-core':
+                if module in java_mods:
                     z.writestr('argus-build.properties', f'version={v}\nsource={SOURCE}\nabi_header_sha256={"0"*64}\n')
-                if module != 'libargus-core' and not suffix:
+                if module not in java_mods and not suffix:
                     row = next(r for r in targets() if r['module'] == module)
                     z.write(natives / ('native-' + row['id']) / row['library'], row['resource'])
                     z.writestr(PROVIDER, 'fixture.' + row['backend'])
@@ -65,7 +66,9 @@ def receipts(candidate, destination):
         native = next(n for n in manifest['natives'] if n['target'] == row['id'])
         result = {**native['build'], 'features': row['mask'], 'native_sha256': native['sha256'], 'provider': 'fixture.' + row['backend'], 'cpu_decode': 'passed'}
         receipt = {'schema': 1, 'target': row['id'], 'source': SOURCE, 'manifest_sha256': digest(candidate / 'manifest.json'),
+                   'common_sha256': digest(candidate / 'jars' / f'libargus-common-{version()}.jar'),
                    'core_sha256': digest(candidate / 'jars' / f'libargus-core-{version()}.jar'),
+                   'jni_sha256': digest(candidate / 'jars' / f'libargus-jni-{version()}.jar'),
                    'classifier_sha256': digest(candidate / 'jars' / f'{row["module"]}-{version()}.jar'),
                    'native_sha256': native['sha256'], 'positive': {**result, 'result': 'ok', 'expected_features': row['mask']},
                    'negative': {**result, 'result': 'feature_mismatch', 'expected_features': 3 if row['backend'] == 'cpu' else 1}}
@@ -78,7 +81,7 @@ class CandidateTests(unittest.TestCase):
     def seal(self): build(self.maven, self.natives, self.candidate, SOURCE, development=True)
     def test_sealed_roundtrip_and_mutation(self):
         stage_natives(self.natives, self.root / 'bindings'); self.seal()
-        manifest = verify(self.candidate, False); self.assertEqual(len(manifest['assets']), 35)
+        manifest = verify(self.candidate, False); self.assertEqual(len(manifest['assets']), 41)
         with self.assertRaisesRegex(ValueError, 'signed release'): verify(self.candidate)
         payload = self.candidate / manifest['assets'][0]
         with payload.open('r+b') as f: f.seek(20); f.write(b'X')

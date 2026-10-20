@@ -121,7 +121,7 @@ subprojects {
 
                     pom {
                         name.set(artifactId)
-                        description.set("Native text, speech and vision execution through the Java FFM API.")
+                        description.set("Native text, speech and vision execution through the Java FFM and JNI APIs.")
                         url.set("https://github.com/ProjectArgus-cc/libargus.cc")
 
                         licenses {

@@ -3,7 +3,7 @@
  * @brief Unified unmanaged C API for Vision, Audio, Speech-to-Text,
  *        and LLM execution, engineered for allocation-free steady-state
  *        inference paths where documented.
- * @version 2.0.6
+ * @version 2.1.0
  * 
  * libargus provides an optimized, model-agnostic unmanaged orchestration layer over 
  * GGML compute primitives. This file defines a strict, flat C Application Binary 
@@ -376,6 +376,16 @@ ARGUS_API const char * argus_backend_get_name(int32_t index);
  * @return Opaque model pointer, or NULL on failure.
  */
 ARGUS_API argus_model_t * argus_model_load(const argus_model_params_t * params);
+
+/**
+ * @brief Loads a GGUF model from an open OS file descriptor (e.g. Android SAF ParcelFileDescriptor or memfd).
+ * Duplicates the file descriptor internally and closes the duplicated handle before returning;
+ * the caller retains ownership of the original file descriptor.
+ * @param fd Open POSIX/OS file descriptor with read access.
+ * @param params Configurations detailing mlock and GPU offloading (model_path is ignored).
+ * @return Opaque model pointer, or NULL on failure.
+ */
+ARGUS_API argus_model_t * argus_model_load_fd(int32_t fd, const argus_model_params_t * params);
 
 /**
  * @brief Retains an active reference to the loaded GGUF model weights.

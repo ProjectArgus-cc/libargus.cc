@@ -1,7 +1,13 @@
 rootProject.name = "libargus"
 
+include("libargus-common")
+project(":libargus-common").projectDir = file("bindings/java/libargus-common")
+
 include("libargus-core")
 project(":libargus-core").projectDir = file("bindings/java/libargus-core")
+
+include("libargus-jni")
+project(":libargus-jni").projectDir = file("bindings/java/libargus-jni")
 
 include("libargus-native-linux-cpu")
 project(":libargus-native-linux-cpu").projectDir = file("bindings/java/libargus-native-linux-cpu")

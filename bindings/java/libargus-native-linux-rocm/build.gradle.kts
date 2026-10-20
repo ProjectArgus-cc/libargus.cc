@@ -12,8 +12,12 @@ java {
     }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
+}
+
 dependencies {
-    implementation(project(":libargus-core"))
+    implementation(project(":libargus-common"))
 }
 
 sourceSets {

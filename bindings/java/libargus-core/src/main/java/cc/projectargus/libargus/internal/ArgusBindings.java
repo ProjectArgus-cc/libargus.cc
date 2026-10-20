@@ -1,254 +1,45 @@
 package cc.projectargus.libargus.internal;
 
+import cc.projectargus.libargus.ArgusNativeException;
+import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
-import java.nio.file.Paths;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import cc.projectargus.libargus.spi.NativeLibraryProvider;
-import java.util.ServiceLoader;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-
 
 /**
  * Low-level MethodHandles linked to the compiled libargus shared library.
- * Implements dynamic library loading and bindings mapping.
+ * Delegates native library discovery and SPI extraction to {@link ArgusNativeLoader}.
  */
 public final class ArgusBindings {
     private static final Linker LINKER = Linker.nativeLinker();
     public static final String VERSION;
     private static final SymbolLookup LOOKUP;
     public static final String EXTRACTED_DIR;
-    private static String loadedLibraryPath;
-    private static String loadedProvider;
-    public static String loadedLibraryPath() { return loadedLibraryPath; }
-    public static String loadedProvider() { return loadedProvider; }
+
+    public static String loadedLibraryPath() {
+        return ArgusNativeLoader.loadedLibraryPath();
+    }
+
+    public static String loadedProvider() {
+        return ArgusNativeLoader.loadedProvider();
+    }
 
     static {
-        // 1. Resolve version from classpath resource
-        String resolvedVersion = "0.0.0";
-        try (InputStream is = ArgusBindings.class.getResourceAsStream("/version.txt")) {
-            if (is != null) {
-                resolvedVersion = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
-            }
-        } catch (IOException e) {
-            // ignore
-        }
-        VERSION = resolvedVersion;
-
-        // 2. Load native library
-        String resolvedExtractedDir = null;
-        String customPath = System.getProperty("cc.projectargus.libargus.path");
-        boolean verifySpi = Boolean.getBoolean("cc.projectargus.libargus.verifySpi");
-        if (verifySpi && customPath != null) throw new IllegalStateException("Verifier prohibits a native path override");
-        if (customPath != null) {
-            java.nio.file.Path path = Paths.get(customPath).toAbsolutePath();
-            System.load(path.toString());
-            loadedLibraryPath = path.toString();
-            resolvedExtractedDir = path.getParent().toString();
+        ArgusNativeLoader.ensureLoaded();
+        VERSION = ArgusNativeLoader.VERSION;
+        EXTRACTED_DIR = ArgusNativeLoader.EXTRACTED_DIR;
+        SymbolLookup loaderLookup = SymbolLookup.loaderLookup();
+        String libPath = ArgusNativeLoader.loadedLibraryPath();
+        if (libPath != null && !libPath.startsWith("system-path:")) {
+            SymbolLookup fileLookup = SymbolLookup.libraryLookup(java.nio.file.Path.of(libPath), Arena.global());
+            LOOKUP = name -> loaderLookup.find(name).or(() -> fileLookup.find(name));
         } else {
-            String tempExtracted = tryLoadFromSPI();
-            if (tempExtracted != null) {
-                resolvedExtractedDir = tempExtracted;
-            } else {
-                if (verifySpi) throw new UnsatisfiedLinkError("Verifier requires exactly one working SPI provider");
-                // 3. Try standard java.library.path / OS runtime library loader
-                boolean loaded = false;
-                try {
-                    System.loadLibrary("argus");
-                    loaded = true;
-                } catch (UnsatisfiedLinkError e) {
-                    // Fall back to bounded local workspace build directory search
-                }
-
-                if (!loaded) {
-                    String userDir = System.getProperty("user.dir");
-                    String libName = System.mapLibraryName("argus");
-                    File currentDir = new File(userDir).getAbsoluteFile();
-                    int maxDepth = 3;
-                    while (currentDir != null && maxDepth-- >= 0) {
-                        File buildDir = new File(currentDir, "build");
-                        File localLibInLib = new File(new File(buildDir, "lib"), libName);
-                        File localLibInBin = new File(new File(buildDir, "bin"), libName);
-                        File localLibInLibRel = new File(new File(new File(buildDir, "lib"), "Release"), libName);
-                        File localLibInBinRel = new File(new File(new File(buildDir, "bin"), "Release"), libName);
-                        File localLib = new File(buildDir, libName);
-
-                        File targetLib = null;
-                        if (localLibInLib.exists()) {
-                            targetLib = localLibInLib;
-                        } else if (localLibInBin.exists()) {
-                            targetLib = localLibInBin;
-                        } else if (localLibInLibRel.exists()) {
-                            targetLib = localLibInLibRel;
-                        } else if (localLibInBinRel.exists()) {
-                            targetLib = localLibInBinRel;
-                        } else if (localLib.exists()) {
-                            targetLib = localLib;
-                        }
-
-                        if (targetLib != null) {
-                            System.load(targetLib.getAbsolutePath());
-                            resolvedExtractedDir = targetLib.getParent();
-                            loaded = true;
-                            break;
-                        }
-                        currentDir = currentDir.getParentFile();
-                    }
-                }
-
-                if (!loaded) {
-                    String libName = System.mapLibraryName("argus");
-                    throw new UnsatisfiedLinkError("Could not locate native " + libName + 
-                        " via -Dcc.projectargus.libargus.path, SPI classpath providers, java.library.path (System.loadLibrary), or local workspace build/ directory. Please ensure native libraries are on java.library.path or specify -Dcc.projectargus.libargus.path");
-                }
-            }
+            LOOKUP = loaderLookup;
         }
-        EXTRACTED_DIR = resolvedExtractedDir;
-        LOOKUP = SymbolLookup.loaderLookup();
     }
-
-    private static String tryLoadFromSPI() {
-        String osName = System.getProperty("os.name").toLowerCase();
-        String osArch = System.getProperty("os.arch").toLowerCase();
-
-        String normalizedOs;
-        if (osName.contains("linux")) {
-            normalizedOs = "linux";
-        } else if (osName.contains("windows")) {
-            normalizedOs = "windows";
-        } else if (osName.contains("mac")) {
-            normalizedOs = "macos";
-        } else {
-            normalizedOs = osName;
-        }
-
-        String normalizedArch;
-        if (osArch.equals("amd64") || osArch.equals("x86_64")) {
-            normalizedArch = "amd64";
-        } else if (osArch.equals("aarch64") || osArch.equals("arm64")) {
-            normalizedArch = "aarch64";
-        } else {
-            normalizedArch = osArch;
-        }
-
-        ServiceLoader<NativeLibraryProvider> loader = ServiceLoader.load(NativeLibraryProvider.class);
-        List<NativeLibraryProvider> providers = new ArrayList<>();
-        for (NativeLibraryProvider provider : loader) {
-            String pOs = provider.getOs().toLowerCase();
-            String pArch = provider.getArch().toLowerCase();
-            
-            boolean osMatch = pOs.contains(normalizedOs) || normalizedOs.contains(pOs);
-            boolean archMatch = false;
-            if ((normalizedArch.equals("amd64") && (pArch.equals("amd64") || pArch.equals("x86_64") || pArch.equals("x64"))) ||
-                (normalizedArch.equals("aarch64") && (pArch.equals("aarch64") || pArch.equals("arm64"))) ||
-                pArch.equals(normalizedArch)) {
-                archMatch = true;
-            }
-
-            if (osMatch && archMatch) {
-                providers.add(provider);
-            }
-        }
-
-        if (Boolean.getBoolean("cc.projectargus.libargus.verifySpi") && providers.size() != 1)
-            throw new IllegalStateException("Verifier requires exactly one matching provider");
-        if (providers.isEmpty()) {
-            return null;
-        }
-
-        // Sort by priority descending
-        providers.sort(new Comparator<NativeLibraryProvider>() {
-            @Override
-            public int compare(NativeLibraryProvider p1, NativeLibraryProvider p2) {
-                return Integer.compare(p2.getPriority(), p1.getPriority());
-            }
-        });
-
-        // Resolve output extraction cache directory
-        String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
-        File destDir;
-        if (customDir != null && !customDir.trim().isEmpty()) {
-            destDir = new File(customDir.trim());
-        } else {
-            String rawUser = System.getProperty("user.name", "default");
-            String safeUser = rawUser.replaceAll("[^a-zA-Z0-9._-]", "_");
-            destDir = new File(System.getProperty("java.io.tmpdir"), "argus_native_cache_" + safeUser);
-        }
-
-        try {
-            if (!destDir.exists()) {
-                if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-                    Files.createDirectories(
-                        destDir.toPath(),
-                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
-                            java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")
-                        )
-                    );
-                } else {
-                    if (!destDir.mkdirs() && !destDir.exists()) {
-                        throw new RuntimeException("Failed to create native extraction directory: " + destDir);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to initialize secure native extraction directory: " + destDir, e);
-        }
-
-        for (NativeLibraryProvider provider : providers) {
-            String libVersionName = System.mapLibraryName("argus-" + provider.getBackend() + "-" + VERSION);
-            File targetFile = new File(destDir, libVersionName);
-
-            try {
-                if (targetFile.exists() && targetFile.length() > 0) {
-                    System.load(targetFile.getAbsolutePath());
-                    loadedLibraryPath = targetFile.getAbsolutePath();
-                    loadedProvider = provider.getClass().getName();
-                    return destDir.getAbsolutePath();
-                }
-
-                File tempFile = File.createTempFile("libargus_extract_", ".tmp", destDir);
-                try {
-                    try (InputStream is = provider.getLibraryStream()) {
-                        if (is == null) {
-                            continue;
-                        }
-                        Files.copy(is, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    Files.move(tempFile.toPath(), targetFile.toPath(),
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (IOException e) {
-                    if (!targetFile.exists() || targetFile.length() == 0) {
-                        throw e;
-                    }
-                } finally {
-                    if (tempFile.exists()) {
-                        tempFile.delete();
-                    }
-                }
-
-                System.load(targetFile.getAbsolutePath());
-                loadedLibraryPath = targetFile.getAbsolutePath();
-                loadedProvider = provider.getClass().getName();
-                return destDir.getAbsolutePath();
-            } catch (UnsatisfiedLinkError | Exception e) {
-                System.err.println("Warning: Failed to load native library from provider [" + 
-                    provider.getClass().getName() + " | Backend: " + provider.getBackend() + "]: " + e.getMessage());
-            }
-        }
-
-        return null;
-    }
-
 
     private ArgusBindings() {}
 
@@ -318,6 +109,10 @@ public final class ArgusBindings {
     // Text Models
     public static final MethodHandle argus_model_load = bind("argus_model_load",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
+
+    public static final MethodHandle argus_model_load_fd = bind("argus_model_load_fd",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
 
     public static final MethodHandle argus_model_free = bind("argus_model_free",
@@ -798,4 +593,38 @@ public final class ArgusBindings {
         FunctionDescriptor.of(ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
+
+    static {
+        ArgusNativeException.registerErrorResolver(new ArgusNativeException.ErrorResolver() {
+            @Override
+            public int lastErrorCode() {
+                try {
+                    return (int) argus_last_error_code.invokeExact();
+                } catch (Throwable t) {
+                    return ArgusNativeException.ERROR_INTERNAL;
+                }
+            }
+
+            @Override
+            public String lastErrorMessage() {
+                try (Arena localArena = Arena.ofConfined()) {
+                    MemorySegment buf = localArena.allocate(512);
+                    int len = (int) argus_last_error_message_copy.invokeExact(buf, 512);
+                    if (len > 0) {
+                        return buf.getString(0);
+                    }
+                } catch (Throwable ignored) {
+                }
+                return "Unknown native failure";
+            }
+
+            @Override
+            public void clearError() {
+                try {
+                    argus_clear_error.invokeExact();
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+    }
 }

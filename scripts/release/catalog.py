@@ -48,8 +48,11 @@ def version():
         raise ValueError('Invalid release version')
     return value
 
+def java_modules():
+    return ['libargus-common', 'libargus-core', 'libargus-jni']
+
 def modules():
-    return ['libargus-core'] + [r['module'] for r in targets()]
+    return java_modules() + [r['module'] for r in targets()]
 
 if __name__ == '__main__':
     print(json.dumps({'include': targets()}, separators=(',', ':')))

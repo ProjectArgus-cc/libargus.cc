@@ -39,6 +39,15 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
     }
 
     /**
+     * Initializes and loads the multimodal projector model using a temporary confined arena.
+     */
+    public static ArgusMultimodalContext init(ArgusModel model, Path mmprojPath, int cpuThreads, boolean useGpu) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return init(localArena, model, mmprojPath, cpuThreads, useGpu);
+        }
+    }
+
+    /**
      * Initializes and loads the multimodal projector model.
      *
      * @param arena      the allocation scope for setup parameters
@@ -126,6 +135,15 @@ public final class ArgusMultimodalContext extends ArgusNativeResource {
             throw new RuntimeException("Failed to get audio sample rate", t);
         } finally {
             releaseReadLease();
+        }
+    }
+
+    /**
+     * Tokenizes prompt text and media bitmaps into a sequential chunk container using a temporary confined arena.
+     */
+    public ArgusInputChunks tokenize(String text, boolean addBos, List<ArgusBitmap> bitmaps) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return tokenize(localArena, text, addBos, bitmaps);
         }
     }
 

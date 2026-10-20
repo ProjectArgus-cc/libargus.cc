@@ -74,7 +74,7 @@ jobs:
         run: |
           NATIVE_DIR=lib
           if [ "$SYSTEM" = windows ]; then NATIVE_DIR=bin; fi
-          ./gradlew :libargus-core:test -PskipCMake=true -PnativePath="$PWD/build/$NATIVE_DIR/$LIBRARY" --console=plain
+          ./gradlew :libargus-common:test :libargus-core:test :libargus-jni:test -PskipCMake=true -PnativePath="$PWD/build/$NATIVE_DIR/$LIBRARY" --console=plain
       - name: Preserve Windows JVM crash diagnostics
         if: failure() && runner.os == 'Windows' && matrix.backend == 'cpu'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -83,6 +83,8 @@ jobs:
           path: |
             bindings/java/libargus-core/hs_err_pid*.log
             bindings/java/libargus-core/hs_err_pid*.mdmp
+            bindings/java/libargus-jni/hs_err_pid*.log
+            bindings/java/libargus-jni/hs_err_pid*.mdmp
           if-no-files-found: ignore
           retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -111,10 +113,10 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.jdk }}
       - run: python3 scripts/release/build_native.py linux-amd64-cpu --testing --media
-      - name: Direct FFM lifetime and public composite leases
+      - name: Direct FFM and JNI lifetime and public composite leases
         env:
           TEST_JDK: ${{ matrix.jdk }}
-        run: ./gradlew :libargus-core:test -PskipCMake=true -PnativeTesting=true -PnativePath="$PWD/build/lib/libargus_test.so" -PtestJdk="$TEST_JDK" --console=plain
+        run: ./gradlew :libargus-common:test :libargus-core:test :libargus-jni:test -PskipCMake=true -PnativeTesting=true -PnativePath="$PWD/build/lib/libargus_test.so" -PtestJdk="$TEST_JDK" --console=plain
   sanitizer:
     needs: prepare
     runs-on: ubuntu-22.04

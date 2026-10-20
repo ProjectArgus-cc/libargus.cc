@@ -36,6 +36,21 @@ public final class ArgusModel extends ArgusNativeResource {
     }
 
     /**
+     * Loads GGUF weights off-heap using a temporary confined arena.
+     *
+     * @param modelPath path to the local GGUF file
+     * @param gpuLayers number of layers to offload to VRAM (RTX 4090 etc.)
+     * @param useMlock  force locking pages to RAM to prevent swapping
+     * @return a loaded ArgusModel wrapper
+     */
+    public static ArgusModel load(Path modelPath, int gpuLayers, boolean useMlock) {
+        Objects.requireNonNull(modelPath, "modelPath");
+        try (Arena localArena = Arena.ofConfined()) {
+            return load(localArena, modelPath, gpuLayers, useMlock);
+        }
+    }
+
+    /**
      * Loads GGUF weights off-heap using the specified configuration parameters.
      *
      * @param arena     the allocation scope for the temporary parameter structures
@@ -77,6 +92,65 @@ public final class ArgusModel extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to execute native load for " + modelPath, t);
+        }
+    }
+
+    /**
+     * Loads GGUF weights from an open POSIX file descriptor (e.g. Android AssetFileDescriptor or ParcelFileDescriptor).
+     * Duplicates the file descriptor natively and rewinds the stream offset to 0 before loading; the caller retains
+     * ownership of the original descriptor and may close it immediately after this call returns.
+     *
+     * @param fd        open POSIX file descriptor
+     * @param gpuLayers number of layers to offload to VRAM
+     * @param useMlock  force locking pages to RAM to prevent swapping
+     * @return a loaded ArgusModel wrapper
+     */
+    public static ArgusModel loadFd(int fd, int gpuLayers, boolean useMlock) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return loadFd(localArena, fd, gpuLayers, useMlock);
+        }
+    }
+
+    /**
+     * Loads GGUF weights from an open POSIX file descriptor using the specified allocation arena.
+     * Duplicates the file descriptor natively and rewinds the stream offset to 0 before loading; the caller retains
+     * ownership of the original descriptor and may close it immediately after this call returns.
+     *
+     * @param arena     the allocation scope for the temporary parameter structures
+     * @param fd        open POSIX file descriptor
+     * @param gpuLayers number of layers to offload to VRAM
+     * @param useMlock  force locking pages to RAM to prevent swapping
+     * @return a loaded ArgusModel wrapper
+     */
+    public static ArgusModel loadFd(Arena arena, int fd, int gpuLayers, boolean useMlock) {
+        Objects.requireNonNull(arena, "arena");
+        if (fd < 0) {
+            throw new IllegalArgumentException("Invalid file descriptor: " + fd);
+        }
+
+        MemorySegment paramsSegment = arena.allocate(ArgusLayouts.MODEL_PARAMS);
+        paramsSegment.set(ValueLayout.ADDRESS,
+            ArgusLayouts.MODEL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("model_path")),
+            MemorySegment.NULL
+        );
+        paramsSegment.set(ValueLayout.JAVA_INT,
+            ArgusLayouts.MODEL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("gpu_layers")),
+            gpuLayers
+        );
+        paramsSegment.set(ValueLayout.JAVA_BOOLEAN,
+            ArgusLayouts.MODEL_PARAMS.byteOffset(MemoryLayout.PathElement.groupElement("use_mlock")),
+            useMlock
+        );
+
+        try {
+            MemorySegment modelPtr = (MemorySegment) ArgusBindings.argus_model_load_fd.invokeExact(fd, paramsSegment);
+            if (modelPtr.equals(MemorySegment.NULL)) {
+                ArgusNativeException.throwLastError("argus_model_load_fd for fd=" + fd);
+            }
+            return new ArgusModel(modelPtr);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to execute native loadFd for fd=" + fd, t);
         }
     }
 
@@ -257,6 +331,93 @@ public final class ArgusModel extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to retrieve metadata string for key: " + key, t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Alias for {@link #getMetadataValue(String)}.
+     */
+    public String getMetadata(String key) {
+        return getMetadataValue(key);
+    }
+
+    /**
+     * Returns the number of GGUF metadata key-value pairs stored in the model.
+     */
+    public int getMetadataCount() {
+        MemorySegment h = acquireReadLease();
+        try {
+            int count = (int) ArgusBindings.argus_model_meta_count.invokeExact(h);
+            return Math.max(0, count);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to retrieve metadata count", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Retrieves the GGUF metadata key string at the given index, or null if out of bounds.
+     */
+    public String getMetadataKeyByIndex(int index) {
+        if (index < 0) {
+            return null;
+        }
+        MemorySegment h = acquireReadLease();
+        try (Arena localArena = Arena.ofConfined()) {
+            int initialSize = 512;
+            MemorySegment buf = localArena.allocate(initialSize);
+            int len = (int) ArgusBindings.argus_model_meta_key_by_index.invokeExact(h, index, buf, initialSize);
+            if (len < 0) {
+                return null;
+            }
+            if (len >= initialSize) {
+                MemorySegment larger = localArena.allocate(len + 1);
+                len = (int) ArgusBindings.argus_model_meta_key_by_index.invokeExact(h, index, larger, len + 1);
+                if (len < 0) {
+                    return null;
+                }
+                return larger.getString(0);
+            }
+            return buf.getString(0);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to retrieve metadata key at index: " + index, t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Retrieves the GGUF metadata value string at the given index, or null if out of bounds or non-string.
+     */
+    public String getMetadataValueByIndex(int index) {
+        if (index < 0) {
+            return null;
+        }
+        MemorySegment h = acquireReadLease();
+        try (Arena localArena = Arena.ofConfined()) {
+            int initialSize = 1024;
+            MemorySegment buf = localArena.allocate(initialSize);
+            int len = (int) ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(h, index, buf, initialSize);
+            if (len < 0) {
+                return null;
+            }
+            if (len >= initialSize) {
+                MemorySegment larger = localArena.allocate(len + 1);
+                len = (int) ArgusBindings.argus_model_meta_val_str_by_index.invokeExact(h, index, larger, len + 1);
+                if (len < 0) {
+                    return null;
+                }
+                return larger.getString(0);
+            }
+            return buf.getString(0);
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to retrieve metadata value at index: " + index, t);
         } finally {
             releaseReadLease();
         }
@@ -545,9 +706,16 @@ public final class ArgusModel extends ArgusNativeResource {
     public String desc() {
         MemorySegment h = acquireReadLease();
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment buf = arena.allocate(128);
-            int len = (int) ArgusBindings.argus_model_desc.invokeExact(h, buf, 128);
+            int initialSize = 256;
+            MemorySegment buf = arena.allocate(initialSize);
+            int len = (int) ArgusBindings.argus_model_desc.invokeExact(h, buf, initialSize);
             if (len < 0) return "";
+            if (len >= initialSize) {
+                MemorySegment larger = arena.allocate(len + 1);
+                len = (int) ArgusBindings.argus_model_desc.invokeExact(h, larger, len + 1);
+                if (len < 0) return "";
+                return larger.getString(0);
+            }
             return buf.getString(0);
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
@@ -555,6 +723,13 @@ public final class ArgusModel extends ArgusNativeResource {
         } finally {
             releaseReadLease();
         }
+    }
+
+    /**
+     * Alias for {@link #desc()}.
+     */
+    public String getDescription() {
+        return desc();
     }
 
     /**
@@ -608,6 +783,88 @@ public final class ArgusModel extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to query GGML quantization block size", t);
+        }
+    }
+
+    /**
+     * Converts a single token ID into its raw UTF-8 byte sequence using this model's vocabulary.
+     * Supports arbitrary-length token pieces via 2-tier buffer resizing.
+     *
+     * @param token vocabulary token ID
+     * @return raw UTF-8 byte array for the token piece (empty array if invalid or negative)
+     */
+    public byte[] tokenToPieceBytes(int token) {
+        MemorySegment h = acquireReadLease();
+        try (Arena local = Arena.ofConfined()) {
+            int bufSize = 256;
+            MemorySegment bufSeg = local.allocate(bufSize);
+            int res = (int) ArgusBindings.argus_token_to_piece.invokeExact(h, token, bufSeg, bufSize);
+            if (res < 0 && res != Integer.MIN_VALUE) {
+                int lastErr = (int) ArgusBindings.argus_last_error_code.invokeExact();
+                if (lastErr == 0) {
+                    int required = -res;
+                    if (required > 0 && required <= 16 * 1024 * 1024) {
+                        bufSeg = local.allocate(required);
+                        res = (int) ArgusBindings.argus_token_to_piece.invokeExact(h, token, bufSeg, required);
+                    }
+                }
+            }
+            if (res <= 0) {
+                return new byte[0];
+            }
+            byte[] bytes = new byte[res];
+            MemorySegment.copy(bufSeg, ValueLayout.JAVA_BYTE, 0,
+                MemorySegment.ofArray(bytes), ValueLayout.JAVA_BYTE, 0, res);
+            return bytes;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to convert token " + token + " to piece bytes", t);
+        } finally {
+            releaseReadLease();
+        }
+    }
+
+    /**
+     * Converts a single token ID into its text representation (piece) using this model's vocabulary.
+     *
+     * @param token vocabulary token ID
+     * @return decoded string piece
+     */
+    public String tokenToPiece(int token) {
+        byte[] bytes = tokenToPieceBytes(token);
+        if (bytes.length == 0) {
+            return "";
+        }
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Converts a single token ID into raw UTF-8 bytes written directly into a caller-supplied byte array.
+     *
+     * @param token  vocabulary token ID
+     * @param dst    destination byte array
+     * @param offset starting offset in dst
+     * @param maxLen maximum bytes to write
+     * @return number of bytes written, or negative on error / insufficient capacity
+     */
+    public int tokenToPieceInto(int token, byte[] dst, int offset, int maxLen) {
+        Objects.requireNonNull(dst, "dst");
+        if (offset < 0 || maxLen <= 0 || (long) offset + (long) maxLen > dst.length) {
+            throw new IllegalArgumentException("Invalid slice bounds: offset=" + offset + ", maxLen=" + maxLen + ", dst.length=" + dst.length);
+        }
+        MemorySegment h = acquireReadLease();
+        try (Arena local = Arena.ofConfined()) {
+            MemorySegment bufSeg = local.allocate(maxLen);
+            int res = (int) ArgusBindings.argus_token_to_piece.invokeExact(h, token, bufSeg, maxLen);
+            if (res > 0) {
+                MemorySegment.copy(bufSeg, ValueLayout.JAVA_BYTE, 0, dst, offset, res);
+            }
+            return res;
+        } catch (Throwable t) {
+            if (t instanceof RuntimeException re) throw re;
+            throw new RuntimeException("Failed to convert token " + token + " into byte array", t);
+        } finally {
+            releaseReadLease();
         }
     }
 
@@ -708,4 +965,21 @@ public final class ArgusModel extends ArgusNativeResource {
             return result;
         }
     }
+
+    // JavaBean-style getter aliases for cross-module ergonomics
+    public int getVocabBos() { return vocabBos(); }
+    public int getVocabEos() { return vocabEos(); }
+    public int getVocabEot() { return vocabEot(); }
+    public int getVocabPad() { return vocabPad(); }
+    public int getVocabSize() { return vocabNTokens(); }
+    public boolean isEog(int token) { return vocabIsEog(token); }
+    public int getNEmbd() { return nEmbd(); }
+    public int getNEmbdOut() { return nEmbdOut(); }
+    public int getNEmbdInp() { return nEmbdInp(); }
+    public int getNCtxTrain() { return nCtxTrain(); }
+    public int getNLayer() { return nLayer(); }
+    public int getNHead() { return nHead(); }
+    public int getNHeadKv() { return nHeadKv(); }
+    public long getNParams() { return nParams(); }
+    public long getModelSize() { return modelSize(); }
 }

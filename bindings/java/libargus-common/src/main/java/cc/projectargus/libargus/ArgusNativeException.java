@@ -1,11 +1,7 @@
 package cc.projectargus.libargus;
 
-import cc.projectargus.libargus.internal.ArgusBindings;
-import java.lang.foreign.Arena;
-import java.lang.foreign.MemorySegment;
-
 /**
- * Exception thrown when a native libargus C ABI downcall returns an error status
+ * Exception thrown when a native libargus C ABI downcall or JNI call returns an error status
  * or sets a thread-local diagnostic error code.
  */
 public class ArgusNativeException extends RuntimeException {
@@ -20,6 +16,44 @@ public class ArgusNativeException extends RuntimeException {
     public static final int ERROR_INTERNAL = 8;
     public static final int ERROR_ROLLBACK_FAILED = 9;
     public static final int ERROR_INVALID_STATE = 10;
+
+    /**
+     * Pluggable error resolver registered by the active binding transport (Panama FFM or JNI).
+     */
+    public interface ErrorResolver {
+        int lastErrorCode();
+        String lastErrorMessage();
+        void clearError();
+    }
+
+    private static volatile ErrorResolver errorResolver;
+
+    public static void registerErrorResolver(ErrorResolver resolver) {
+        if (resolver != null) {
+            errorResolver = resolver;
+        }
+    }
+
+    private static ErrorResolver resolveBridge() {
+        ErrorResolver r = errorResolver;
+        if (r != null) {
+            return r;
+        }
+        for (String candidate : new String[]{
+            "cc.projectargus.libargus.internal.ArgusBindings",
+            "cc.projectargus.libargus.internal.ArgusJni"
+        }) {
+            try {
+                Class.forName(candidate);
+                r = errorResolver;
+                if (r != null) {
+                    return r;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
 
     private final int errorCode;
 
@@ -48,23 +82,25 @@ public class ArgusNativeException extends RuntimeException {
      */
     public static void checkStatus(int status, String operation) {
         if (status < 0) {
-            int code = 8; // ARGUS_ERROR_INTERNAL fallback
+            int code = ERROR_INTERNAL;
             String msg = "Unknown native failure";
-            try {
-                code = (int) ArgusBindings.argus_last_error_code.invokeExact();
-                try (Arena localArena = Arena.ofConfined()) {
-                    MemorySegment buf = localArena.allocate(512);
-                    int len = (int) ArgusBindings.argus_last_error_message_copy.invokeExact(buf, 512);
-                    if (len > 0) {
-                        msg = buf.getString(0);
-                    }
-                }
-            } catch (Throwable t) {
-                // Ignore downcall introspection errors
-            } finally {
+            ErrorResolver resolver = resolveBridge();
+            if (resolver != null) {
                 try {
-                    ArgusBindings.argus_clear_error.invokeExact();
+                    int c = resolver.lastErrorCode();
+                    if (c != 0) {
+                        code = c;
+                    }
+                    String m = resolver.lastErrorMessage();
+                    if (m != null && !m.isEmpty()) {
+                        msg = m;
+                    }
                 } catch (Throwable ignored) {
+                } finally {
+                    try {
+                        resolver.clearError();
+                    } catch (Throwable ignored) {
+                    }
                 }
             }
             throw new ArgusNativeException(code, operation + " failed with status " + status + ": " + msg);
@@ -78,23 +114,25 @@ public class ArgusNativeException extends RuntimeException {
      * @param operation diagnostic operation label
      */
     public static void throwLastError(String operation) {
-        int code = 8; // ARGUS_ERROR_INTERNAL fallback
+        int code = ERROR_INTERNAL;
         String msg = "Unknown native failure";
-        try {
-            code = (int) ArgusBindings.argus_last_error_code.invokeExact();
-            try (Arena localArena = Arena.ofConfined()) {
-                MemorySegment buf = localArena.allocate(512);
-                int len = (int) ArgusBindings.argus_last_error_message_copy.invokeExact(buf, 512);
-                if (len > 0) {
-                    msg = buf.getString(0);
-                }
-            }
-        } catch (Throwable t) {
-            // Ignore downcall introspection errors
-        } finally {
+        ErrorResolver resolver = resolveBridge();
+        if (resolver != null) {
             try {
-                ArgusBindings.argus_clear_error.invokeExact();
+                int c = resolver.lastErrorCode();
+                if (c != 0) {
+                    code = c;
+                }
+                String m = resolver.lastErrorMessage();
+                if (m != null && !m.isEmpty()) {
+                    msg = m;
+                }
             } catch (Throwable ignored) {
+            } finally {
+                try {
+                    resolver.clearError();
+                } catch (Throwable ignored) {
+                }
             }
         }
         throw new ArgusNativeException(code, operation + " failed: " + msg);

@@ -86,26 +86,33 @@ def inspect(path, row):
         raise ValueError('Native ABI differs from checked-out public header')
     declarations = re.findall(r'ARGUS_API\s+[^;]+;', (ROOT / 'include/libargus.h').read_text())
     expected = {m.group(1) for d in declarations if (m := re.search(r'\b(argus_\w+)\s*\(', d))}
-    for symbol in expected:
+    jni_declarations = re.findall(
+        r'\b(JNI_OnLoad|JNI_OnUnload|Java_cc_projectargus_libargus_internal_ArgusJni_\w+)\s*\(',
+        (ROOT / 'src/jni/argus_jni.cc').read_text(),
+    )
+    expected_jni = set(jni_declarations)
+    expected_all = expected | expected_jni
+    for symbol in expected_all:
         if not hasattr(lib, symbol): raise ValueError('Missing public native symbol: ' + symbol)
     if row['system'] == 'linux':
         symbols = subprocess.check_output(['nm', '-D', '--defined-only', str(path)], text=True)
         dependencies = subprocess.check_output(['readelf', '-d', str(path)], text=True)
         exports = {line.split()[-1] for line in symbols.splitlines() if line.split()}
         needed = re.findall(r'Shared library: \[([^]]+)\]', dependencies)
-        if any(name.startswith(('argus_', 'mtmd_', 'llama_', 'whisper_', 'ggml_')) and name not in expected for name in exports):
+        if any(name.startswith(('argus_', 'mtmd_', 'llama_', 'whisper_', 'ggml_', 'Java_')) and name not in expected_all for name in exports):
             raise ValueError('Internal/test symbols escaped the release boundary')
     elif row['system'] == 'macos':
         symbols = subprocess.check_output(['nm', '-gU', str(path)], text=True)
         exports = {line.split()[-1].removeprefix('_') for line in symbols.splitlines() if line.split()}
-        if exports != expected: raise ValueError('macOS export surface differs from public ABI')
+        if exports != expected_all: raise ValueError('macOS export surface differs from public ABI')
         needed = subprocess.check_output(['otool', '-L', str(path)], text=True).splitlines()[1:]
     else:
         exports_raw = subprocess.check_output(['dumpbin', '/EXPORTS', str(path)], text=True)
         exports = parse_windows_exports(exports_raw)
         argus_exports = {name for name in exports if name.startswith('argus_')}
-        if argus_exports != expected:
-            diff = argus_exports.symmetric_difference(expected)
+        jni_exports = {name for name in exports if name in ('JNI_OnLoad', 'JNI_OnUnload') or name.startswith('Java_')}
+        if argus_exports != expected or jni_exports != expected_jni:
+            diff = (argus_exports | jni_exports).symmetric_difference(expected_all)
             raise ValueError(f'Windows DLL export surface differs from public ABI: {diff}')
         if any(name.startswith(('argus_test_', 'mtmd_', 'llama_', 'whisper_', 'ggml_')) for name in exports):
             raise ValueError('Internal/test symbols escaped the release boundary')

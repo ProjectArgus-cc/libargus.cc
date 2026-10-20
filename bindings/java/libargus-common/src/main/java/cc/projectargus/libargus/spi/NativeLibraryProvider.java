@@ -28,7 +28,7 @@ public interface NativeLibraryProvider {
 
     /**
      * Opens an input stream to read the native library binary resource.
-     * 
+     *
      * @return resource input stream
      */
     InputStream getLibraryStream();

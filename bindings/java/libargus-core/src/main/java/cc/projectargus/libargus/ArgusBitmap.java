@@ -34,6 +34,25 @@ public final class ArgusBitmap extends ArgusNativeResource {
     }
 
     /**
+     * Creates a bitmap from a raw RGB byte array (RGBRGB... format).
+     */
+    public static ArgusBitmap fromRgb(int width, int height, byte[] rgbData) {
+        Objects.requireNonNull(rgbData, "rgbData");
+        ArgusValidation.checkPositive(width, "width");
+        ArgusValidation.checkPositive(height, "height");
+        long numPixels = ArgusValidation.multiplyExactBytes(width, height, "pixels");
+        long requiredBytes = ArgusValidation.multiplyExactBytes(numPixels, 3, "rgbData");
+        if (rgbData.length < requiredBytes) {
+            throw new IllegalArgumentException("rgbData.length (" + rgbData.length + ") < requiredBytes (" + requiredBytes + ")");
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment seg = localArena.allocate(requiredBytes);
+            MemorySegment.copy(rgbData, 0, seg, ValueLayout.JAVA_BYTE, 0, (int) requiredBytes);
+            return fromRgb(width, height, seg);
+        }
+    }
+
+    /**
      * Creates a bitmap from a raw RGB image segment (RGBRGB... format).
      */
     public static ArgusBitmap fromRgb(int width, int height, MemorySegment rgbDataSeg) {
@@ -53,6 +72,22 @@ public final class ArgusBitmap extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to create ArgusBitmap from RGB data", t);
+        }
+    }
+
+    /**
+     * Creates a bitmap from a raw float PCM audio array (e.g. 16kHz).
+     */
+    public static ArgusBitmap fromPcm(float[] pcmData, int nSamples) {
+        Objects.requireNonNull(pcmData, "pcmData");
+        ArgusValidation.checkPositive(nSamples, "nSamples");
+        if (nSamples > pcmData.length) {
+            throw new IllegalArgumentException("nSamples (" + nSamples + ") > pcmData.length (" + pcmData.length + ")");
+        }
+        try (Arena localArena = Arena.ofConfined()) {
+            MemorySegment seg = localArena.allocate(ValueLayout.JAVA_FLOAT, nSamples);
+            MemorySegment.copy(pcmData, 0, seg, ValueLayout.JAVA_FLOAT, 0, nSamples);
+            return fromPcm(seg, nSamples);
         }
     }
 
@@ -78,6 +113,15 @@ public final class ArgusBitmap extends ArgusNativeResource {
     }
 
     /**
+     * Automatically loads and processes media from a local file path using a temporary confined arena.
+     */
+    public static ArgusBitmap loadFile(ArgusMultimodalContext mctx, Path filePath, boolean placeholder) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return loadFile(localArena, mctx, filePath, placeholder);
+        }
+    }
+
+    /**
      * Automatically loads and processes media from a local file path.
      */
     public static ArgusBitmap loadFile(Arena arena, ArgusMultimodalContext mctx, Path filePath, boolean placeholder) {
@@ -99,6 +143,15 @@ public final class ArgusBitmap extends ArgusNativeResource {
         } catch (Throwable t) {
             if (t instanceof RuntimeException re) throw re;
             throw new RuntimeException("Failed to load ArgusBitmap from file: " + filePath, t);
+        }
+    }
+
+    /**
+     * Automatically loads and processes media from a memory buffer using a temporary confined arena.
+     */
+    public static ArgusBitmap loadBuffer(ArgusMultimodalContext mctx, byte[] buffer, boolean placeholder) {
+        try (Arena localArena = Arena.ofConfined()) {
+            return loadBuffer(localArena, mctx, buffer, placeholder);
         }
     }
 
