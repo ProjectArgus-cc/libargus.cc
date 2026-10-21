@@ -96,7 +96,7 @@ You can measure per-call Java heap allocation rates on your target JDK using [`s
 ```bash
 java --enable-native-access=ALL-UNNAMED \
   -Dcc.projectargus.libargus.path="$PWD/build/lib/libargus.so" \
-  -cp bindings/java/libargus-common/build/libs/libargus-common-2.1.1.jar:bindings/java/libargus-core/build/libs/libargus-core-2.1.1.jar \
+  -cp bindings/java/libargus-common/build/libs/libargus-common-2.2.0.jar:bindings/java/libargus-core/build/libs/libargus-core-2.2.0.jar \
   scripts/AllocationProbe.java tests/data
 ```
 

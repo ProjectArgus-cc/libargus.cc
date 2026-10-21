@@ -44,7 +44,7 @@ Modifications to `libargus` must never break the execution contracts relied upon
 ```text
 libargus/
 ├── CMakeLists.txt                   # Layer-0 C++17 build, portable ISA flags & SHA-pinned FetchContent
-├── version.txt                      # Single source of truth for semantic version (2.1.1)
+├── version.txt                      # Single source of truth for semantic version (2.2.0)
 ├── include/
 │   └── libargus.h                   # Master C ABI stable layout & export definitions
 ├── src/
@@ -306,7 +306,7 @@ The fault-injection runner [`scripts/release/mutation_check.py`](scripts/release
 ## 8. AI Assistant Constraints & Handoff Protocols
 
 1. **Never Guess:** Inspect [`include/libargus.h`](include/libargus.h), [`src/argus_abi.h`](src/argus_abi.h), [`src/argus_internal.h`](src/argus_internal.h), and [`ArgusLayouts.java`](bindings/java/libargus-core/src/main/java/cc/projectargus/libargus/internal/ArgusLayouts.java) directly whenever struct layouts, return codes, or handle lifecycles are in question.
-2. **Maintain Single-Source Version Synchronization (`version.txt`):** To step the project version, update the single semantic version string inside [`/version.txt`](version.txt) at the repository root. CMake and Gradle read [`version.txt`](version.txt) automatically; never hardcode drifting version literals in build files or source code.
+2. **Maintain Single-Source Version Synchronization (`version.txt` & `include/libargus.h`):** To step the project version, update [`/version.txt`](version.txt) at the repository root and the matching `@version` Doxygen tag in [`include/libargus.h`](include/libargus.h) (verified by [`scripts/release/preflight.py`](scripts/release/preflight.py)). CMake and Gradle read [`version.txt`](version.txt) automatically; never hardcode drifting version literals in build files or source code.
 3. **Enforce Vendor Pin & Supply-Chain Discipline:** Never introduce floating git branches or unpinned tags in `CMakeLists.txt` (`FetchContent`) or `.github/workflows/*.yml`. All upstream commits, SHA-256 archive digests, and GitHub Action SHAs are verified by [`scripts/release/pins.py`](scripts/release/pins.py).
 4. **Isolate Test Observer Hooks (`ARGUS_TESTING`):** Concurrency and fault-injection observer symbols (`argus_test_*`) must only compile when `-DARGUS_TESTING=ON` (`libargus_test.so`) and must never leak into production `libargus` release binaries.
 5. **Eliminate Duplication Immediately (`:libargus-common` First):** Keep the codebase strictly **DRY** on the first pass—consolidate shared records, slot pools, text/UTF-8 streaming drivers, SPI loaders, and bounds validation into `:libargus-common` (`--release 17`) rather than duplicating logic across `:libargus-core`, `:libargus-jni`, or `:libargus-native-*`.
