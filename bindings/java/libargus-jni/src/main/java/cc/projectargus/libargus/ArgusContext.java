@@ -3,13 +3,14 @@ package cc.projectargus.libargus;
 import cc.projectargus.libargus.internal.ArgusJni;
 import cc.projectargus.libargus.internal.ArgusJniResource;
 import cc.projectargus.libargus.internal.ArgusJniValidation;
-import cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder;
+import cc.projectargus.libargus.internal.ArgusSequenceSlotPool;
+import cc.projectargus.libargus.internal.ArgusTextGenerator;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.BitSet;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * Represents an active text inference, embedding, multimodal, and speech generation session context
@@ -24,21 +25,13 @@ public final class ArgusContext extends ArgusJniResource {
 
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
-    private final BitSet leasedSlots = new BitSet();
-    private final BitSet releasingSlots = new BitSet();
-    private final Object slotPoolLock = new Object();
-    private final int cloneSlotStart;
-    private final int cloneSlotCount;
+    private final ArgusSequenceSlotPool slotPool;
 
     private ArgusContext(long ctxHandle, ArgusModel modelRef, ArgusModel draftModelRef, ArgusContextConfig config) {
         super(ctxHandle);
         this.modelRef = Objects.requireNonNull(modelRef, "modelRef");
         this.draftModelRef = draftModelRef;
-        int maxSlots = getSeqMax();
-        int configuredClone = (config != null) ? config.cloneSlots() : 0;
-        this.cloneSlotCount = Math.max(0, Math.min(configuredClone, maxSlots));
-        this.cloneSlotStart = Math.max(0, maxSlots - this.cloneSlotCount);
-        this.leasedSlots.set(0); // Slot 0 is reserved as root sequence slot
+        this.slotPool = new ArgusSequenceSlotPool(getSeqMax(), (config != null) ? config.cloneSlots() : 0);
     }
 
     @Override
@@ -250,15 +243,9 @@ public final class ArgusContext extends ArgusJniResource {
      */
     public int decodeBatch(int[] tokens, int offset, int nTokens, int startPos, int seqId, boolean requestLogits, ArgusAbortFlag abortFlag) {
         Objects.requireNonNull(tokens, "tokens");
-        ArgusJniValidation.checkNonNegative(offset, "offset");
-        ArgusJniValidation.checkNonNegative(nTokens, "nTokens");
+        ArgusJniValidation.checkArraySlice(tokens.length, offset, nTokens, "tokens");
         ArgusJniValidation.checkNonNegative(startPos, "startPos");
         ArgusJniValidation.checkNonNegative(seqId, "seqId");
-        if ((long) offset + (long) nTokens > tokens.length) {
-            throw new IllegalArgumentException(
-                "Token slice [offset=" + offset + ", nTokens=" + nTokens + ") exceeds tokens.length (" + tokens.length + ")"
-            );
-        }
         if (nTokens == 0) {
             return 0;
         }
@@ -406,13 +393,7 @@ public final class ArgusContext extends ArgusJniResource {
 
     public int primeSampler(int seqId, int[] tokens, int offset, int nTokens) {
         Objects.requireNonNull(tokens, "tokens");
-        ArgusJniValidation.checkNonNegative(offset, "offset");
-        ArgusJniValidation.checkNonNegative(nTokens, "nTokens");
-        if ((long) offset + (long) nTokens > tokens.length) {
-            throw new IllegalArgumentException(
-                "Token slice [offset=" + offset + ", nTokens=" + nTokens + ") exceeds tokens.length (" + tokens.length + ")"
-            );
-        }
+        ArgusJniValidation.checkArraySlice(tokens.length, offset, nTokens, "tokens");
         if (nTokens == 0) {
             return 0;
         }
@@ -493,88 +474,15 @@ public final class ArgusContext extends ArgusJniResource {
     }
 
     public int forkSlot(int srcSeqId) {
-        ArgusJniValidation.checkNonNegative(srcSeqId, "srcSeqId");
-        int maxSlots = getSeqMax();
-        if (srcSeqId >= maxSlots) {
-            throw new IllegalArgumentException("srcSeqId " + srcSeqId + " exceeds max sequence slots " + maxSlots);
-        }
-        if (cloneSlotCount == 0) {
-            throw new IllegalStateException("Clone pool unconfigured (cloneSlots = 0); increase cloneSlots in ArgusContextConfig");
-        }
-        int leasedSlot;
-        synchronized (slotPoolLock) {
-            leasedSlot = -1;
-            for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
-                if (!leasedSlots.get(i) && !releasingSlots.get(i)) {
-                    leasedSlot = i;
-                    leasedSlots.set(i);
-                    break;
-                }
-            }
-        }
-        if (leasedSlot < 0) {
-            throw new IllegalStateException("All " + cloneSlotCount + " clone worker slots are currently leased; increase cloneSlots in ArgusContextConfig");
-        }
-        boolean success = false;
-        try {
-            boolean ok = copySequenceSlot(srcSeqId, leasedSlot);
-            if (!ok) {
-                ArgusNativeException.throwLastError("forkSlot");
-            }
-            success = true;
-            return leasedSlot;
-        } finally {
-            if (!success) {
-                synchronized (slotPoolLock) {
-                    leasedSlots.clear(leasedSlot);
-                }
-            }
-        }
+        return slotPool.forkSlot(srcSeqId, getSeqMax(), this::copySequenceSlot);
     }
 
     public void freeSlot(int seqId) {
-        ArgusJniValidation.checkNonNegative(seqId, "seqId");
-        if (cloneSlotCount == 0 || seqId < cloneSlotStart || seqId >= cloneSlotStart + cloneSlotCount) {
-            throw new IllegalArgumentException(
-                "seqId " + seqId + " does not belong to the configured clone pool ["
-                    + cloneSlotStart + ", " + (cloneSlotStart + cloneSlotCount) + ")"
-            );
-        }
-        synchronized (slotPoolLock) {
-            if (!leasedSlots.get(seqId) || releasingSlots.get(seqId)) {
-                throw new IllegalStateException("Slot " + seqId + " is not currently leased or is already being released");
-            }
-            releasingSlots.set(seqId);
-        }
-        boolean ok = false;
-        try {
-            ok = clearCacheSlot(seqId, 0, -1);
-            if (!ok) {
-                ArgusNativeException.throwLastError("freeSlot");
-            }
-        } finally {
-            synchronized (slotPoolLock) {
-                if (ok) {
-                    leasedSlots.clear(seqId);
-                    releasingSlots.clear(seqId);
-                } else {
-                    releasingSlots.clear(seqId);
-                }
-            }
-        }
+        slotPool.freeSlot(seqId, slot -> clearCacheSlot(slot, 0, -1));
     }
 
     public int getAvailableSlotCount() {
-        if (cloneSlotCount == 0) {
-            return 0;
-        }
-        synchronized (slotPoolLock) {
-            int inUse = 0;
-            for (int i = cloneSlotStart; i < cloneSlotStart + cloneSlotCount; i++) {
-                if (leasedSlots.get(i) || releasingSlots.get(i)) inUse++;
-            }
-            return Math.max(0, cloneSlotCount - inUse);
-        }
+        return slotPool.getAvailableSlotCount();
     }
 
     public boolean isHybrid() {
@@ -806,12 +714,8 @@ public final class ArgusContext extends ArgusJniResource {
     public int evalEmbeddings(int[] tokens, int offset, int nTokens, int seqId, float[] outEmbeddings) {
         Objects.requireNonNull(tokens, "tokens");
         Objects.requireNonNull(outEmbeddings, "outEmbeddings");
-        ArgusJniValidation.checkNonNegative(offset, "offset");
-        if (nTokens <= 0 || (long) offset + (long) nTokens > tokens.length) {
-            throw new IllegalArgumentException(
-                "Invalid token slice [offset=" + offset + ", nTokens=" + nTokens + ") for tokens.length=" + tokens.length
-            );
-        }
+        ArgusJniValidation.checkPositive(nTokens, "nTokens");
+        ArgusJniValidation.checkArraySlice(tokens.length, offset, nTokens, "tokens");
         int requiredDim = nEmbd();
         if (outEmbeddings.length < requiredDim) {
             throw new IllegalArgumentException("outEmbeddings capacity (" + outEmbeddings.length +
@@ -863,18 +767,7 @@ public final class ArgusContext extends ArgusJniResource {
     }
 
     public float[] extractEmbeddings(String text) {
-        Objects.requireNonNull(text, "text");
-        if (text.isEmpty()) {
-            throw new IllegalArgumentException("Cannot extract embeddings for empty text string");
-        }
-        int[] tokens = tokenize(text, true);
-        if (tokens.length == 0) {
-            throw new IllegalStateException("Tokenization produced 0 tokens for non-empty text");
-        }
-        int dim = nEmbd();
-        float[] result = new float[dim];
-        evalEmbeddings(tokens, tokens.length, 0, result);
-        return result;
+        return ArgusTextGenerator.extractEmbeddings(createGenerationOps(null), text);
     }
 
     /**
@@ -890,62 +783,92 @@ public final class ArgusContext extends ArgusJniResource {
      */
     public String generate(String prompt, int maxTokens, ArgusSamplerConfig config,
                            Consumer<String> onPiece, ArgusAbortFlag abortFlag) {
-        Objects.requireNonNull(prompt, "prompt");
-        Objects.requireNonNull(config, "config");
-        ArgusJniValidation.checkNonNegative(maxTokens, "maxTokens");
-        if (maxTokens == 0) {
-            return "";
-        }
+        return ArgusTextGenerator.generate(
+            createGenerationOps(abortFlag),
+            prompt,
+            maxTokens,
+            config,
+            onPiece,
+            abortFlag != null ? abortFlag::isAborted : null
+        );
+    }
 
-        clearCacheSlot(0, 0, -1);
-        resetSampler(0);
+    /**
+     * High-level convenience method to generate text from a prompt using stateful multi-byte UTF-8 streaming
+     * with an early-stopping predicate callback. Returning {@code false} from {@code shouldContinue}
+     * stops generation immediately.
+     */
+    public String generateUntil(String prompt, int maxTokens, ArgusSamplerConfig config, Predicate<String> shouldContinue) {
+        return generateUntil(prompt, maxTokens, config, shouldContinue, null);
+    }
 
-        int[] promptTokens = tokenize(prompt, true);
-        if (promptTokens.length == 0) {
-            throw new IllegalArgumentException("Prompt tokenized to 0 tokens");
-        }
+    /**
+     * High-level convenience method to generate text from a prompt using stateful multi-byte UTF-8 streaming,
+     * an early-stopping predicate callback, and optional cooperative cancellation.
+     */
+    public String generateUntil(String prompt, int maxTokens, ArgusSamplerConfig config,
+                                Predicate<String> shouldContinue, ArgusAbortFlag abortFlag) {
+        return ArgusTextGenerator.generateUntil(
+            createGenerationOps(abortFlag),
+            prompt,
+            maxTokens,
+            config,
+            shouldContinue,
+            abortFlag != null ? abortFlag::isAborted : null
+        );
+    }
 
-        int prefillStatus = decodeBatch(promptTokens, promptTokens.length, 0, 0, true, abortFlag);
-        if (prefillStatus == STATUS_CANCELLED) {
-            return "";
-        }
-        if (prefillStatus != 0) {
-            ArgusNativeException.checkStatus(prefillStatus, "argus_decode_tokens");
-        }
-        primeSampler(0, promptTokens, promptTokens.length);
-
-        ArgusUtf8StreamDecoder decoder = new ArgusUtf8StreamDecoder(true);
-        int[] singleToken = new int[1];
-        int currentPos = promptTokens.length;
-
-        for (int step = 0; step < maxTokens; step++) {
-            if (abortFlag != null && abortFlag.isAborted()) {
-                break;
+    private ArgusTextGenerator.ContextOps createGenerationOps(ArgusAbortFlag abortFlag) {
+        return new ArgusTextGenerator.ContextOps() {
+            @Override
+            public boolean clearCacheSlot(int seqId, int p0, int p1) {
+                return ArgusContext.this.clearCacheSlot(seqId, p0, p1);
             }
-            int nextToken = sampleToken(0, config);
-            if (nextToken < 0) {
-                ArgusNativeException.checkStatus(nextToken, "argus_sample_token_ext");
-            }
-            if (vocabIsEog(nextToken)) {
-                break;
+
+            @Override
+            public void resetSampler(int seqId) {
+                ArgusContext.this.resetSampler(seqId);
             }
 
-            byte[] pieceBytes = tokenToPieceBytes(nextToken);
-            decoder.accept(pieceBytes, 0, pieceBytes.length, onPiece);
-
-            if (step + 1 < maxTokens) {
-                singleToken[0] = nextToken;
-                int stepStatus = decodeBatch(singleToken, 1, currentPos, 0, true, abortFlag);
-                if (stepStatus == STATUS_CANCELLED) {
-                    break;
-                }
-                if (stepStatus != 0) {
-                    ArgusNativeException.checkStatus(stepStatus, "argus_decode_tokens");
-                }
-                currentPos++;
+            @Override
+            public int[] tokenize(String text, boolean addBos) {
+                return ArgusContext.this.tokenize(text, addBos);
             }
-        }
 
-        return decoder.finish(onPiece);
+            @Override
+            public int decodeBatch(int[] tokens, int nTokens, int startPos, boolean requestLogits) {
+                return ArgusContext.this.decodeBatch(tokens, nTokens, startPos, 0, requestLogits, abortFlag);
+            }
+
+            @Override
+            public int primeSampler(int seqId, int[] tokens, int nTokens) {
+                return ArgusContext.this.primeSampler(seqId, tokens, nTokens);
+            }
+
+            @Override
+            public int sampleToken(int seqId, ArgusSamplerConfig config) {
+                return ArgusContext.this.sampleToken(seqId, config);
+            }
+
+            @Override
+            public boolean vocabIsEog(int token) {
+                return ArgusContext.this.vocabIsEog(token);
+            }
+
+            @Override
+            public byte[] tokenToPieceBytes(int token) {
+                return ArgusContext.this.tokenToPieceBytes(token);
+            }
+
+            @Override
+            public int nEmbd() {
+                return ArgusContext.this.nEmbd();
+            }
+
+            @Override
+            public int evalEmbeddings(int[] tokens, int nTokens, int seqId, float[] outEmbeddings) {
+                return ArgusContext.this.evalEmbeddings(tokens, nTokens, seqId, outEmbeddings);
+            }
+        };
     }
 }

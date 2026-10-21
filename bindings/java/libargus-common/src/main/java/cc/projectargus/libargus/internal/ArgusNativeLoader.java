@@ -207,6 +207,9 @@ public final class ArgusNativeLoader {
         providers.sort(Comparator.comparingInt(NativeLibraryProvider::getPriority).reversed());
 
         String customDir = System.getProperty("cc.projectargus.libargus.nativeDir");
+        if (customDir == null || customDir.trim().isEmpty()) {
+            customDir = System.getenv("LIBARGUS_NATIVE_DIR");
+        }
         File destDir;
         if (customDir != null && !customDir.trim().isEmpty()) {
             destDir = new File(customDir.trim());

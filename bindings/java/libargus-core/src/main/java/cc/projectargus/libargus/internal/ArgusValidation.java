@@ -101,6 +101,13 @@ public final class ArgusValidation {
     }
 
     /**
+     * Asserts that {@code [offset, offset + count)} is a valid slice within an array of length {@code arrayLength}.
+     */
+    public static void checkArraySlice(int arrayLength, int offset, int count, String paramName) {
+        ArgusCommonValidation.checkArraySlice(arrayLength, offset, count, paramName);
+    }
+
+    /**
      * Asserts that a segment has positive length and contains a NUL terminator within its bounds.
      */
     public static void checkNullTerminated(MemorySegment segment, String paramName) {

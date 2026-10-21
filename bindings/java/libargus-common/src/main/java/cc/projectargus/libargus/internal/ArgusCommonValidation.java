@@ -10,6 +10,11 @@ import java.util.Objects;
  */
 public final class ArgusCommonValidation {
 
+    public static final int KV_TYPE_F16 = 0;
+    public static final int KV_TYPE_Q8_0 = 8;
+    public static final int KV_TYPE_Q4_0 = 2;
+    public static final int KV_TYPE_Q4_1 = 3;
+
     private ArgusCommonValidation() {}
 
     /**
@@ -104,5 +109,56 @@ public final class ArgusCommonValidation {
     public static byte[] toUtf8(String str, String paramName) {
         Objects.requireNonNull(str, paramName);
         return str.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Asserts that {@code [offset, offset + count)} is a valid slice within an array of length {@code arrayLength}.
+     */
+    public static void checkArraySlice(int arrayLength, int offset, int count, String paramName) {
+        checkNonNegative(offset, "offset");
+        checkNonNegative(count, "count");
+        if ((long) offset + (long) count > arrayLength) {
+            throw new IllegalArgumentException(
+                paramName + " slice [offset=" + offset + ", count=" + count + ") exceeds length (" + arrayLength + ")"
+            );
+        }
+    }
+
+    /**
+     * Validates {@code seqMax} and {@code cloneSlots} invariants for context configurations.
+     */
+    public static void validateContextSlots(int seqMax, int cloneSlots) {
+        checkNonNegative(seqMax, "seqMax");
+        checkNonNegative(cloneSlots, "cloneSlots");
+        if (cloneSlots > 0 && seqMax <= cloneSlots) {
+            throw new IllegalArgumentException(
+                "seqMax (" + seqMax + ") must exceed cloneSlots (" + cloneSlots + ") to reserve at least one base slot"
+            );
+        }
+    }
+
+    /**
+     * Calculates the effective {@code seqMax} capacity incorporating reserved clone slots with overflow checking.
+     */
+    public static int computeEffectiveSeqMax(int seqMax, int cloneSlots, boolean requiresMultiSlotBase) {
+        if (cloneSlots <= 0) {
+            return seqMax;
+        }
+        int baseRequired = requiresMultiSlotBase ? 4 : 1;
+        int base = seqMax > 0 ? seqMax : baseRequired;
+        try {
+            return Math.addExact(base, cloneSlots);
+        } catch (ArithmeticException e) {
+            throw new IllegalArgumentException(
+                "Integer overflow calculating effective seqMax (base=" + base + ", cloneSlots=" + cloneSlots + ")", e
+            );
+        }
+    }
+
+    /**
+     * Returns the default CPU thread ceiling (half of available logical processors, minimum 1).
+     */
+    public static int defaultCpuThreads() {
+        return Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
     }
 }

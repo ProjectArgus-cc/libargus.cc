@@ -1,5 +1,6 @@
 package cc.projectargus.libargus;
 
+import cc.projectargus.libargus.internal.ArgusCommonValidation;
 import cc.projectargus.libargus.internal.ArgusJniValidation;
 
 /**
@@ -35,19 +36,13 @@ public record ArgusContextConfig(
     Boolean causalAttn
 ) {
     public ArgusContextConfig {
-        ArgusJniValidation.checkNonNegative(seqMax, "seqMax");
-        ArgusJniValidation.checkNonNegative(cloneSlots, "cloneSlots");
-        if (cloneSlots > 0 && seqMax <= cloneSlots) {
-            throw new IllegalArgumentException(
-                "seqMax (" + seqMax + ") must exceed cloneSlots (" + cloneSlots + ") to reserve at least one base slot"
-            );
-        }
+        ArgusCommonValidation.validateContextSlots(seqMax, cloneSlots);
     }
 
-    public static final int KV_TYPE_F16 = 0;
-    public static final int KV_TYPE_Q8_0 = 8;
-    public static final int KV_TYPE_Q4_0 = 2;
-    public static final int KV_TYPE_Q4_1 = 3;
+    public static final int KV_TYPE_F16 = ArgusCommonValidation.KV_TYPE_F16;
+    public static final int KV_TYPE_Q8_0 = ArgusCommonValidation.KV_TYPE_Q8_0;
+    public static final int KV_TYPE_Q4_0 = ArgusCommonValidation.KV_TYPE_Q4_0;
+    public static final int KV_TYPE_Q4_1 = ArgusCommonValidation.KV_TYPE_Q4_1;
 
     public ArgusContextConfig(
         ArgusModel draftModel,
@@ -125,7 +120,7 @@ public record ArgusContextConfig(
         return new ArgusContextConfig(
             null,
             contextLength,
-            Math.max(1, Runtime.getRuntime().availableProcessors() / 2),
+            ArgusCommonValidation.defaultCpuThreads(),
             KV_TYPE_F16,
             KV_TYPE_F16,
             0,
@@ -141,7 +136,7 @@ public record ArgusContextConfig(
     public static class Builder {
         private ArgusModel draftModel = null;
         private int contextLength = 2048;
-        private int cpuThreads = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+        private int cpuThreads = ArgusCommonValidation.defaultCpuThreads();
         private int typeK = KV_TYPE_F16;
         private int typeV = KV_TYPE_F16;
         private int specDraftNMax = 0;
@@ -226,16 +221,11 @@ public record ArgusContextConfig(
         }
 
         public ArgusContextConfig build() {
-            int effectiveSeqMax = seqMax;
-            if (cloneSlots > 0) {
-                int baseRequired = (draftModel != null || specDraftNMax > 0 || enableDraftMtp) ? 4 : 1;
-                int base = seqMax > 0 ? seqMax : baseRequired;
-                try {
-                    effectiveSeqMax = Math.addExact(base, cloneSlots);
-                } catch (ArithmeticException e) {
-                    throw new IllegalArgumentException("Integer overflow calculating effective seqMax (base=" + base + ", cloneSlots=" + cloneSlots + ")", e);
-                }
-            }
+            int effectiveSeqMax = ArgusCommonValidation.computeEffectiveSeqMax(
+                seqMax,
+                cloneSlots,
+                draftModel != null || specDraftNMax > 0 || enableDraftMtp
+            );
             return new ArgusContextConfig(
                 draftModel,
                 contextLength,

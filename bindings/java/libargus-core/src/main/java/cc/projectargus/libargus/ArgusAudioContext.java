@@ -8,6 +8,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.nio.file.Path;
 import java.util.Objects;
 
 /**
@@ -32,6 +33,34 @@ public final class ArgusAudioContext extends ArgusNativeResource {
         } catch (Throwable t) {
             // Suppress destruction exceptions
         }
+    }
+
+    /**
+     * Initializes a Whisper transcribing session context using a temporary confined arena.
+     *
+     * @param whisperModelPath path to the local Whisper GGUF weights
+     * @param cpuThreads       CPU thread limit for tensor operations
+     * @param gpuLayers        number of encoder/decoder layers to run in VRAM
+     * @return an active ArgusAudioContext
+     */
+    public static ArgusAudioContext init(Path whisperModelPath, int cpuThreads, int gpuLayers) {
+        Objects.requireNonNull(whisperModelPath, "whisperModelPath");
+        return init(whisperModelPath.toAbsolutePath().toString(), cpuThreads, gpuLayers);
+    }
+
+    /**
+     * Initializes a Whisper transcribing session context.
+     *
+     * @param arena            allocation scope for configurations
+     * @param whisperModelPath path to the local Whisper GGUF weights
+     * @param cpuThreads       CPU thread limit for tensor operations
+     * @param gpuLayers        number of encoder/decoder layers to run in VRAM
+     * @return an active ArgusAudioContext
+     */
+    public static ArgusAudioContext init(Arena arena, Path whisperModelPath, int cpuThreads, int gpuLayers) {
+        Objects.requireNonNull(arena, "arena");
+        Objects.requireNonNull(whisperModelPath, "whisperModelPath");
+        return init(arena, whisperModelPath.toAbsolutePath().toString(), cpuThreads, gpuLayers);
     }
 
     /**
@@ -94,18 +123,22 @@ public final class ArgusAudioContext extends ArgusNativeResource {
      * Synchronously transcribes a float PCM array containing 16kHz audio samples.
      */
     public String transcribe(float[] pcm, int sampleCount, int maxChars) {
+        return transcribe(pcm, 0, sampleCount, maxChars);
+    }
+
+    /**
+     * Synchronously transcribes a slice of a float PCM array containing 16kHz audio samples.
+     */
+    public String transcribe(float[] pcm, int offset, int sampleCount, int maxChars) {
         Objects.requireNonNull(pcm, "pcm");
-        ArgusValidation.checkNonNegative(sampleCount, "sampleCount");
+        ArgusValidation.checkArraySlice(pcm.length, offset, sampleCount, "pcm");
         ArgusValidation.checkPositive(maxChars, "maxChars");
-        if (sampleCount > pcm.length) {
-            throw new IllegalArgumentException("sampleCount (" + sampleCount + ") exceeds pcm.length (" + pcm.length + ")");
-        }
         if (sampleCount == 0) {
             return "";
         }
         try (Arena local = Arena.ofConfined()) {
             MemorySegment pcmSeg = local.allocate(ValueLayout.JAVA_FLOAT, sampleCount);
-            MemorySegment.copy(pcm, 0, pcmSeg, ValueLayout.JAVA_FLOAT, 0, sampleCount);
+            MemorySegment.copy(pcm, offset, pcmSeg, ValueLayout.JAVA_FLOAT, 0, sampleCount);
             return transcribe(pcmSeg, sampleCount, maxChars);
         }
     }

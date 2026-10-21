@@ -143,12 +143,22 @@ public class ArgusDifferentialEquivalenceTest {
 
                 Method ffmCtxInit = ffmContextCls.getMethod("init", ffmModelCls, ffmConfigCls);
                 Method ffmGenerate = ffmContextCls.getMethod("generate", String.class, int.class, ArgusSamplerConfig.class, Consumer.class);
+                Method ffmGenerateUntil = ffmContextCls.getMethod("generateUntil", String.class, int.class, ArgusSamplerConfig.class, java.util.function.Predicate.class);
 
                 try (AutoCloseable ffmCtx = (AutoCloseable) ffmCtxInit.invoke(null, ffmModel, ffmGenConfig);
                      ArgusContext jniCtx = ArgusContext.init(jniModel, jniGenConfig)) {
                     String ffmOut = (String) ffmGenerate.invoke(ffmCtx, "Hello world", 4, greedy, null);
                     String jniOut = jniCtx.generate("Hello world", 4, greedy, null);
                     assertEquals(ffmOut, jniOut, "FFM and JNI greedy generation must produce identical text");
+
+                    int[] ffmPieces = {0};
+                    int[] jniPieces = {0};
+                    java.util.function.Predicate<String> ffmPred = p -> ++ffmPieces[0] < 2;
+                    java.util.function.Predicate<String> jniPred = p -> ++jniPieces[0] < 2;
+                    String ffmEarly = (String) ffmGenerateUntil.invoke(ffmCtx, "Hello world", 6, greedy, ffmPred);
+                    String jniEarly = jniCtx.generateUntil("Hello world", 6, greedy, jniPred);
+                    assertEquals(ffmEarly, jniEarly, "FFM and JNI generateUntil early-stop must produce identical text");
+                    assertEquals(ffmPieces[0], jniPieces[0], "FFM and JNI generateUntil must invoke predicate identical times");
                 }
 
                 // 4. Deterministic embedding extraction parity

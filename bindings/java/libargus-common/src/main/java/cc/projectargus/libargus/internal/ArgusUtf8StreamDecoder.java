@@ -8,6 +8,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 /**
  * Stateful, RFC 3629-compliant incremental UTF-8 stream decoder for BPE token streaming.
@@ -70,6 +71,40 @@ public final class ArgusUtf8StreamDecoder {
         if (bytes != null && bytes.length > 0) {
             accept(bytes, 0, bytes.length, onPiece);
         }
+    }
+
+    /**
+     * Feeds a raw token byte slice into the UTF-8 state machine and invokes {@code shouldContinue}
+     * for any completed character sequences.
+     *
+     * @param bytes          raw UTF-8 token piece bytes
+     * @param offset         starting index in {@code bytes}
+     * @param length         number of bytes to process
+     * @param shouldContinue optional predicate invoked when >= 1 chars are decoded; returning {@code false} signals early stop
+     * @return {@code true} if generation should continue, or {@code false} if {@code shouldContinue} returned {@code false}
+     */
+    public boolean acceptUntil(byte[] bytes, int offset, int length, Predicate<String> shouldContinue) {
+        if (shouldContinue == null) {
+            accept(bytes, offset, length, null);
+            return true;
+        }
+        boolean[] keepGoing = { true };
+        accept(bytes, offset, length, piece -> {
+            if (keepGoing[0] && !shouldContinue.test(piece)) {
+                keepGoing[0] = false;
+            }
+        });
+        return keepGoing[0];
+    }
+
+    /**
+     * Convenience overload feeding an entire {@code byte[]} array into {@link #acceptUntil(byte[], int, int, Predicate)}.
+     */
+    public boolean acceptUntil(byte[] bytes, Predicate<String> shouldContinue) {
+        if (bytes == null || bytes.length == 0) {
+            return true;
+        }
+        return acceptUntil(bytes, 0, bytes.length, shouldContinue);
     }
 
     /**

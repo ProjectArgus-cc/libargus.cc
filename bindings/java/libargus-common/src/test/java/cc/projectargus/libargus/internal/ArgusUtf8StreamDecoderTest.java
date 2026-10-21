@@ -75,4 +75,25 @@ class ArgusUtf8StreamDecoderTest {
         assertEquals(large, finished);
         assertEquals(large, streamed.toString());
     }
+
+    @Test
+    void testAcceptUntilEarlyStopAcrossMultiByteBoundary() {
+        String text = "αβγ🔥δε";
+        byte[] raw = text.getBytes(StandardCharsets.UTF_8);
+        ArgusUtf8StreamDecoder decoder = new ArgusUtf8StreamDecoder();
+        List<String> emitted = new ArrayList<>();
+
+        for (int i = 0; i < raw.length; i++) {
+            boolean cont = decoder.acceptUntil(raw, i, 1, piece -> {
+                emitted.add(piece);
+                return !"🔥".equals(piece);
+            });
+            if (!cont) {
+                break;
+            }
+        }
+        String result = decoder.finish();
+        assertEquals("αβγ🔥", result);
+        assertEquals(List.of("α", "β", "γ", "🔥"), emitted);
+    }
 }

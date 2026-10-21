@@ -1,8 +1,8 @@
 # Release operations
 
 A source tag, a validated candidate, and a published release are separate states.
-The source-only v1.7.4 release is not proof of binary publication. This pass does
-not publish, move tags, or change repository protection settings.
+Every release candidate is cryptographically bound to a single source commit and
+verified across all eight native targets before publication.
 
 ## Contract
 
@@ -82,7 +82,7 @@ python3 -m pip install PyYAML==6.0.2
 python3 scripts/release/pins.py
 bash scripts/release/lint_workflows.sh
 python3 -m unittest discover -s scripts/release/tests -v
-python3 scripts/release/preflight.py v1.8.0
+python3 scripts/release/preflight.py v2.1.1
 # With downloaded native-<catalog-id> artifact directories:
 python3 scripts/release/candidate.py stage native-binaries
 ./gradlew publishAllPublicationsToCandidateRepository -PskipCMake=true

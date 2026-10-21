@@ -37,4 +37,8 @@ public final class ArgusJniValidation {
     public static byte[] toUtf8(String str, String name) {
         return ArgusCommonValidation.toUtf8(str, name);
     }
+
+    public static void checkArraySlice(int arrayLength, int offset, int count, String name) {
+        ArgusCommonValidation.checkArraySlice(arrayLength, offset, count, name);
+    }
 }

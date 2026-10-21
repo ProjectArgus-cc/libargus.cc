@@ -11,3 +11,10 @@ media/
 *.zip
 __pycache__/
 *.gguf
+*.so
+*.dylib
+*.dll
+*.y4m
+candidate/
+receipts/
+test-outputs/

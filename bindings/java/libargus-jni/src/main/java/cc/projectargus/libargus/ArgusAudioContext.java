@@ -4,6 +4,7 @@ import cc.projectargus.libargus.internal.ArgusJni;
 import cc.projectargus.libargus.internal.ArgusJniResource;
 import cc.projectargus.libargus.internal.ArgusJniValidation;
 import java.nio.ByteBuffer;
+import java.nio.file.Path;
 import java.util.Objects;
 
 /**
@@ -24,6 +25,19 @@ public final class ArgusAudioContext extends ArgusJniResource {
     @Override
     protected void releaseNativeHandle(long oldHandle) {
         ArgusJni.nativeAudioFree(oldHandle);
+    }
+
+    /**
+     * Initializes a Whisper transcribing session context from a local file path.
+     *
+     * @param whisperModelPath path to the local Whisper GGUF weights
+     * @param cpuThreads       CPU thread limit for tensor operations
+     * @param gpuLayers        number of encoder/decoder layers to run in VRAM
+     * @return an active ArgusAudioContext
+     */
+    public static ArgusAudioContext init(Path whisperModelPath, int cpuThreads, int gpuLayers) {
+        Objects.requireNonNull(whisperModelPath, "whisperModelPath");
+        return init(whisperModelPath.toAbsolutePath().toString(), cpuThreads, gpuLayers);
     }
 
     /**
@@ -56,14 +70,8 @@ public final class ArgusAudioContext extends ArgusJniResource {
      */
     public String transcribe(float[] pcm, int offset, int sampleCount, int maxChars) {
         Objects.requireNonNull(pcm, "pcm");
-        ArgusJniValidation.checkNonNegative(offset, "offset");
-        ArgusJniValidation.checkNonNegative(sampleCount, "sampleCount");
+        ArgusJniValidation.checkArraySlice(pcm.length, offset, sampleCount, "pcm");
         ArgusJniValidation.checkPositive(maxChars, "maxChars");
-        if ((long) offset + (long) sampleCount > pcm.length) {
-            throw new IllegalArgumentException(
-                "PCM slice [offset=" + offset + ", sampleCount=" + sampleCount + ") exceeds pcm.length (" + pcm.length + ")"
-            );
-        }
         if (sampleCount == 0) {
             return "";
         }
