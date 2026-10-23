@@ -118,6 +118,26 @@ class LibArgusLangChain4jDocSnippetTest {
     }
 
     @Test
+    void testReadmeSection5LangChain4jSnippetCompilesAndExecutes() throws Exception {
+        Path root = ArgusSyntheticTestFixtures.resolveRepoRoot();
+        Path readme = root.resolve("README.md");
+        List<JavaSnippet> snippets = ArgusDocSnippetRunner.extractJavaSnippets(readme);
+        assertEquals(5, snippets.size());
+
+        JavaSnippet readmeLang4j = snippets.get(4);
+        String tinyGguf = ArgusDocSnippetRunner.escapeJavaPath(
+                ArgusSyntheticTestFixtures.generateTinyCausalModel(tempDir));
+
+        String out = ArgusDocSnippetRunner.compileAndRunMain(
+                readmeLang4j,
+                src -> src
+                        .replace("models/llama-3-8b.gguf", tinyGguf)
+                        .replace(".contextLength(4096)", ".contextLength(64)")
+                        .replace(".maxOutputTokens(128)", ".maxOutputTokens(4)"));
+        assertTrue(out.contains("LangChain4j reply:"), "Expected LangChain4j reply output from README snippet, got: " + out);
+    }
+
+    @Test
     void testChainedModelToModelPipeline() throws Exception {
         Path root = ArgusSyntheticTestFixtures.resolveRepoRoot();
         Path tinyGguf = ArgusSyntheticTestFixtures.generateTinyCausalModel(tempDir);

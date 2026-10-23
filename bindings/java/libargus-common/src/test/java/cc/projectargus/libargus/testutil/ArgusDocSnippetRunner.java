@@ -279,15 +279,15 @@ public final class ArgusDocSnippetRunner {
     }
 
     /**
-     * Compiles and executes all 4 Java quickstart snippets in {@code README.md} against the active
-     * binding module on the test classpath.
+     * Compiles and executes all 4 core Java quickstart snippets (indices 0..3) in {@code README.md}
+     * against the active binding module on the test classpath.
      */
     public static void verifyReadmeSnippets(Path tempDir) throws Exception {
         Path root = ArgusSyntheticTestFixtures.resolveRepoRoot();
         Path readme = root.resolve("README.md");
         List<JavaSnippet> snippets = extractJavaSnippets(readme);
-        if (snippets.size() != 4) {
-            throw new AssertionError("Expected 4 Java snippets in README.md, found " + snippets.size());
+        if (snippets.size() != 5) {
+            throw new AssertionError("Expected 5 Java snippets in README.md, found " + snippets.size());
         }
 
         String tinyGguf = escapeJavaPath(ArgusSyntheticTestFixtures.generateTinyCausalModel(tempDir));

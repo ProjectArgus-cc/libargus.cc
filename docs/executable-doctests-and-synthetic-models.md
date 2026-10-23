@@ -2,7 +2,7 @@
 
 `libargus` enforces two engineering guarantees that are rare in native C++/JVM AI runtimes:
 
-1. **Zero Documentation Drift Across Dual FFI Bindings:** Every Java code block in [`README.md`](../README.md), [`docs/quickstart-java.md`](quickstart-java.md), [`docs/quickstart-android-jni.md`](quickstart-android-jni.md), and [`docs/quickstart-langchain4j.md`](quickstart-langchain4j.md) (`25` snippets in total) is extracted directly from the Markdown source, compiled in memory via `javax.tools.JavaCompiler`, and executed against the live native `libargus` runtime during `./gradlew test`.
+1. **Zero Documentation Drift Across Dual FFI Bindings:** Every Java code block in [`README.md`](../README.md), [`docs/quickstart-java.md`](quickstart-java.md), [`docs/quickstart-android-jni.md`](quickstart-android-jni.md), and [`docs/quickstart-langchain4j.md`](quickstart-langchain4j.md) (`26` snippets in total) is extracted directly from the Markdown source, compiled in memory via `javax.tools.JavaCompiler`, and executed against the live native `libargus` runtime during `./gradlew test`.
 2. **100% Native Modality Coverage with Zero Repository Binary Bloat:** Rather than checking gigabytes of `.gguf`, `.bin`, `.png`, and `.wav` test assets into Git LFS or requiring cloud GPU runners, [`ArgusSyntheticTestFixtures`](../bindings/java/libargus-common/src/test/java/cc/projectargus/libargus/testutil/ArgusSyntheticTestFixtures.java) mathematically synthesizes valid, deterministic miniature neural networks on the fly into JUnit `@TempDir` directories in milliseconds—exercising **Causal LLM**, **Bidirectional Embeddings**, **Vision + Audio Multimodal Projection (`libmtmd`)**, **Whisper Speech-to-Text (ASR)**, and **1,282-Channel Spectral Vocoder Text-to-Speech (TTS)** in under **6 seconds** on a standard CPU.
 
 ---
@@ -25,7 +25,7 @@ Rather than isolating documentation tests in a single leaf module, `libargus` pl
 ```mermaid
 flowchart TD
     subgraph DOCS["Markdown Documentation Sources (Single Source of Truth)"]
-        README["README.md<br/>(4 Quickstart Snippets)"]
+        README["README.md<br/>(4 Core + 1 LangChain4j Snippets)"]
         QS_JAVA["docs/quickstart-java.md<br/>(13 Core + 1 LangChain4j Snippets)"]
         QS_AND["docs/quickstart-android-jni.md<br/>(3 Android / JNI Snippets)"]
         QS_LC4J["docs/quickstart-langchain4j.md<br/>(5 End-to-End Recipes)"]
@@ -62,7 +62,7 @@ flowchart TD
 2. **Fragment & Full-Class Normalization (`wrapFragmentAsMainClass`):**
    Documentation naturally contains both standalone classes (`public class QuickstartText { ... }`) and focused code fragments (such as Section 2.2's `ArgusAbortFlag` snippet or Section 8.3's `ArgusPerfTimings` snippet). `ArgusDocSnippetRunner` automatically hoists `import` statements from fragments and wraps statement blocks inside a synthetic `public static void main(String[] args) throws Exception` with any contextual prelude/postlude variables.
 3. **Zero-Disk In-Memory Compilation (`InMemoryClassFileManager`):**
-   Invokes `ToolProvider.getSystemJavaCompiler()` (`javac`) against `System.getProperty("java.class.path")` using `SimpleJavaFileObject` buffers in RAM (`string:///` source input $\to$ `mem:///` bytecode output) and loads the resulting bytecode through an isolated child `ClassLoader`. Compiling and executing all 25 documentation snippets adds less than `500 ms` of compiler overhead.
+   Invokes `ToolProvider.getSystemJavaCompiler()` (`javac`) against `System.getProperty("java.class.path")` using `SimpleJavaFileObject` buffers in RAM (`string:///` source input $\to$ `mem:///` bytecode output) and loads the resulting bytecode through an isolated child `ClassLoader`. Compiling and executing all 26 documentation snippets adds less than `500 ms` of compiler overhead.
 4. **Dual-Binding Differential Execution:**
    * When [`ArgusCoreDocSnippetTest`](../bindings/java/libargus-core/src/test/java/cc/projectargus/libargus/ArgusCoreDocSnippetTest.java) runs `verifyReadmeSnippets` and `verifyQuickstartJavaSnippets`, the in-memory compiler binds every `cc.projectargus.libargus.*` symbol to **`:libargus-core` (Project Panama FFM)**.
    * When [`ArgusJniDocSnippetTest`](../bindings/java/libargus-jni/src/test/java/cc/projectargus/libargus/ArgusJniDocSnippetTest.java) runs those exact same methods, the in-memory compiler binds every `cc.projectargus.libargus.*` symbol to **`:libargus-jni` (Standard JNI)**.

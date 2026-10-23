@@ -15,6 +15,7 @@ Built directly on top of **GGML**, **llama.cpp (`libmtmd`)**, and **whisper.cpp*
 | :--- | :--- | :--- | :--- |
 | **`cc.projectargus:libargus-core`** | **JDK 22+** (`--release 22`) | Project Panama FFM (`MemorySegment`, `Arena`, `Linker`) | Ultra-low-latency server & desktop JVMs (`--enable-native-access=ALL-UNNAMED`) |
 | **`cc.projectargus:libargus-jni`** | **JDK 17+ & Android** (`--release 17`) | Unified JNI Bridge (`DirectByteBuffer` & primitive arrays) | Android apps/NDK, enterprise JDK 17/21 services, zero JVM flag requirements |
+| **`cc.projectargus:libargus-langchain4j`** | **JDK 17+ / 22+ & Android** (`--release 17`) | In-Process LangChain4j `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `TokenCountEstimator` | Zero-sidecar local GGUF inference, bidirectional RAG embeddings, and multimodal Vision/Audio over either FFM or JNI ([Cookbook](docs/quickstart-langchain4j.md)) |
 
 ---
 
@@ -48,6 +49,15 @@ dependencies {
         <artifactId>libargus-core</artifactId>
         <version>2.3.1</version>
     </dependency>
+
+    <!-- Optional: In-Process LangChain4j Integration (works seamlessly with either libargus-core or libargus-jni) -->
+    <!--
+    <dependency>
+        <groupId>cc.projectargus</groupId>
+        <artifactId>libargus-langchain4j</artifactId>
+        <version>2.3.1</version>
+    </dependency>
+    -->
 
     <!-- Optional: Precompiled Native SPI Provider -->
     <dependency>
@@ -143,6 +153,40 @@ try (ArgusAudioContext whisper = ArgusAudioContext.init(Path.of("models/whisper-
     float[] pcm16kHz = loadNormalized16kHzAudio();
     String transcript = whisper.transcribe(pcm16kHz, pcm16kHz.length, 4096);
     System.out.println(transcript);
+}
+```
+
+### 5. In-Process LangChain4j Chat, Streaming & RAG (`:libargus-langchain4j`)
+```java
+import cc.projectargus.libargus.langchain4j.LibArgusChatFormatter;
+import cc.projectargus.libargus.langchain4j.LibArgusChatModel;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import java.nio.file.Path;
+
+public class QuickstartLangChain4j {
+    public static void main(String[] args) {
+        try (LibArgusChatModel model = LibArgusChatModel.builder()
+                .modelPath(Path.of("models/llama-3-8b.gguf"))
+                .chatFormatter(LibArgusChatFormatter.chatMl())
+                .contextLength(4096)
+                .gpuLayers(99)
+                .temperature(0.2f)
+                .maxOutputTokens(128)
+                .seed(42)
+                .build()) {
+
+            ChatResponse response = model.chat(ChatRequest.builder()
+                    .messages(
+                        SystemMessage.from("Be concise."),
+                        UserMessage.from("Why run GGUF models in-process on the JVM?")
+                    )
+                    .build());
+            System.out.println("LangChain4j reply: " + response.aiMessage().text());
+        }
+    }
 }
 ```
 
