@@ -27,12 +27,15 @@ public class ArgusDifferentialEquivalenceTest {
         "cc.projectargus.libargus.ArgusLogCallback",
         "cc.projectargus.libargus.ArgusPerfTimings",
         "cc.projectargus.libargus.ArgusSamplerConfig",
+        "cc.projectargus.libargus.ArgusGenerationResult",
+        "cc.projectargus.libargus.ArgusGenerationResult$StopReason",
         "cc.projectargus.libargus.ArgusNativeException",
         "cc.projectargus.libargus.ArgusNativeException$ErrorResolver",
         "cc.projectargus.libargus.internal.ArgusNativeLoader",
         "cc.projectargus.libargus.internal.AbstractNativeResource",
         "cc.projectargus.libargus.internal.AbstractNativeResource$HandleAction",
         "cc.projectargus.libargus.internal.ArgusUtf8StreamDecoder",
+        "cc.projectargus.libargus.internal.ArgusStopSequenceDetector",
         "cc.projectargus.libargus.internal.ArgusCommonValidation",
         "cc.projectargus.libargus.internal.ArgusBackendSupport"
     );
@@ -144,12 +147,28 @@ public class ArgusDifferentialEquivalenceTest {
                 Method ffmCtxInit = ffmContextCls.getMethod("init", ffmModelCls, ffmConfigCls);
                 Method ffmGenerate = ffmContextCls.getMethod("generate", String.class, int.class, ArgusSamplerConfig.class, Consumer.class);
                 Method ffmGenerateUntil = ffmContextCls.getMethod("generateUntil", String.class, int.class, ArgusSamplerConfig.class, java.util.function.Predicate.class);
+                Class<?> ffmAbortCls = coreLoader.loadClass("cc.projectargus.libargus.ArgusAbortFlag");
+                Method ffmGenerateWithResult = ffmContextCls.getMethod(
+                    "generateWithResult",
+                    String.class,
+                    int.class,
+                    ArgusSamplerConfig.class,
+                    java.util.Collection.class,
+                    Consumer.class,
+                    ffmAbortCls
+                );
 
                 try (AutoCloseable ffmCtx = (AutoCloseable) ffmCtxInit.invoke(null, ffmModel, ffmGenConfig);
                      ArgusContext jniCtx = ArgusContext.init(jniModel, jniGenConfig)) {
                     String ffmOut = (String) ffmGenerate.invoke(ffmCtx, "Hello world", 4, greedy, null);
                     String jniOut = jniCtx.generate("Hello world", 4, greedy, null);
                     assertEquals(ffmOut, jniOut, "FFM and JNI greedy generation must produce identical text");
+
+                    ArgusGenerationResult ffmRes = (ArgusGenerationResult) ffmGenerateWithResult.invoke(
+                        ffmCtx, "Hello world", 4, greedy, List.of(), null, null
+                    );
+                    ArgusGenerationResult jniRes = jniCtx.generateWithResult("Hello world", 4, greedy, List.of(), (Consumer<String>) null, null);
+                    assertEquals(ffmRes, jniRes, "FFM and JNI generateWithResult telemetry must be identical");
 
                     int[] ffmPieces = {0};
                     int[] jniPieces = {0};

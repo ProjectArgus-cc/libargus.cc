@@ -1307,6 +1307,7 @@ ARGUS_JNI_EXPORT jint JNICALL Java_cc_projectargus_libargus_internal_ArgusJni_na
     }
     try {
         std::vector<float> pcm_buf(static_cast<size_t>(maxSamples));
+        std::vector<float> workspace;
         int32_t written = argus_synthesize_speech_n(
             ctx,
             vocoder,
@@ -1317,6 +1318,20 @@ ARGUS_JNI_EXPORT jint JNICALL Java_cc_projectargus_libargus_internal_ArgusJni_na
             static_cast<int32_t>(maxSamples),
             nullptr,
             0);
+        if (written < -1) {
+            const size_t required_floats = static_cast<size_t>(-static_cast<int64_t>(written));
+            workspace.resize(required_floats);
+            written = argus_synthesize_speech_n(
+                ctx,
+                vocoder,
+                text.ptr,
+                text.len,
+                static_cast<int32_t>(voiceSeed),
+                pcm_buf.data(),
+                static_cast<int32_t>(maxSamples),
+                workspace.data(),
+                static_cast<int64_t>(workspace.size()));
+        }
         if (written > 0) {
             const jsize to_copy = static_cast<jsize>(written <= maxSamples ? written : maxSamples);
             env->SetFloatArrayRegion(outPcm, 0, to_copy, pcm_buf.data());

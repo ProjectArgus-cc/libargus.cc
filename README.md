@@ -26,13 +26,16 @@ Choose **either** `libargus-core` (JDK 22+ Panama FFM) **or** `libargus-jni` (JD
 ```kotlin
 dependencies {
     // Option A: JDK 22+ Project Panama FFM Bindings
-    implementation("cc.projectargus:libargus-core:2.2.0")
+    implementation("cc.projectargus:libargus-core:2.3.0")
 
     // Option B: JDK 17+ / Android Drop-In JNI Bindings (100% API Parity)
-    // implementation("cc.projectargus:libargus-jni:2.2.0")
+    // implementation("cc.projectargus:libargus-jni:2.3.0")
+
+    // Optional: LangChain4j Integration (works seamlessly with either libargus-core or libargus-jni)
+    // implementation("cc.projectargus:libargus-langchain4j:2.3.0")
 
     // Optional: Precompiled Native SPI Provider (auto-extracts on both FFM & JNI)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.2.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.0")
 }
 ```
 
@@ -43,14 +46,14 @@ dependencies {
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.2.0</version>
+        <version>2.3.0</version>
     </dependency>
 
     <!-- Optional: Precompiled Native SPI Provider -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.2.0</version>
+        <version>2.3.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -150,9 +153,11 @@ try (ArgusAudioContext whisper = ArgusAudioContext.init(Path.of("models/whisper-
 | Guide | What You Will Learn |
 | :--- | :--- |
 | **[Java Developer Cookbook](docs/quickstart-java.md)** | Full end-to-end examples: Streaming LLM, Cooperative Cancellation (`ArgusAbortFlag`), Low-Level Token Loops, Logit Bias, Embeddings, Multimodal Vision/Video (`ArgusVideo`), Whisper ASR, Speech Synthesis (TTS), Sequence Slot Forking (`forkSlot`), VRAM Budgeting, Logging, and Performance Telemetry (`ArgusPerfTimings`). |
+| **[LangChain4j Developer Cookbook](docs/quickstart-langchain4j.md)** | Copy-pasteable recipes for `LibArgusChatModel`, `LibArgusStreamingChatModel` (with `ArgusAbortFlag`), `LibArgusEmbeddingModel` (`causalAttn(false)` RAG), Zero-Trust Multimodal Vision/Audio (`allowedMediaRoot`), and shared `ArgusModel` VRAM lifecycles. |
 | **[Android & JDK 17+ JNI Guide](docs/quickstart-android-jni.md)** | Android APK `jniLibs` setup, **safe `ParcelFileDescriptor` (`pfd.getFd()`) model loading**, zero-copy `DirectByteBuffer` (`*Direct`) methods, dynamic big.LITTLE CPU thread scaling (`setNThreads`), and ProGuard / R8 consumer rules. |
+| **[Executable Doctests & Synthetic Models](docs/executable-doctests-and-synthetic-models.md)** | How `libargus` compiles and executes every Markdown documentation snippet across both Panama FFM and JNI using pure-Java, on-the-fly synthesized neural fixtures (`tiny-whisper.bin`, `tiny-mmproj-omni.gguf`, `tiny-vocoder.gguf`, `tiny-causal-260.gguf`). |
 | **[Architecture & Native ABI Spec](docs/architecture-and-abi.md)** | Process-Global Backend Singularity, Thread-Safe Handle Leasing (`AbstractNativeResource`), Panama FFM Shared Arenas, 56-byte C ABI struct layouts (`argus_sampler_params_t`, `argus_perf_timings_t`), M-RoPE & KV cache rollback/shift mechanics, Heap Allocation Profiling (`scripts/AllocationProbe.java`), and CMake compilation matrices. |
-| **[Release Operations Runbook](docs/release.md)** | 8-target cross-platform validation matrix, 43-asset Maven Central & GitHub Release cryptographic provenance (`manifest.json`), classifier verification, and release recovery workflows. |
+| **[Release Operations Runbook](docs/release.md)** | 8-target cross-platform validation matrix, 44-asset Maven Central & GitHub Release cryptographic provenance (`manifest.json`), classifier verification, and release recovery workflows. |
 | **[AI Agent & Maintainer Contract](AGENTS.md)** | Codebase topology, module boundaries, non-negotiable concurrency & memory invariants, 22-row Sampler State Machine contract table, mutation test anchors, and isolated verification commands. |
 
 ---

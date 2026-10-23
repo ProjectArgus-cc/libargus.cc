@@ -115,7 +115,7 @@ context.decodeBatch(promptTokens, promptTokens.length, 0, 0, true);
 context.primeSampler(0, promptTokens, promptTokens.length);
 
 // Optional logit bias arrays (e.g., banning specific token IDs with -Float.MAX_VALUE)
-int[] bannedTokens = new int[] { 151644, 151645 };
+int[] bannedTokens = new int[] { 1, 2 };
 float[] bannedWeights = new float[] { -Float.MAX_VALUE, -Float.MAX_VALUE };
 
 int[] singleToken = new int[1];
@@ -352,3 +352,34 @@ System.out.printf("Prefill: %d tokens (%.2f tok/s) | Decode: %d tokens (%.2f tok
     perf.nEval(), perf.evalTokensPerSecond());
 context.resetPerfTimings();
 ```
+
+---
+
+## 9. LangChain4j Integration (`:libargus-langchain4j`)
+
+See the dedicated **[LangChain4j Developer Cookbook (`docs/quickstart-langchain4j.md`)](quickstart-langchain4j.md)** for full copy-pasteable recipes covering synchronous chat, streaming cancellation, bidirectional RAG embeddings, zero-trust multimodal vision/audio, and shared VRAM model lifecycles.
+
+Add `cc.projectargus:libargus-langchain4j:2.3.0` alongside either `libargus-core` (JDK 22+ Panama FFM) or `libargus-jni` (JDK 17+ / Android) to use local GGUF models with LangChain4j's `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, and `TokenCountEstimator` interfaces:
+
+```java
+import cc.projectargus.libargus.langchain4j.*;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import java.nio.file.Path;
+
+try (LibArgusChatModel chatModel = LibArgusChatModel.builder()
+        .modelPath(Path.of("models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"))
+        .contextLength(8192)
+        .maxOutputTokens(512)
+        .temperature(0.7f)
+        .build()) {
+
+    ChatResponse response = chatModel.chat(UserMessage.from("Explain zero-allocation FFI in one sentence."));
+    System.out.println(response.aiMessage().text());
+}
+```
+
+> [!IMPORTANT]
+> **Zero-Trust Media URI Security in Multimodal Chat:**
+> When `mmprojPath(...)` is configured on `LibArgusChatModel` or `LibArgusStreamingChatModel`, inline Base64 `ImageContent` and `AudioContent` payloads are enabled by default (guarded by a pre-decode `.maxMediaBytes(...)` cap, defaulting to 64 MiB). Remote URLs (`http://`, `https://`) are unconditionally rejected to prevent SSRF, and local `file:` URIs are rejected by default unless confined to a sandbox directory via `.allowedMediaRoot(Path)` or explicitly enabled via `.allowLocalFileMedia(true)`.
+

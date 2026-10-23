@@ -114,7 +114,7 @@ subprojects {
             }
         }
 
-        if (project.name in setOf("libargus-common", "libargus-core", "libargus-jni")) {
+        if (project.name in setOf("libargus-common", "libargus-core", "libargus-jni", "libargus-langchain4j")) {
             val copyVersionFile = tasks.register<Copy>("copyVersionFile") {
                 from("${rootProject.projectDir}/version.txt")
                 into(layout.buildDirectory.dir("generated/resources"))

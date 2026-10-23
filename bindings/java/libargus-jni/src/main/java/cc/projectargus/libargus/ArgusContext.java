@@ -8,6 +8,9 @@ import cc.projectargus.libargus.internal.ArgusTextGenerator;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -25,12 +28,14 @@ public final class ArgusContext extends ArgusJniResource {
 
     private final ArgusModel modelRef;
     private final ArgusModel draftModelRef;
+    private final int contextLength;
     private final ArgusSequenceSlotPool slotPool;
 
     private ArgusContext(long ctxHandle, ArgusModel modelRef, ArgusModel draftModelRef, ArgusContextConfig config) {
         super(ctxHandle);
         this.modelRef = Objects.requireNonNull(modelRef, "modelRef");
         this.draftModelRef = draftModelRef;
+        this.contextLength = (config != null && config.contextLength() > 0) ? config.contextLength() : 2048;
         this.slotPool = new ArgusSequenceSlotPool(getSeqMax(), (config != null) ? config.cloneSlots() : 0);
     }
 
@@ -816,6 +821,148 @@ public final class ArgusContext extends ArgusJniResource {
             shouldContinue,
             abortFlag != null ? abortFlag::isAborted : null
         );
+    }
+
+    /**
+     * Generates text from a prompt with BPE-boundary-safe stop-sequence holdback, early-stopping callback predicate,
+     * and optional cooperative cancellation, returning rich telemetry.
+     */
+    public ArgusGenerationResult generateWithResult(
+        String prompt,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Predicate<String> shouldContinue,
+        ArgusAbortFlag abortFlag
+    ) {
+        return ArgusTextGenerator.generateWithResult(
+            createGenerationOps(abortFlag),
+            prompt,
+            maxTokens,
+            config,
+            stopSequences,
+            shouldContinue,
+            abortFlag != null ? abortFlag::isAborted : null
+        );
+    }
+
+    /**
+     * Generates text from a prompt with BPE-boundary-safe stop-sequence holdback, streaming piece consumer,
+     * and optional cooperative cancellation, returning rich telemetry.
+     */
+    public ArgusGenerationResult generateWithResult(
+        String prompt,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Consumer<String> onPiece,
+        ArgusAbortFlag abortFlag
+    ) {
+        Predicate<String> predicate = (onPiece != null) ? piece -> {
+            onPiece.accept(piece);
+            return true;
+        } : null;
+        return generateWithResult(prompt, maxTokens, config, stopSequences, predicate, abortFlag);
+    }
+
+    /**
+     * Generates text from a multimodal prompt and media bitmaps with BPE-boundary-safe stop-sequence holdback,
+     * early-stopping callback predicate, and optional cooperative cancellation, returning rich telemetry.
+     */
+    public ArgusGenerationResult generateMultimodalWithResult(
+        ArgusMultimodalContext mctx,
+        String prompt,
+        List<ArgusBitmap> bitmaps,
+        int nBatch,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Predicate<String> shouldContinue,
+        ArgusAbortFlag abortFlag
+    ) {
+        Objects.requireNonNull(mctx, "mctx");
+        Objects.requireNonNull(prompt, "prompt");
+        Objects.requireNonNull(bitmaps, "bitmaps");
+        int defaultBatch = Math.max(1, Math.min(512, contextLength));
+        int effectiveBatch = nBatch > 0 ? Math.min(nBatch, contextLength) : defaultBatch;
+        return ArgusTextGenerator.generateMultimodalWithResult(
+            createGenerationOps(abortFlag),
+            prompt,
+            () -> {
+                try (ArgusInputChunks chunks = mctx.tokenize(prompt, true, bitmaps)) {
+                    return evalMultimodalChunks(mctx, chunks, 0, 0, effectiveBatch, true);
+                }
+            },
+            maxTokens,
+            config,
+            stopSequences,
+            shouldContinue,
+            abortFlag != null ? abortFlag::isAborted : null
+        );
+    }
+
+    /**
+     * Generates text from a multimodal prompt and media bitmaps with BPE-boundary-safe stop-sequence holdback,
+     * streaming piece consumer, and optional cooperative cancellation, returning rich telemetry.
+     */
+    public ArgusGenerationResult generateMultimodalWithResult(
+        ArgusMultimodalContext mctx,
+        String prompt,
+        List<ArgusBitmap> bitmaps,
+        int nBatch,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Consumer<String> onPiece,
+        ArgusAbortFlag abortFlag
+    ) {
+        Predicate<String> predicate = (onPiece != null) ? piece -> {
+            onPiece.accept(piece);
+            return true;
+        } : null;
+        return generateMultimodalWithResult(
+            mctx, prompt, bitmaps, nBatch, maxTokens, config, stopSequences, predicate, abortFlag
+        );
+    }
+
+    /**
+     * High-level convenience method to generate text from a multimodal prompt and media bitmaps.
+     */
+    public String generate(
+        ArgusMultimodalContext mctx,
+        String prompt,
+        List<ArgusBitmap> bitmaps,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Consumer<String> onPiece
+    ) {
+        return generate(mctx, prompt, bitmaps, maxTokens, config, onPiece, null);
+    }
+
+    /**
+     * High-level convenience method to generate text from a multimodal prompt and media bitmaps
+     * with optional cooperative cancellation.
+     */
+    public String generate(
+        ArgusMultimodalContext mctx,
+        String prompt,
+        List<ArgusBitmap> bitmaps,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Consumer<String> onPiece,
+        ArgusAbortFlag abortFlag
+    ) {
+        return generateMultimodalWithResult(
+            mctx,
+            prompt,
+            bitmaps,
+            0,
+            maxTokens,
+            config,
+            Collections.emptyList(),
+            onPiece,
+            abortFlag
+        ).text();
     }
 
     private ArgusTextGenerator.ContextOps createGenerationOps(ArgusAbortFlag abortFlag) {

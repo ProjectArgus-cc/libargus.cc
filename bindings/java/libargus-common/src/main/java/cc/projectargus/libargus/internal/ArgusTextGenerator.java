@@ -1,14 +1,17 @@
 package cc.projectargus.libargus.internal;
 
+import cc.projectargus.libargus.ArgusGenerationResult;
 import cc.projectargus.libargus.ArgusNativeException;
 import cc.projectargus.libargus.ArgusSamplerConfig;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 /**
- * Shared high-level autoregressive text generation and embedding extraction loops
+ * Shared high-level autoregressive text, multimodal generation, and embedding extraction loops
  * shared across {@code :libargus-core} (Panama FFM) and {@code :libargus-jni} (JNI).
  */
 public final class ArgusTextGenerator {
@@ -29,6 +32,15 @@ public final class ArgusTextGenerator {
         byte[] tokenToPieceBytes(int token);
         int nEmbd();
         int evalEmbeddings(int[] tokens, int nTokens, int seqId, float[] outEmbeddings);
+    }
+
+    /**
+     * Custom prefill callback used by multimodal chunk evaluation to return the initial KV position
+     * high-water mark ({@code newNPast}) after evaluating text and media chunks.
+     */
+    @FunctionalInterface
+    public interface CustomPrefill {
+        int evaluatePrefill();
     }
 
     private ArgusTextGenerator() {}
@@ -63,12 +75,36 @@ public final class ArgusTextGenerator {
         Predicate<String> shouldContinue,
         BooleanSupplier isAborted
     ) {
+        return generateWithResult(
+            ops,
+            prompt,
+            maxTokens,
+            config,
+            Collections.emptyList(),
+            shouldContinue,
+            isAborted
+        ).text();
+    }
+
+    /**
+     * Executes high-level streaming text generation with BPE-safe stop-sequence holdback,
+     * early-stopping callback predicate, and cooperative cancellation, returning rich telemetry.
+     */
+    public static ArgusGenerationResult generateWithResult(
+        ContextOps ops,
+        String prompt,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Predicate<String> shouldContinue,
+        BooleanSupplier isAborted
+    ) {
         Objects.requireNonNull(ops, "ops");
         Objects.requireNonNull(prompt, "prompt");
         Objects.requireNonNull(config, "config");
         ArgusCommonValidation.checkNonNegative(maxTokens, "maxTokens");
         if (maxTokens == 0) {
-            return "";
+            return new ArgusGenerationResult("", ArgusGenerationResult.StopReason.MAX_TOKENS, 0, 0, null);
         }
 
         ops.clearCacheSlot(0, 0, -1);
@@ -81,20 +117,99 @@ public final class ArgusTextGenerator {
 
         int prefillStatus = ops.decodeBatch(promptTokens, promptTokens.length, 0, true);
         if (prefillStatus == STATUS_CANCELLED) {
-            return "";
+            return new ArgusGenerationResult("", ArgusGenerationResult.StopReason.ABORTED, 0, 0, null);
         }
         if (prefillStatus != 0) {
             ArgusNativeException.checkStatus(prefillStatus, "argus_decode_tokens");
         }
         ops.primeSampler(0, promptTokens, promptTokens.length);
 
-        ArgusUtf8StreamDecoder decoder = new ArgusUtf8StreamDecoder(true);
+        return runAutoregressiveLoop(
+            ops,
+            promptTokens.length,
+            promptTokens.length,
+            maxTokens,
+            config,
+            stopSequences,
+            shouldContinue,
+            isAborted
+        );
+    }
+
+    /**
+     * Executes high-level streaming multimodal generation after evaluating a custom multimodal chunk prefill.
+     */
+    public static ArgusGenerationResult generateMultimodalWithResult(
+        ContextOps ops,
+        String promptForPenaltyPriming,
+        CustomPrefill multimodalPrefill,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Predicate<String> shouldContinue,
+        BooleanSupplier isAborted
+    ) {
+        Objects.requireNonNull(ops, "ops");
+        Objects.requireNonNull(multimodalPrefill, "multimodalPrefill");
+        Objects.requireNonNull(config, "config");
+        ArgusCommonValidation.checkNonNegative(maxTokens, "maxTokens");
+        if (maxTokens == 0) {
+            return new ArgusGenerationResult("", ArgusGenerationResult.StopReason.MAX_TOKENS, 0, 0, null);
+        }
+        if (isAborted != null && isAborted.getAsBoolean()) {
+            return new ArgusGenerationResult("", ArgusGenerationResult.StopReason.ABORTED, 0, 0, null);
+        }
+
+        ops.clearCacheSlot(0, 0, -1);
+        ops.resetSampler(0);
+
+        int newNPast = multimodalPrefill.evaluatePrefill();
+        if (newNPast < 0) {
+            ArgusNativeException.checkStatus(newNPast, "argus_eval_multimodal_chunks");
+        }
+
+        if (promptForPenaltyPriming != null && !promptForPenaltyPriming.isEmpty()) {
+            String strippedPrompt = promptForPenaltyPriming.replace("<__media__>", "");
+            if (!strippedPrompt.isEmpty()) {
+                int[] textTokens = ops.tokenize(strippedPrompt, true);
+                if (textTokens.length > 0) {
+                    ops.primeSampler(0, textTokens, textTokens.length);
+                }
+            }
+        }
+
+        return runAutoregressiveLoop(
+            ops,
+            newNPast,
+            newNPast,
+            maxTokens,
+            config,
+            stopSequences,
+            shouldContinue,
+            isAborted
+        );
+    }
+
+    private static ArgusGenerationResult runAutoregressiveLoop(
+        ContextOps ops,
+        int initialPos,
+        int promptTokenCount,
+        int maxTokens,
+        ArgusSamplerConfig config,
+        Collection<String> stopSequences,
+        Predicate<String> shouldContinue,
+        BooleanSupplier isAborted
+    ) {
+        ArgusUtf8StreamDecoder decoder = new ArgusUtf8StreamDecoder(false);
+        ArgusStopSequenceDetector stopDetector = new ArgusStopSequenceDetector(stopSequences);
         int[] singleToken = new int[1];
-        int currentPos = promptTokens.length;
-        boolean stoppedByPredicate = false;
+        int currentPos = initialPos;
+        int generatedTokens = 0;
+        ArgusGenerationResult.StopReason stopReason = ArgusGenerationResult.StopReason.MAX_TOKENS;
 
         for (int step = 0; step < maxTokens; step++) {
             if (isAborted != null && isAborted.getAsBoolean()) {
+                stopReason = ArgusGenerationResult.StopReason.ABORTED;
                 break;
             }
             int nextToken = ops.sampleToken(0, config);
@@ -102,12 +217,16 @@ public final class ArgusTextGenerator {
                 ArgusNativeException.checkStatus(nextToken, "argus_sample_token_ext");
             }
             if (ops.vocabIsEog(nextToken)) {
+                stopReason = ArgusGenerationResult.StopReason.EOG;
                 break;
             }
+            generatedTokens++;
 
             byte[] pieceBytes = ops.tokenToPieceBytes(nextToken);
-            if (!decoder.acceptUntil(pieceBytes, 0, pieceBytes.length, shouldContinue)) {
-                stoppedByPredicate = true;
+            if (!decoder.acceptUntil(pieceBytes, 0, pieceBytes.length, piece -> stopDetector.acceptPiece(piece, shouldContinue))) {
+                stopReason = stopDetector.isStoppedByStopSequence()
+                    ? ArgusGenerationResult.StopReason.STOP_SEQUENCE
+                    : ArgusGenerationResult.StopReason.STOPPED_BY_CALLBACK;
                 break;
             }
 
@@ -115,6 +234,7 @@ public final class ArgusTextGenerator {
                 singleToken[0] = nextToken;
                 int stepStatus = ops.decodeBatch(singleToken, 1, currentPos, true);
                 if (stepStatus == STATUS_CANCELLED) {
+                    stopReason = ArgusGenerationResult.StopReason.ABORTED;
                     break;
                 }
                 if (stepStatus != 0) {
@@ -124,10 +244,27 @@ public final class ArgusTextGenerator {
             }
         }
 
-        Consumer<String> finishCallback = (!stoppedByPredicate && shouldContinue != null)
-            ? shouldContinue::test
+        boolean haltedByStopOrCallback = (stopReason == ArgusGenerationResult.StopReason.STOP_SEQUENCE
+            || stopReason == ArgusGenerationResult.StopReason.STOPPED_BY_CALLBACK);
+        Predicate<String> flushPredicate = (!haltedByStopOrCallback) ? shouldContinue : null;
+        Consumer<String> decoderFlush = (!haltedByStopOrCallback)
+            ? piece -> stopDetector.acceptPiece(piece, flushPredicate)
             : null;
-        return decoder.finish(finishCallback);
+        decoder.finish(decoderFlush);
+        String finalText = stopDetector.finish(flushPredicate);
+        if (stopDetector.isStoppedByStopSequence()) {
+            stopReason = ArgusGenerationResult.StopReason.STOP_SEQUENCE;
+        } else if (stopDetector.isStoppedByCallback()) {
+            stopReason = ArgusGenerationResult.StopReason.STOPPED_BY_CALLBACK;
+        }
+
+        return new ArgusGenerationResult(
+            finalText,
+            stopReason,
+            promptTokenCount,
+            generatedTokens,
+            stopDetector.matchedStopSequence()
+        );
     }
 
     /**

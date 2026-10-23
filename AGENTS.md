@@ -44,7 +44,7 @@ Modifications to `libargus` must never break the execution contracts relied upon
 ```text
 libargus/
 ├── CMakeLists.txt                   # Layer-0 C++17 build, portable ISA flags & SHA-pinned FetchContent
-├── version.txt                      # Single source of truth for semantic version (2.2.0)
+├── version.txt                      # Single source of truth for semantic version (2.3.0)
 ├── include/
 │   └── libargus.h                   # Master C ABI stable layout & export definitions
 ├── src/
@@ -62,13 +62,14 @@ libargus/
 │   ├── libargus-common/             # Shared JDK 17+ (--release 17) records, validation, SPI & drivers
 │   │   └── src/main/java/cc/projectargus/libargus/
 │   │       ├── ArgusSamplerConfig.java, ArgusPerfTimings.java, ArgusBuildInfo.java
-│   │       ├── ArgusLogLevel.java, ArgusLogCallback.java, ArgusNativeException.java
+│   │       ├── ArgusGenerationResult.java, ArgusLogLevel.java, ArgusLogCallback.java, ArgusNativeException.java
 │   │       ├── internal/
 │   │       │   ├── AbstractNativeResource.java     # ReentrantReadWriteLock handle lease base
 │   │       │   ├── ArgusCommonValidation.java      # Shared KV constants, slice & slot bounds checks
 │   │       │   ├── ArgusNativeLoader.java          # SPI + path/env native library loader
 │   │       │   ├── ArgusSequenceSlotPool.java      # Thread-safe BitSet sequence slot lease pool
-│   │       │   ├── ArgusTextGenerator.java         # Unified generate, generateUntil & extractEmbeddings
+│   │       │   ├── ArgusStopSequenceDetector.java  # Sliding prefix holdback stop-sequence matcher
+│   │       │   ├── ArgusTextGenerator.java         # Unified generate, generateUntil, multimodal & extractEmbeddings
 │   │       │   └── ArgusUtf8StreamDecoder.java     # Stateful multi-byte UTF-8 streaming decoder
 │   │       └── spi/
 │   │           ├── NativeLibraryProvider.java      # Platform SPI interface
@@ -87,6 +88,11 @@ libargus/
 │   │       ├── ArgusBitmap.java, ArgusVideo.java, ArgusVideoItem.java
 │   │       ├── ArgusInputChunks.java, ArgusAbortFlag.java
 │   │       └── internal/ (ArgusJni, ArgusJniResource, ArgusJniValidation)
+│   ├── libargus-langchain4j/        # JDK 17+ / Android (--release 17) LangChain4j integration module
+│   │   └── src/main/java/cc/projectargus/libargus/langchain4j/
+│   │       ├── LibArgusChatModel.java, LibArgusStreamingChatModel.java
+│   │       ├── LibArgusEmbeddingModel.java, LibArgusTokenCountEstimator.java
+│   │       └── LibArgusChatFormatter.java, LibArgusChatSupport.java, LibArgusMediaSupport.java
 │   └── libargus-native-*/           # 8 platform SPI runtime classifier modules (--release 17)
 ├── tests/                           # C++17 CTest integration, media & concurrency suites
 └── scripts/
@@ -96,9 +102,10 @@ libargus/
 ```
 
 ### Java Module Compilation Rules
-* **`:libargus-common` (`--release 17`):** Contains zero Panama (`java.lang.foreign.*`) or JNI `native` method declarations. Houses all shared records, builders, validation helpers, `AbstractNativeResource`, `ArgusSequenceSlotPool`, `ArgusTextGenerator`, `ArgusUtf8StreamDecoder`, `ArgusNativeLoader`, and SPI contracts (`NativeLibraryProvider`, `AbstractNativeLibraryProvider`).
+* **`:libargus-common` (`--release 17`):** Contains zero Panama (`java.lang.foreign.*`) or JNI `native` method declarations. Houses all shared records, builders, validation helpers, `AbstractNativeResource`, `ArgusSequenceSlotPool`, `ArgusStopSequenceDetector`, `ArgusTextGenerator`, `ArgusUtf8StreamDecoder`, `ArgusNativeLoader`, and SPI contracts (`NativeLibraryProvider`, `AbstractNativeLibraryProvider`).
 * **`:libargus-core` (`--release 22`):** Uses Project Panama FFM (`MemorySegment`, `Arena`, `Linker`) while supporting primitive array and slice convenience overloads for API parity with `:libargus-jni`.
 * **`:libargus-jni` (`--release 17`):** Uses standard JNI (`long` native handles, `DirectByteBuffer`, and primitive array/slice overloads) for JDK 17+ and Android API 26+ runtimes.
+* **`:libargus-langchain4j` (`--release 17`):** Implements LangChain4j (`ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `TokenCountEstimator`) using only the binding-neutral `cc.projectargus.libargus.*` Java surface, compiling against `:libargus-jni` (`compileOnly`) so consumers can supply either `:libargus-core` or `:libargus-jni` at runtime.
 * **100% Subsystem Parity Rule:** Every public class (`ArgusBackend`, `ArgusModel`, `ArgusContext`, `ArgusContextConfig`, `ArgusAudioContext`, `ArgusMultimodalContext`, `ArgusBitmap`, `ArgusVideo`, `ArgusVideoItem`, `ArgusInputChunks`, `ArgusAbortFlag`) lives in package `cc.projectargus.libargus` in both `:libargus-core` and `:libargus-jni`. Any new high-level convenience API added to one binding module **must** be added to the other and tested in [`ArgusDifferentialEquivalenceTest`](bindings/java/libargus-jni/src/test/java/cc/projectargus/libargus/ArgusDifferentialEquivalenceTest.java).
 
 ---

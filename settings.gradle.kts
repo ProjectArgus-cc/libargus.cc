@@ -9,6 +9,9 @@ project(":libargus-core").projectDir = file("bindings/java/libargus-core")
 include("libargus-jni")
 project(":libargus-jni").projectDir = file("bindings/java/libargus-jni")
 
+include("libargus-langchain4j")
+project(":libargus-langchain4j").projectDir = file("bindings/java/libargus-langchain4j")
+
 include("libargus-native-linux-cpu")
 project(":libargus-native-linux-cpu").projectDir = file("bindings/java/libargus-native-linux-cpu")
 

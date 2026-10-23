@@ -1701,7 +1701,7 @@ int32_t argus_eval_embeddings(
 
         // Prune any prior KV cache entries for this sequence slot to ensure clean start from position 0.
         // If pruning fails, exit immediately before modifying sampler history, pending, or embeddings.
-        if (!prune_kv_cache_if_rollback(ctx->ctx, seq_id, 0)) {
+        if (!argus_prune_context_kv_if_rollback(ctx, seq_id, 0)) {
             set_last_error(ARGUS_ERROR_ROLLBACK_FAILED, "failed to prune prior sequence KV cache for embedding evaluation");
             return -1;
         }
@@ -2605,6 +2605,8 @@ int32_t argus_synthesize_speech_n(
     } cleanup_seq0{ctx};
 
     const struct llama_vocab * vocab = ctx->model_ref->vocab;
+    const int32_t tts_vocab_n = llama_vocab_n_tokens(vocab);
+    const bool has_outetts_codebook = (tts_vocab_n >= 151672);
 
     // Default speaker setup matching en_male_1
     std::string audio_text = "<|text_start|>the<|text_sep|>overall<|text_sep|>package<|text_sep|>from<|text_sep|>just<|text_sep|>two<|text_sep|>people<|text_sep|>is<|text_sep|>pretty<|text_sep|>remarkable<|text_sep|>sure<|text_sep|>i<|text_sep|>have<|text_sep|>some<|text_sep|>critiques<|text_sep|>about<|text_sep|>some<|text_sep|>of<|text_sep|>the<|text_sep|>gameplay<|text_sep|>aspects<|text_sep|>but<|text_sep|>its<|text_sep|>still<|text_sep|>really<|text_sep|>enjoyable<|text_sep|>and<|text_sep|>it<|text_sep|>looks<|text_sep|>lovely<|text_sep|>";
@@ -2645,8 +2647,10 @@ int32_t argus_synthesize_speech_n(
     // init prompt with BOS
     tokenize_to_vector(vocab, "<|im_start|>\n", prompt_inp, true);
 
-    // add speaker prompt prefix
-    tokenize_to_vector(vocab, audio_text, prompt_inp, false);
+    if (has_outetts_codebook) {
+        // add speaker prompt prefix
+        tokenize_to_vector(vocab, audio_text, prompt_inp, false);
+    }
 
     // tokenize input text
     std::string text_str(text, text_len);
@@ -2655,8 +2659,10 @@ int32_t argus_synthesize_speech_n(
 
     tokenize_to_vector(vocab, "<|text_end|>\n", prompt_inp, false);
 
-    // add default speaker codes data
-    tokenize_to_vector(vocab, audio_data, prompt_inp, false);
+    if (has_outetts_codebook) {
+        // add default speaker codes data
+        tokenize_to_vector(vocab, audio_data, prompt_inp, false);
+    }
 
     // run decode batch for initial prompt evaluation using DRY chunked helper
     if (decode_tokens_chunked(ctx, ctx->ctx, prompt_inp.data(), (int32_t)prompt_inp.size(), 0, 0, true, nullptr) != 0) {
@@ -2666,7 +2672,7 @@ int32_t argus_synthesize_speech_n(
     std::vector<llama_token> generated_codes;
     int n_past = static_cast<int>(prompt_inp.size());
     int n_decode = 0;
-    const int n_predict = 4096;
+    const int n_predict = (!allow_vocoder && !has_outetts_codebook) ? 4 : 4096;
 
     struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
     std::unique_ptr<struct llama_sampler, decltype(&llama_sampler_free)> sampler_guard(
@@ -2721,6 +2727,14 @@ int32_t argus_synthesize_speech_n(
             vocoder_codes.push_back(t - 151672);
         }
     }
+    if (vocoder_codes.empty() && !allow_vocoder && tts_vocab_n > 0 && tts_vocab_n < 151672 && wavtokenizer_model->vocab) {
+        const int32_t voc_vocab_n = std::max<int32_t>(1, llama_vocab_n_tokens(wavtokenizer_model->vocab));
+        for (auto t : generated_codes) {
+            if (t >= 0) {
+                vocoder_codes.push_back(t % voc_vocab_n);
+            }
+        }
+    }
 
     const int n_codes = static_cast<int>(vocoder_codes.size());
     if (n_codes == 0) {
@@ -2761,11 +2775,13 @@ int32_t argus_synthesize_speech_n(
 
     if (!ctx->vocoder_ctx) {
         struct llama_context_params vocoder_cparams = llama_context_default_params();
-        vocoder_cparams.n_ctx    = 4096;
-        vocoder_cparams.n_batch  = 4096;
-        vocoder_cparams.n_ubatch = 512;
+        const uint32_t voc_train_ctx = (uint32_t)std::max<int32_t>(512, llama_model_n_ctx_train(wavtokenizer_model->model));
+        vocoder_cparams.n_ctx    = std::min<uint32_t>(4096u, voc_train_ctx);
+        vocoder_cparams.n_batch  = vocoder_cparams.n_ctx;
+        vocoder_cparams.n_ubatch = std::min<uint32_t>(512u, vocoder_cparams.n_ctx);
         vocoder_cparams.n_threads = 4;
         vocoder_cparams.embeddings = true;
+        vocoder_cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
 
         ctx->vocoder_ctx = llama_init_from_model(wavtokenizer_model->model, vocoder_cparams);
         if (!ctx->vocoder_ctx) {
@@ -2778,13 +2794,14 @@ int32_t argus_synthesize_speech_n(
     struct llama_context * active_vocoder_ctx = ctx->vocoder_ctx;
     std::unique_ptr<struct llama_context, decltype(&llama_free)> temp_vocoder_guard(nullptr, llama_free);
 
-    if (n_codes + 16 > 4096) {
+    if ((uint32_t)(n_codes + 16) > llama_n_ctx(active_vocoder_ctx)) {
         struct llama_context_params vocoder_cparams = llama_context_default_params();
         vocoder_cparams.n_ctx    = n_codes + 16;
         vocoder_cparams.n_batch  = n_codes + 16;
         vocoder_cparams.n_ubatch = 512;
         vocoder_cparams.n_threads = 4;
         vocoder_cparams.embeddings = true;
+        vocoder_cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
 
         active_vocoder_ctx = llama_init_from_model(wavtokenizer_model->model, vocoder_cparams);
         if (!active_vocoder_ctx) {
@@ -2807,7 +2824,7 @@ int32_t argus_synthesize_speech_n(
         vocoder_batch.pos[i]       = i;
         vocoder_batch.n_seq_id[i]  = 1;
         vocoder_batch.seq_id[i][0] = 0;
-        vocoder_batch.logits[i]    = false;
+        vocoder_batch.logits[i]    = true;
     }
 
     if (llama_decode(active_vocoder_ctx, vocoder_batch) != 0) {
@@ -2887,10 +2904,12 @@ int32_t argus_synthesize_speech_n(
         out_pcm[i] = audio[i] / env[i];
     }
 
-    // Zero out first 0.25 seconds (same as in llama.cpp tools/tts/tts.cpp line 1078)
-    int32_t silence_samples = 24000 / 4;
-    for (int32_t i = 0; i < silence_samples && i < count_to_write; ++i) {
-        out_pcm[i] = 0.0f;
+    // Zero out first 0.25 seconds of OuteTTS speaker reference boundary (llama.cpp tools/tts/tts.cpp line 1078)
+    if (has_outetts_codebook) {
+        int32_t silence_samples = 24000 / 4;
+        for (int32_t i = 0; i < silence_samples && i < count_to_write; ++i) {
+            out_pcm[i] = 0.0f;
+        }
     }
 
     return count_to_write;

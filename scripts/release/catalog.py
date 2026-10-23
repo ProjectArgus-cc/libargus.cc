@@ -49,7 +49,7 @@ def version():
     return value
 
 def java_modules():
-    return ['libargus-common', 'libargus-core', 'libargus-jni']
+    return ['libargus-common', 'libargus-core', 'libargus-jni', 'libargus-langchain4j']
 
 def modules():
     return java_modules() + [r['module'] for r in targets()]

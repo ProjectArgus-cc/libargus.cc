@@ -44,7 +44,7 @@ def fixture(root):
         info = {'target': row['id'], 'sha256': digest(dest / row['library']), 'features': row['mask'],
                 'build': {'source': SOURCE, 'version': v, 'cpu_baseline': row['baseline'], 'abi_header_sha256': '0' * 64}}
         (dest / 'native.json').write_text(json.dumps(info))
-    java_mods = {'libargus-common', 'libargus-core', 'libargus-jni'}
+    java_mods = {'libargus-common', 'libargus-core', 'libargus-jni', 'libargus-langchain4j'}
     for module in modules():
         dest = maven / 'cc/projectargus' / module / v; dest.mkdir(parents=True)
         for suffix in ('', '-sources', '-javadoc'):
@@ -81,7 +81,7 @@ class CandidateTests(unittest.TestCase):
     def seal(self): build(self.maven, self.natives, self.candidate, SOURCE, development=True)
     def test_sealed_roundtrip_and_mutation(self):
         stage_natives(self.natives, self.root / 'bindings'); self.seal()
-        manifest = verify(self.candidate, False); self.assertEqual(len(manifest['assets']), 41)
+        manifest = verify(self.candidate, False); self.assertEqual(len(manifest['assets']), 44)
         with self.assertRaisesRegex(ValueError, 'signed release'): verify(self.candidate)
         payload = self.candidate / manifest['assets'][0]
         with payload.open('r+b') as f: f.seek(20); f.write(b'X')
