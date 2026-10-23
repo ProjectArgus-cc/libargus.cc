@@ -79,7 +79,11 @@ class ArgusJniDocSnippetTest {
 
         ArgusDocSnippetRunner.compileAndRunFragment(
                 new JavaSnippet(fdSnippet.markdownFile(), 0, fdSnippet.startLine(), fdSnippet.heading(),
-                        "new DocSnippet_0().runInferenceFromContentUri(new ContentResolver(), new Uri(\"" + tinyGguf + "\"));"),
+                        "try (ParcelFileDescriptor probe = new ParcelFileDescriptor(\"" + tinyGguf + "\")) {\n"
+                                + "    if (probe.getFd() >= 0) {\n"
+                                + "        new DocSnippet_0().runInferenceFromContentUri(new ContentResolver(), new Uri(\"" + tinyGguf + "\"));\n"
+                                + "    }\n"
+                                + "}"),
                 UnaryOperator.identity(),
                 null,
                 null,

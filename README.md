@@ -26,16 +26,16 @@ Choose **either** `libargus-core` (JDK 22+ Panama FFM) **or** `libargus-jni` (JD
 ```kotlin
 dependencies {
     // Option A: JDK 22+ Project Panama FFM Bindings
-    implementation("cc.projectargus:libargus-core:2.3.0")
+    implementation("cc.projectargus:libargus-core:2.3.1")
 
     // Option B: JDK 17+ / Android Drop-In JNI Bindings (100% API Parity)
-    // implementation("cc.projectargus:libargus-jni:2.3.0")
+    // implementation("cc.projectargus:libargus-jni:2.3.1")
 
     // Optional: LangChain4j Integration (works seamlessly with either libargus-core or libargus-jni)
-    // implementation("cc.projectargus:libargus-langchain4j:2.3.0")
+    // implementation("cc.projectargus:libargus-langchain4j:2.3.1")
 
     // Optional: Precompiled Native SPI Provider (auto-extracts on both FFM & JNI)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
 }
 ```
 
@@ -46,14 +46,14 @@ dependencies {
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.3.0</version>
+        <version>2.3.1</version>
     </dependency>
 
     <!-- Optional: Precompiled Native SPI Provider -->
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.3.0</version>
+        <version>2.3.1</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>

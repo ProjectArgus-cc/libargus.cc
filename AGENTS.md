@@ -44,7 +44,7 @@ Modifications to `libargus` must never break the execution contracts relied upon
 ```text
 libargus/
 ├── CMakeLists.txt                   # Layer-0 C++17 build, portable ISA flags & SHA-pinned FetchContent
-├── version.txt                      # Single source of truth for semantic version (2.3.0)
+├── version.txt                      # Single source of truth for semantic version (2.3.1)
 ├── include/
 │   └── libargus.h                   # Master C ABI stable layout & export definitions
 ├── src/

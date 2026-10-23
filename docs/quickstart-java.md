@@ -359,7 +359,7 @@ context.resetPerfTimings();
 
 See the dedicated **[LangChain4j Developer Cookbook (`docs/quickstart-langchain4j.md`)](quickstart-langchain4j.md)** for full copy-pasteable recipes covering synchronous chat, streaming cancellation, bidirectional RAG embeddings, zero-trust multimodal vision/audio, and shared VRAM model lifecycles.
 
-Add `cc.projectargus:libargus-langchain4j:2.3.0` alongside either `libargus-core` (JDK 22+ Panama FFM) or `libargus-jni` (JDK 17+ / Android) to use local GGUF models with LangChain4j's `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, and `TokenCountEstimator` interfaces:
+Add `cc.projectargus:libargus-langchain4j:2.3.1` alongside either `libargus-core` (JDK 22+ Panama FFM) or `libargus-jni` (JDK 17+ / Android) to use local GGUF models with LangChain4j's `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, and `TokenCountEstimator` interfaces:
 
 ```java
 import cc.projectargus.libargus.langchain4j.*;

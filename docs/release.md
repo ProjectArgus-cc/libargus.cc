@@ -12,13 +12,13 @@ Masks are checked against the C ABI: CPU 1, CUDA 3, ROCm 5, Vulkan 9, Metal 17.
 
 One candidate contains:
 
-- Eleven Maven modules (`libargus-common`, `libargus-core`, `libargus-jni`, and
-  eight native classifiers), each with runtime, sources and Javadoc JARs, POM
-  and Gradle module metadata. Release finalization adds detached signatures and
-  MD5/SHA-1/SHA-256/SHA-512 sidecars. Mutable repository-level
-  `maven-metadata.xml` is not part of this versioned payload.
+- Twelve Maven modules (`libargus-common`, `libargus-core`, `libargus-jni`,
+  `libargus-langchain4j`, and eight native classifiers), each with runtime,
+  sources and Javadoc JARs, POM and Gradle module metadata. Release finalization
+  adds detached signatures and MD5/SHA-1/SHA-256/SHA-512 sidecars. Mutable
+  repository-level `maven-metadata.xml` is not part of this versioned payload.
 - `central-bundle.zip`, containing that exact finalized Maven tree.
-- 33 public JAR exports and eight uniquely named native ZIPs. Every native ZIP
+- 36 public JAR exports and eight uniquely named native ZIPs. Every native ZIP
   contains the binary embedded in its corresponding classifier JAR.
 - `manifest.json`, a complete file inventory with sizes, streaming SHA-256
   hashes, source/version, native build identities and public asset paths. It is
@@ -26,11 +26,11 @@ One candidate contains:
 - `checksums.txt`, covering public distributables and the manifest, and a public
   signing certificate retained with the internal candidate.
 
-GitHub receives exactly **43 assets**: 33 JARs, eight native ZIPs, the manifest and
+GitHub receives exactly **46 assets**: 36 JARs, eight native ZIPs, the manifest and
 checksums. Generated GitHub source archives are outside this contract. Every
 final verifier receipt names the same manifest, common JAR, core JAR, jni JAR,
-classifier JAR and loaded native digest, provider, build/ABI identity and exact
-feature masks.
+langchain4j JAR, classifier JAR and loaded native digest, provider, build/ABI
+identity and exact feature masks.
 GPU classifier loading proves compiled support; it does not prove device inference.
 
 ## Validation and construction
@@ -82,7 +82,7 @@ python3 -m pip install PyYAML==6.0.2
 python3 scripts/release/pins.py
 bash scripts/release/lint_workflows.sh
 python3 -m unittest discover -s scripts/release/tests -v
-python3 scripts/release/preflight.py v2.3.0
+python3 scripts/release/preflight.py v2.3.1
 # With downloaded native-<catalog-id> artifact directories:
 python3 scripts/release/candidate.py stage native-binaries
 ./gradlew publishAllPublicationsToCandidateRepository -PskipCMake=true

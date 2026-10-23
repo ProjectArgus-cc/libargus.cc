@@ -355,22 +355,27 @@ public class LibArgusLangChain4jTest {
             assertFalse(sharedModel.isClosed(), "Closing non-owning adapters must never close shared ArgusModel");
         }
 
-        // 2. Standalone modelFd loading: adapter owns model and closes it on close()
+        // 2. Standalone modelFd (on POSIX JVMs where FileDescriptor.fd >= 0) or modelPath loading:
+        //    adapter owns model and closes it on close()
         try (RandomAccessFile raf = new RandomAccessFile(modelPath.toFile(), "r")) {
             int fd = extractPosixFd(raf.getFD());
             ArgusModel ownedRef;
-            try (LibArgusChatModel fdChat = LibArgusChatModel.builder()
-                    .modelFd(fd)
+            LibArgusChatModel.Builder ownedBuilder = LibArgusChatModel.builder()
                     .gpuLayers(0)
                     .contextLength(128)
                     .cpuThreads(2)
-                    .maxOutputTokens(2)
-                    .build()) {
+                    .maxOutputTokens(2);
+            if (fd >= 0) {
+                ownedBuilder.modelFd(fd);
+            } else {
+                ownedBuilder.modelPath(modelPath);
+            }
+            try (LibArgusChatModel fdChat = ownedBuilder.build()) {
                 ownedRef = fdChat.getModel();
                 assertFalse(ownedRef.isClosed());
                 assertNotNull(fdChat.chat("FD loaded model"));
             }
-            assertTrue(ownedRef.isClosed(), "Standalone modelFd adapter must close its owned ArgusModel");
+            assertTrue(ownedRef.isClosed(), "Standalone owned-model adapter must close its owned ArgusModel");
         }
     }
 

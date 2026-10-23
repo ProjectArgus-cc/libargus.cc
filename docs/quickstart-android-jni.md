@@ -11,10 +11,10 @@ On Linux, Windows, and macOS running JDK 17+, pair `libargus-jni` with one of th
 
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-jni:2.3.0")
+    implementation("cc.projectargus:libargus-jni:2.3.1")
 
     // Automatic SPI extraction (choose cpu, cuda, rocm, vulkan, or macos-metal):
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
 }
 ```
 
@@ -23,7 +23,7 @@ On Android, add `libargus-jni` as an `implementation` dependency and place the c
 
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-jni:2.3.0")
+    implementation("cc.projectargus:libargus-jni:2.3.1")
 }
 ```
 

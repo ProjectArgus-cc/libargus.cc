@@ -12,22 +12,22 @@
 ### Option A — Server / Desktop (JDK 22+ with Project Panama FFM)
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-langchain4j:2.3.0")
-    implementation("cc.projectargus:libargus-core:2.3.0")
+    implementation("cc.projectargus:libargus-langchain4j:2.3.1")
+    implementation("cc.projectargus:libargus-core:2.3.1")
 
     // Zero-config native binary extraction for your target OS/CPU/GPU:
-    runtimeOnly("cc.projectargus:libargus-native-linux-cuda:2.3.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cuda:2.3.1")
 }
 ```
 
 ### Option B — JDK 17 / 21 LTS or Android (Standard JNI)
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-langchain4j:2.3.0")
-    implementation("cc.projectargus:libargus-jni:2.3.0")
+    implementation("cc.projectargus:libargus-langchain4j:2.3.1")
+    implementation("cc.projectargus:libargus-jni:2.3.1")
 
     // Choose your platform runtime classifier (e.g., Linux CPU, macOS Metal, Windows Vulkan):
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.0")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
 }
 ```
 
