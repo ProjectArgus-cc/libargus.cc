@@ -1,5 +1,18 @@
-# libargus
-## An unmanaged native AI execution runtime engineered for zero-allocation steady-state inference, consolidating Vision, Speech, and LLM compute pipelines behind unified Project Panama FFM (JDK 22+) and JNI (JDK 17+ / Android) boundaries.
+# Local Multimodal AI, Directly in Java
+
+Run GGUF language models, generate embeddings, process images and video, transcribe audio, and synthesize speech from within your Java application. 
+
+*No separate Python inference service required.*
+
+**Choose your Java integration:**
+
+- **JDK 17+ · JNI:** Broad JVM compatibility, including Android.
+- **JDK 22+ · Panama FFM:** Modern foreign-function access with explicit native-memory control.
+- **LangChain4j:** Integrate local inference through familiar chat, streaming, embedding, and token-counting interfaces.
+
+libargus is a high-performance native inference runtime built on established engines including `llama.cpp`, GGML, and `whisper.cpp`. It combines a unified Java API with explicit native-resource management, multimodal inference, and fine-grained execution control.
+
+**Get started:** [Installation](#installation--dependency-setup) · [Quickstarts](#60-second-quickstarts-100-source-compatible-across-ffm--jni) · [Guides & Examples](#documentation--deep-dive-guides) · [Build & Test](#building-from-source--running-tests) · [Releases](https://github.com/ProjectArgus-cc/libargus.cc/releases)
 
 [![Release Pipeline](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
