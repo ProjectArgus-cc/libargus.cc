@@ -14,11 +14,15 @@ libargus is a high-performance native inference runtime built on established eng
 
 **Get started:** [Installation](#installation--dependency-setup) · [Quickstarts](#60-second-quickstarts-100-source-compatible-across-ffm--jni) · [Guides & Examples](#documentation--deep-dive-guides) · [Build & Test](#building-from-source--running-tests) · [Releases](https://github.com/ProjectArgus-cc/libargus.cc/releases)
 
+---
+
 [![Release Pipeline](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml/badge.svg)](https://github.com/ProjectArgus-cc/libargus.cc/actions/workflows/release.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/cc.projectargus/libargus-core.svg?label=Maven%20Central&color=blue)](https://central.sonatype.com/artifact/cc.projectargus/libargus-core)
 [![JDK Target](https://img.shields.io/badge/JDK-22%2B%20Panama%20FFM%20%7C%2017%2B%20JNI-orange.svg)](https://openjdk.org/jeps/454)
 [![C++ Standard](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
+---
 
 `libargus` is an ultra-lean, model-agnostic inference runtime that consolidates **LLM text generation**, **semantic text embeddings**, **Whisper speech-to-text (ASR)**, **Speech-LLM text-to-speech (TTS)**, and **Multimodal (Vision, Audio, and Video)** pipelines into a single process-global native shared library (`libargus.so` / `argus.dll` / `libargus.dylib`).
 
