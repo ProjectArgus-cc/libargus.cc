@@ -24,8 +24,6 @@ libargus is a high-performance native inference runtime built on established eng
 
 ---
 
-`libargus` is an ultra-lean, model-agnostic inference runtime that consolidates **LLM text generation**, **semantic text embeddings**, **Whisper speech-to-text (ASR)**, **Speech-LLM text-to-speech (TTS)**, and **Multimodal (Vision, Audio, and Video)** pipelines into a single process-global native shared library (`libargus.so` / `argus.dll` / `libargus.dylib`).
-
 Built directly on top of **GGML**, **llama.cpp (`libmtmd`)**, and **whisper.cpp**, `libargus` provides a strict, thread-safe C ABI (`include/libargus.h`) and two 100% feature-symmetric, package-compatible (`cc.projectargus.libargus.*`) Java bindings:
 
 | Binding Artifact | Runtime Target | FFI Mechanism | Primary Use Case |
