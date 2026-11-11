@@ -281,6 +281,8 @@ File Type: DLL
                 [{**r, 'mask': r['mask'] | 128} for r in data['targets']],
                 [{**r, 'runner': 'ubuntu-latest'} if r['backend'] == 'vulkan' and r['system'] == 'linux' else r
                  for r in data['targets']],
+                [{**r, 'runner': 'macos-14'} if r['system'] == 'macos' else r
+                 for r in data['targets']],
             ]:
                 path.write_text(json.dumps({'schema': 1, 'targets': rows}))
                 with self.assertRaises(ValueError): targets(path)
