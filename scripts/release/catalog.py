@@ -34,7 +34,7 @@ def targets(path=None):
         if r['arch'] != arch or r['library'] != library or r['resource'] != f"natives/{r['system']}-{arch}/{r['backend']}/{library}":
             raise ValueError('Incorrect native resource contract')
         expected_runner = ('ubuntu-24.04' if r['system'] == 'linux' and r['backend'] == 'vulkan'
-                           else {'linux': 'ubuntu-22.04', 'windows': 'windows-2022', 'macos': 'macos-14'}[r['system']])
+                           else {'linux': 'ubuntu-22.04', 'windows': 'windows-2022', 'macos': 'macos-26'}[r['system']])
         if r['runner'] != expected_runner or r['baseline'] != ('armv8-a' if arch == 'aarch64' else 'x86-64-v3'):
             raise ValueError('Incorrect runner or CPU baseline')
     return rows

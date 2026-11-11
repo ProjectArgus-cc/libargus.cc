@@ -87,7 +87,7 @@
     },
     {
       "id": "macos-aarch64-metal",
-      "runner": "macos-14",
+      "runner": "macos-26",
       "system": "macos",
       "arch": "aarch64",
       "backend": "metal",
