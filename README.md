@@ -12,7 +12,7 @@ Run GGUF language models, generate embeddings, process images and video, transcr
 
 libargus is a high-performance native inference runtime built on established engines including `llama.cpp`, GGML, and `whisper.cpp`. It combines a unified Java API with explicit native-resource management, multimodal inference, and fine-grained execution control.
 
-**Get started:** [Installation](#installation--dependency-setup) · [Quickstarts](#60-second-quickstarts-100-source-compatible-across-ffm--jni) · [Guides & Examples](#documentation--deep-dive-guides) · [Build & Test](#building-from-source--running-tests) · [Releases](https://github.com/ProjectArgus-cc/libargus.cc/releases)
+**Get started:** [Installation](#installation--dependency-setup) · [Quickstarts](#60-second-quickstarts-100-source-compatible-across-ffm--jni) · [Guides & Examples](#documentation--deep-dive-guides) · [Spring Boot Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example) · [Build & Test](#building-from-source--running-tests) · [Releases](https://github.com/ProjectArgus-cc/libargus.cc/releases)
 
 ---
 
@@ -30,7 +30,7 @@ Built directly on top of **GGML**, **llama.cpp (`libmtmd`)**, and **whisper.cpp*
 | :--- | :--- | :--- | :--- |
 | **`cc.projectargus:libargus-core`** | **JDK 22+** (`--release 22`) | Project Panama FFM (`MemorySegment`, `Arena`, `Linker`) | Ultra-low-latency server & desktop JVMs (`--enable-native-access=ALL-UNNAMED`) |
 | **`cc.projectargus:libargus-jni`** | **JDK 17+ & Android** (`--release 17`) | Unified JNI Bridge (`DirectByteBuffer` & primitive arrays) | Android apps/NDK, enterprise JDK 17/21 services, zero JVM flag requirements |
-| **`cc.projectargus:libargus-langchain4j`** | **JDK 17+ / 22+ & Android** (`--release 17`) | In-Process LangChain4j `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `TokenCountEstimator` | Zero-sidecar local GGUF inference, bidirectional RAG embeddings, and multimodal Vision/Audio over either FFM or JNI ([Cookbook](docs/quickstart-langchain4j.md)) |
+| **`cc.projectargus:libargus-langchain4j`** | **JDK 17+ / 22+ & Android** (`--release 17`) | In-Process LangChain4j `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `TokenCountEstimator` | Zero-sidecar local GGUF inference, bidirectional RAG embeddings, and multimodal Vision/Audio over either FFM or JNI ([Cookbook](docs/quickstart-langchain4j.md) · [Spring Boot Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)) |
 
 ---
 
@@ -213,6 +213,7 @@ public class QuickstartLangChain4j {
 | :--- | :--- |
 | **[Java Developer Cookbook](docs/quickstart-java.md)** | Full end-to-end examples: Streaming LLM, Cooperative Cancellation (`ArgusAbortFlag`), Low-Level Token Loops, Logit Bias, Embeddings, Multimodal Vision/Video (`ArgusVideo`), Whisper ASR, Speech Synthesis (TTS), Sequence Slot Forking (`forkSlot`), VRAM Budgeting, Logging, and Performance Telemetry (`ArgusPerfTimings`). |
 | **[LangChain4j Developer Cookbook](docs/quickstart-langchain4j.md)** | Copy-pasteable recipes for `LibArgusChatModel`, `LibArgusStreamingChatModel` (with `ArgusAbortFlag`), `LibArgusEmbeddingModel` (`causalAttn(false)` RAG), Zero-Trust Multimodal Vision/Audio (`allowedMediaRoot`), and shared `ArgusModel` VRAM lifecycles. |
+| **[Spring Boot + LangChain4j Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)** | Complete runnable **Spring Boot 3.4** Local AI Workbench demonstrating in-process GGUF inference, SSE token streaming, cooperative `ArgusAbortFlag` cancellation, exact BPE sliding-window budgeting, and automatic JDK 22+ Panama FFM / JDK 17+ JNI selection. |
 | **[Android & JDK 17+ JNI Guide](docs/quickstart-android-jni.md)** | Android APK `jniLibs` setup, **safe `ParcelFileDescriptor` (`pfd.getFd()`) model loading**, zero-copy `DirectByteBuffer` (`*Direct`) methods, dynamic big.LITTLE CPU thread scaling (`setNThreads`), and ProGuard / R8 consumer rules. |
 | **[Executable Doctests & Synthetic Models](docs/executable-doctests-and-synthetic-models.md)** | How `libargus` compiles and executes every Markdown documentation snippet across both Panama FFM and JNI using pure-Java, on-the-fly synthesized neural fixtures (`tiny-whisper.bin`, `tiny-mmproj-omni.gguf`, `tiny-vocoder.gguf`, `tiny-causal-260.gguf`). |
 | **[Architecture & Native ABI Spec](docs/architecture-and-abi.md)** | Process-Global Backend Singularity, Thread-Safe Handle Leasing (`AbstractNativeResource`), Panama FFM Shared Arenas, 56-byte C ABI struct layouts (`argus_sampler_params_t`, `argus_perf_timings_t`), M-RoPE & KV cache rollback/shift mechanics, Heap Allocation Profiling (`scripts/AllocationProbe.java`), and CMake compilation matrices. |

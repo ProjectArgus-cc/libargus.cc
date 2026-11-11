@@ -5,6 +5,10 @@
 * **`:libargus-core` (JDK 22+ Project Panama FFM):** Maximum desktop/server throughput with zero JNI transition overhead.
 * **`:libargus-jni` (JDK 17+ / Android API 26+):** Drop-in compatibility for JDK 17/21 LTS servers and Android devices.
 
+> [!TIP]
+> **Looking for a full runnable Spring Boot 3.4 + LangChain4j application?**
+> Check out **[libargus.cc-spring-boot-example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)**—a standalone Local AI Workbench showcasing shared `ArgusModel` weights, `@Bean` wiring, incremental SSE streaming, cooperative `ArgusAbortFlag` cancellation, exact BPE token budgeting, and automatic JDK 22+ Panama FFM / JDK 17+ JNI selection.
+
 ---
 
 ## 1. Gradle Dependency Setup
