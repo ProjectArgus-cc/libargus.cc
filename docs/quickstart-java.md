@@ -357,9 +357,9 @@ context.resetPerfTimings();
 
 ## 9. LangChain4j Integration (`:libargus-langchain4j`)
 
-See the dedicated **[LangChain4j Developer Cookbook (`docs/quickstart-langchain4j.md`)](quickstart-langchain4j.md)** for full copy-pasteable recipes covering synchronous chat, streaming cancellation, bidirectional RAG embeddings, zero-trust multimodal vision/audio, and shared VRAM model lifecycles.
+See the dedicated **[LangChain4j Developer Cookbook (`docs/quickstart-langchain4j.md`)](quickstart-langchain4j.md)** for full copy-pasteable LangChain4j `1.23.0` recipes covering synchronous chat (`<think>` reasoning separation), streaming cancellation (`StreamingHandle` & reactive `Flow.Publisher`), bidirectional & Matryoshka RAG embeddings (`EmbeddingInputType`), Whisper audio transcription (`AudioTranscriptionModel`), Speech-LLM synthesis (`TextToSpeechModel`), zero-trust multimodal vision/audio/video, and shared VRAM model lifecycles.
 
-Add `cc.projectargus:libargus-langchain4j:2.3.1` alongside either `libargus-core` (JDK 22+ Panama FFM) or `libargus-jni` (JDK 17+ / Android) to use local GGUF models with LangChain4j's `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, and `TokenCountEstimator` interfaces:
+Add `cc.projectargus:libargus-langchain4j:2.4.0` alongside either `libargus-core` (JDK 22+ Panama FFM) or `libargus-jni` (JDK 17+ / Android) to use local models with LangChain4j's `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `AudioTranscriptionModel`, `TextToSpeechModel`, and `TokenCountEstimator` interfaces:
 
 ```java
 import cc.projectargus.libargus.langchain4j.*;
@@ -380,6 +380,6 @@ try (LibArgusChatModel chatModel = LibArgusChatModel.builder()
 ```
 
 > [!IMPORTANT]
-> **Zero-Trust Media URI Security in Multimodal Chat:**
-> When `mmprojPath(...)` is configured on `LibArgusChatModel` or `LibArgusStreamingChatModel`, inline Base64 `ImageContent` and `AudioContent` payloads are enabled by default (guarded by a pre-decode `.maxMediaBytes(...)` cap, defaulting to 64 MiB). Remote URLs (`http://`, `https://`) are unconditionally rejected to prevent SSRF, and local `file:` URIs are rejected by default unless confined to a sandbox directory via `.allowedMediaRoot(Path)` or explicitly enabled via `.allowLocalFileMedia(true)`.
+> **Zero-Trust Media URI Security in Multimodal Chat & Speech:**
+> When `mmprojPath(...)` is configured on `LibArgusChatModel` or `LibArgusStreamingChatModel` (or `Audio` is passed to `LibArgusAudioTranscriptionModel`), inline binary and Base64 `ImageContent`, `AudioContent`, and `VideoContent` payloads are enabled by default—guarded by a pre-decode `.maxMediaBytes(...)` cap (default `64 MiB`) and `.maxVideoFrames(...)` cap (default `16`). Remote URLs (`http://`, `https://`) are unconditionally rejected to prevent SSRF, and local `file:` URIs are rejected by default unless confined to a sandbox directory via `.allowedMediaRoot(Path)` or explicitly enabled via `.allowLocalFileMedia(true)`.
 

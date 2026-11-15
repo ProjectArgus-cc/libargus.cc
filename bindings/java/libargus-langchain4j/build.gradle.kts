@@ -25,7 +25,7 @@ evaluationDependsOn(":libargus-common")
 dependencies {
     api(project(":libargus-common"))
     compileOnly(project(":libargus-jni"))
-    api("dev.langchain4j:langchain4j-core:1.1.0")
+    api("dev.langchain4j:langchain4j-core:1.23.0")
 
     testImplementation(project(":libargus-jni"))
     testImplementation(project.project(":libargus-common").sourceSets.getByName("test").output)

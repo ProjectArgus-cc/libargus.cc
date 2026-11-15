@@ -11,10 +11,10 @@ On Linux, Windows, and macOS running JDK 17+, pair `libargus-jni` with one of th
 
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-jni:2.3.1")
+    implementation("cc.projectargus:libargus-jni:2.4.0")
 
     // Automatic SPI extraction (choose cpu, cuda, rocm, vulkan, or macos-metal):
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.4.0")
 }
 ```
 
@@ -23,7 +23,11 @@ On Android, add `libargus-jni` as an `implementation` dependency and place the c
 
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-jni:2.3.1")
+    implementation("cc.projectargus:libargus-jni:2.4.0")
+
+    // Optional: LangChain4j 1.23.0 adapters (Chat, Streaming, Embeddings, Whisper ASR & TTS;
+    // uses a pure-Java RIFF/WAVE codec with zero javax.sound.sampled / java.desktop dependencies):
+    // implementation("cc.projectargus:libargus-langchain4j:2.4.0")
 }
 ```
 

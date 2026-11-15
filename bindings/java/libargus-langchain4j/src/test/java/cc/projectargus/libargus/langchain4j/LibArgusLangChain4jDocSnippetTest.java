@@ -25,15 +25,17 @@ class LibArgusLangChain4jDocSnippetTest {
     Path tempDir;
 
     @Test
-    void testQuickstartLangChain4jAllFiveRecipesCompileAndExecute() throws Exception {
+    void testQuickstartLangChain4jAllSixRecipesCompileAndExecute() throws Exception {
         Path root = ArgusSyntheticTestFixtures.resolveRepoRoot();
         Path lang4jMd = root.resolve("docs/quickstart-langchain4j.md");
         List<JavaSnippet> snippets = ArgusDocSnippetRunner.extractJavaSnippets(lang4jMd);
-        assertEquals(5, snippets.size(), "Expected 5 Java recipes in docs/quickstart-langchain4j.md");
+        assertEquals(6, snippets.size(), "Expected 6 Java recipes in docs/quickstart-langchain4j.md");
 
         Path tinyGguf = ArgusSyntheticTestFixtures.generateTinyCausalModel(tempDir);
         Path tinyEmbedGguf = root.resolve("tests/data/tiny-embed.gguf");
         Path omniMmprojGguf = ArgusSyntheticTestFixtures.generateTinyOmniProjector(tempDir);
+        Path tinyVocoderGguf = ArgusSyntheticTestFixtures.generateTinyVocoderModel(tempDir);
+        Path tinyWhisperBin = ArgusSyntheticTestFixtures.generateTinyWhisperModel(tempDir);
         Path samplePng = ArgusSyntheticTestFixtures.generateTestPng(tempDir, "diagram.png");
         Path sampleWav = ArgusSyntheticTestFixtures.generateTestWav16kHz(tempDir, "sample.wav");
 
@@ -95,6 +97,18 @@ class LibArgusLangChain4jDocSnippetTest {
                 "Expected Fast reply from SharedModelExample, got: " + sharedOut);
         assertTrue(sharedOut.contains("Creative reply:"),
                 "Expected Creative reply from SharedModelExample, got: " + sharedOut);
+
+        // Recipe 5: SpeechPipelineExample (Speech-LLM TTS -> Audio -> Whisper ASR)
+        String speechOut = ArgusDocSnippetRunner.compileAndRunMain(
+                snippets.get(5),
+                src -> src.replace(".contextLength(4096)", ".contextLength(256)"),
+                tinyGguf.toString(),
+                tinyVocoderGguf.toString(),
+                tinyWhisperBin.toString());
+        assertTrue(speechOut.contains("WAV bytes:"),
+                "Expected WAV byte telemetry from SpeechPipelineExample, got: " + speechOut);
+        assertTrue(speechOut.toLowerCase().contains("argus"),
+                "Expected Whisper transcript 'argus' from SpeechPipelineExample, got: " + speechOut);
     }
 
     @Test

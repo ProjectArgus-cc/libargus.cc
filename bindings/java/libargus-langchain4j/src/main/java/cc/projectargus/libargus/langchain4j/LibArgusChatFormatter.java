@@ -11,6 +11,7 @@ import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.message.VideoContent;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -18,15 +19,21 @@ import java.util.Objects;
 /**
  * Pluggable prompt and chat-template formatter translating a sequence of LangChain4j
  * {@link ChatMessage} instances into a model-ready prompt string (with optional {@code <__media__>}
- * markers for multimodal vision and audio evaluation).
+ * markers for multimodal vision, audio, and video evaluation).
  */
 @FunctionalInterface
 public interface LibArgusChatFormatter {
 
     /**
-     * Marker token injected by {@code libmtmd} multimodal prompts for each bitmap/audio item.
+     * Marker token injected by {@code libmtmd} multimodal prompts for each bitmap/audio/video item.
      */
     String MEDIA_MARKER = "<__media__>";
+
+    /**
+     * Escaped substitute replacing untrusted literal {@code <__media__>} sequences inside message text
+     * when {@code injectMediaMarkers == true} so user text cannot desynchronize {@code libmtmd} media slots.
+     */
+    String ESCAPED_MEDIA_MARKER = "<__media_escaped__>";
 
     /**
      * Formats the conversation history into a prompt string for the specified model.
@@ -287,18 +294,27 @@ public interface LibArgusChatFormatter {
 
         private static boolean hasMedia(UserMessage userMessage) {
             for (Content c : userMessage.contents()) {
-                if (c instanceof ImageContent || c instanceof AudioContent) {
+                if (c instanceof ImageContent || c instanceof AudioContent || c instanceof VideoContent) {
                     return true;
                 }
             }
             return false;
         }
 
+        private static void appendSanitizedText(StringBuilder sb, String text, boolean injectMediaMarkers) {
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            if (injectMediaMarkers && text.contains(MEDIA_MARKER)) {
+                sb.append(text.replace(MEDIA_MARKER, ESCAPED_MEDIA_MARKER));
+            } else {
+                sb.append(text);
+            }
+        }
+
         private static void appendMessageBody(StringBuilder sb, ChatMessage msg, boolean injectMediaMarkers) {
             if (msg instanceof SystemMessage sys) {
-                if (sys.text() != null) {
-                    sb.append(sys.text());
-                }
+                appendSanitizedText(sb, sys.text(), injectMediaMarkers);
             } else if (msg instanceof UserMessage user) {
                 boolean hasEmittedText = false;
                 for (Content content : user.contents()) {
@@ -306,11 +322,11 @@ public interface LibArgusChatFormatter {
                         if (hasEmittedText) {
                             sb.append('\n');
                         }
-                        if (tc.text() != null) {
-                            sb.append(tc.text());
-                        }
+                        appendSanitizedText(sb, tc.text(), injectMediaMarkers);
                         hasEmittedText = true;
-                    } else if ((content instanceof ImageContent || content instanceof AudioContent) && injectMediaMarkers) {
+                    } else if ((content instanceof ImageContent
+                            || content instanceof AudioContent
+                            || content instanceof VideoContent) && injectMediaMarkers) {
                         if (hasEmittedText && sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') {
                             sb.append('\n');
                         }
@@ -320,22 +336,23 @@ public interface LibArgusChatFormatter {
                 }
             } else if (msg instanceof AiMessage ai) {
                 if (ai.text() != null && !ai.text().isEmpty()) {
-                    sb.append(ai.text());
+                    appendSanitizedText(sb, ai.text(), injectMediaMarkers);
                 } else if (ai.hasToolExecutionRequests()) {
                     for (ToolExecutionRequest req : ai.toolExecutionRequests()) {
-                        sb.append("[ToolCall: ").append(req.name()).append('(')
-                          .append(req.arguments() != null ? req.arguments() : "").append(")]");
+                        sb.append("[ToolCall: ").append(req.name()).append('(');
+                        appendSanitizedText(sb, req.arguments(), injectMediaMarkers);
+                        sb.append(")]");
                     }
                 }
             } else if (msg instanceof ToolExecutionResultMessage tool) {
                 if (tool.toolName() != null && !tool.toolName().isEmpty()) {
-                    sb.append('[').append(tool.toolName()).append("] ");
+                    sb.append('[');
+                    appendSanitizedText(sb, tool.toolName(), injectMediaMarkers);
+                    sb.append("] ");
                 }
-                if (tool.text() != null) {
-                    sb.append(tool.text());
-                }
+                appendSanitizedText(sb, tool.text(), injectMediaMarkers);
             } else if (msg != null) {
-                sb.append(msg);
+                appendSanitizedText(sb, msg.toString(), injectMediaMarkers);
             }
         }
     }

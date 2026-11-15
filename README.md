@@ -8,7 +8,7 @@ Run GGUF language models, generate embeddings, process images and video, transcr
 
 - **JDK 17+ · JNI:** Broad JVM compatibility, including Android.
 - **JDK 22+ · Panama FFM:** Modern foreign-function access with explicit native-memory control.
-- **LangChain4j:** Integrate local inference through familiar chat, streaming, embedding, and token-counting interfaces.
+- **LangChain4j (`1.23.0`):** Integrate local inference through familiar chat, streaming, `<think>` reasoning, embedding, Whisper ASR, Speech-LLM TTS, and token-counting interfaces.
 
 libargus is a high-performance native inference runtime built on established engines including `llama.cpp`, GGML, and `whisper.cpp`. It combines a unified Java API with explicit native-resource management, multimodal inference, and fine-grained execution control.
 
@@ -30,7 +30,7 @@ Built directly on top of **GGML**, **llama.cpp (`libmtmd`)**, and **whisper.cpp*
 | :--- | :--- | :--- | :--- |
 | **`cc.projectargus:libargus-core`** | **JDK 22+** (`--release 22`) | Project Panama FFM (`MemorySegment`, `Arena`, `Linker`) | Ultra-low-latency server & desktop JVMs (`--enable-native-access=ALL-UNNAMED`) |
 | **`cc.projectargus:libargus-jni`** | **JDK 17+ & Android** (`--release 17`) | Unified JNI Bridge (`DirectByteBuffer` & primitive arrays) | Android apps/NDK, enterprise JDK 17/21 services, zero JVM flag requirements |
-| **`cc.projectargus:libargus-langchain4j`** | **JDK 17+ / 22+ & Android** (`--release 17`) | In-Process LangChain4j `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `TokenCountEstimator` | Zero-sidecar local GGUF inference, bidirectional RAG embeddings, and multimodal Vision/Audio over either FFM or JNI ([Cookbook](docs/quickstart-langchain4j.md) · [Spring Boot Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)) |
+| **`cc.projectargus:libargus-langchain4j`** | **JDK 17+ / 22+ & Android** (`--release 17`) | In-Process LangChain4j `1.23.0` `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `AudioTranscriptionModel`, `TextToSpeechModel`, `TokenCountEstimator` | Zero-sidecar local GGUF inference, `<think>` reasoning, bidirectional RAG embeddings, Whisper ASR, Speech-LLM TTS, and Vision/Audio/Video over either FFM or JNI ([Cookbook](docs/quickstart-langchain4j.md) · [Spring Boot Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)) |
 
 ---
 
@@ -42,16 +42,16 @@ Choose **either** `libargus-core` (JDK 22+ Panama FFM) **or** `libargus-jni` (JD
 ```kotlin
 dependencies {
     // Option A: JDK 22+ Project Panama FFM Bindings
-    implementation("cc.projectargus:libargus-core:2.3.1")
+    implementation("cc.projectargus:libargus-core:2.4.0")
 
     // Option B: JDK 17+ / Android Drop-In JNI Bindings (100% API Parity)
-    // implementation("cc.projectargus:libargus-jni:2.3.1")
+    // implementation("cc.projectargus:libargus-jni:2.4.0")
 
     // Optional: LangChain4j Integration (works seamlessly with either libargus-core or libargus-jni)
-    // implementation("cc.projectargus:libargus-langchain4j:2.3.1")
+    // implementation("cc.projectargus:libargus-langchain4j:2.4.0")
 
     // Optional: Precompiled Native SPI Provider (auto-extracts on both FFM & JNI)
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.4.0")
 }
 ```
 
@@ -62,7 +62,7 @@ dependencies {
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-core</artifactId>
-        <version>2.3.1</version>
+        <version>2.4.0</version>
     </dependency>
 
     <!-- Optional: In-Process LangChain4j Integration (works seamlessly with either libargus-core or libargus-jni) -->
@@ -70,7 +70,7 @@ dependencies {
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-langchain4j</artifactId>
-        <version>2.3.1</version>
+        <version>2.4.0</version>
     </dependency>
     -->
 
@@ -78,7 +78,7 @@ dependencies {
     <dependency>
         <groupId>cc.projectargus</groupId>
         <artifactId>libargus-native-linux-cpu</artifactId>
-        <version>2.3.1</version>
+        <version>2.4.0</version>
         <scope>runtime</scope>
     </dependency>
 </dependencies>
@@ -171,7 +171,7 @@ try (ArgusAudioContext whisper = ArgusAudioContext.init(Path.of("models/whisper-
 }
 ```
 
-### 5. In-Process LangChain4j Chat, Streaming & RAG (`:libargus-langchain4j`)
+### 5. In-Process LangChain4j Chat, Streaming, RAG & Speech (`:libargus-langchain4j`)
 ```java
 import cc.projectargus.libargus.langchain4j.LibArgusChatFormatter;
 import cc.projectargus.libargus.langchain4j.LibArgusChatModel;
@@ -212,7 +212,7 @@ public class QuickstartLangChain4j {
 | Guide | What You Will Learn |
 | :--- | :--- |
 | **[Java Developer Cookbook](docs/quickstart-java.md)** | Full end-to-end examples: Streaming LLM, Cooperative Cancellation (`ArgusAbortFlag`), Low-Level Token Loops, Logit Bias, Embeddings, Multimodal Vision/Video (`ArgusVideo`), Whisper ASR, Speech Synthesis (TTS), Sequence Slot Forking (`forkSlot`), VRAM Budgeting, Logging, and Performance Telemetry (`ArgusPerfTimings`). |
-| **[LangChain4j Developer Cookbook](docs/quickstart-langchain4j.md)** | Copy-pasteable recipes for `LibArgusChatModel`, `LibArgusStreamingChatModel` (with `ArgusAbortFlag`), `LibArgusEmbeddingModel` (`causalAttn(false)` RAG), Zero-Trust Multimodal Vision/Audio (`allowedMediaRoot`), and shared `ArgusModel` VRAM lifecycles. |
+| **[LangChain4j Developer Cookbook](docs/quickstart-langchain4j.md)** | Copy-pasteable LangChain4j `1.23.0` recipes for `LibArgusChatModel` (`returnThinking`), `LibArgusStreamingChatModel` (`StreamingHandle` & reactive `Flow.Publisher`), `LibArgusEmbeddingModel` (`EmbeddingInputType` & Matryoshka RAG), `LibArgusAudioTranscriptionModel` (Whisper ASR), `LibArgusTextToSpeechModel` (Speech-LLM TTS), Zero-Trust Multimodal Vision/Audio/Video (`allowedMediaRoot`), and shared `ArgusModel` VRAM lifecycles. |
 | **[Spring Boot + LangChain4j Example](https://github.com/ProjectArgus-cc/libargus.cc-spring-boot-example)** | Complete runnable **Spring Boot 3.4** Local AI Workbench demonstrating in-process GGUF inference, SSE token streaming, cooperative `ArgusAbortFlag` cancellation, exact BPE sliding-window budgeting, and automatic JDK 22+ Panama FFM / JDK 17+ JNI selection. |
 | **[Android & JDK 17+ JNI Guide](docs/quickstart-android-jni.md)** | Android APK `jniLibs` setup, **safe `ParcelFileDescriptor` (`pfd.getFd()`) model loading**, zero-copy `DirectByteBuffer` (`*Direct`) methods, dynamic big.LITTLE CPU thread scaling (`setNThreads`), and ProGuard / R8 consumer rules. |
 | **[Executable Doctests & Synthetic Models](docs/executable-doctests-and-synthetic-models.md)** | How `libargus` compiles and executes every Markdown documentation snippet across both Panama FFM and JNI using pure-Java, on-the-fly synthesized neural fixtures (`tiny-whisper.bin`, `tiny-mmproj-omni.gguf`, `tiny-vocoder.gguf`, `tiny-causal-260.gguf`). |

@@ -1,6 +1,6 @@
 # LangChain4j Developer Cookbook (`:libargus-langchain4j`)
 
-`:libargus-langchain4j` provides an in-process, zero-HTTP-overhead [LangChain4j](https://docs.langchain4j.dev/) integration backed directly by `libargus`. It implements `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, and `TokenCountEstimator` over the binding-neutral `cc.projectargus.libargus.*` Java surface, allowing you to pair it with either:
+`:libargus-langchain4j` provides an in-process, zero-HTTP-overhead [LangChain4j `1.23.0`](https://docs.langchain4j.dev/) integration backed directly by `libargus`. It implements `ChatModel`, `StreamingChatModel`, `EmbeddingModel`, `AudioTranscriptionModel`, `TextToSpeechModel`, and `TokenCountEstimator` over the binding-neutral `cc.projectargus.libargus.*` Java surface, allowing you to pair it with either:
 
 * **`:libargus-core` (JDK 22+ Project Panama FFM):** Maximum desktop/server throughput with zero JNI transition overhead.
 * **`:libargus-jni` (JDK 17+ / Android API 26+):** Drop-in compatibility for JDK 17/21 LTS servers and Android devices.
@@ -16,30 +16,30 @@
 ### Option A — Server / Desktop (JDK 22+ with Project Panama FFM)
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-langchain4j:2.3.1")
-    implementation("cc.projectargus:libargus-core:2.3.1")
+    implementation("cc.projectargus:libargus-langchain4j:2.4.0")
+    implementation("cc.projectargus:libargus-core:2.4.0")
 
     // Zero-config native binary extraction for your target OS/CPU/GPU:
-    runtimeOnly("cc.projectargus:libargus-native-linux-cuda:2.3.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cuda:2.4.0")
 }
 ```
 
 ### Option B — JDK 17 / 21 LTS or Android (Standard JNI)
 ```kotlin
 dependencies {
-    implementation("cc.projectargus:libargus-langchain4j:2.3.1")
-    implementation("cc.projectargus:libargus-jni:2.3.1")
+    implementation("cc.projectargus:libargus-langchain4j:2.4.0")
+    implementation("cc.projectargus:libargus-jni:2.4.0")
 
     // Choose your platform runtime classifier (e.g., Linux CPU, macOS Metal, Windows Vulkan):
-    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.3.1")
+    runtimeOnly("cc.projectargus:libargus-native-linux-cpu:2.4.0")
 }
 ```
 
 ---
 
-## 2. Synchronous Chat & Per-Request Overrides (`LibArgusChatModel`)
+## 2. Synchronous Chat, Reasoning (`<think>`) & Per-Request Overrides (`LibArgusChatModel`)
 
-`LibArgusChatModel` implements LangChain4j's `ChatModel` interface, supporting multi-turn conversation formatting (`LibArgusChatFormatter.autoDetect()`, `chatMl()`, `llama3()`, `gemma()`, `mistral()`, or custom `LibArgusChatFormatter`), per-request hyperparameter overrides (`ChatRequestParameters`), BPE-boundary-safe stop sequences, and exact token usage telemetry (`TokenUsage`, `FinishReason`).
+`LibArgusChatModel` implements LangChain4j's `ChatModel` interface, supporting multi-turn conversation formatting (`LibArgusChatFormatter.autoDetect()`, `chatMl()`, `llama3()`, `gemma()`, `mistral()`, or custom `LibArgusChatFormatter`), opt-in `<think>...</think>` reasoning trace separation (`.returnThinking(true)` $\to$ `aiMessage().thinking()`), `ChatModelListener` observability, per-request hyperparameter overrides (`ChatRequestParameters`), BPE-boundary-safe stop sequences, and exact token usage telemetry (`TokenUsage`, `FinishReason`).
 
 ```java
 // snippet-id: sync-chat-overrides
@@ -60,6 +60,7 @@ public class SyncChatExample {
         try (LibArgusChatModel model = LibArgusChatModel.builder()
                 .modelPath(modelPath)
                 .chatFormatter(LibArgusChatFormatter.chatMl())
+                .returnThinking(true)
                 .contextLength(8192)
                 .gpuLayers(0)
                 .temperature(0.7f)
@@ -80,6 +81,9 @@ public class SyncChatExample {
                     .build();
 
             ChatResponse response = model.chat(request);
+            if (response.aiMessage().thinking() != null) {
+                System.out.println("Thinking: " + response.aiMessage().thinking());
+            }
             System.out.println("Assistant: " + response.aiMessage().text());
             System.out.printf("Tokens (in/out/total): %d/%d/%d | Stop: %s%n",
                     response.tokenUsage().inputTokenCount(),
@@ -93,17 +97,20 @@ public class SyncChatExample {
 
 ---
 
-## 3. Live Token Streaming & Cooperative Cancellation (`LibArgusStreamingChatModel`)
+## 3. Live Token Streaming & `StreamingHandle` Cancellation (`LibArgusStreamingChatModel`)
 
-`LibArgusStreamingChatModel` implements `StreamingChatModel`, streaming decoded UTF-8 pieces to `StreamingChatResponseHandler.onPartialResponse` while holding back partial stop-sequence prefixes via `ArgusStopSequenceDetector` so stop markers never leak to the caller. Pass an `ArgusAbortFlag` to `doChat(...)` for lock-free cross-thread cancellation.
+`LibArgusStreamingChatModel` implements `StreamingChatModel`, streaming decoded UTF-8 pieces to `StreamingChatResponseHandler` (`onPartialResponse` and `onPartialThinking`) while holding back partial stop-sequence and `<think>` prefixes. Both `context.streamingHandle().cancel()` and reactive `Flow.Subscription.cancel()` (enabled via `.asyncExecutor(Executor)`) wire directly into native `ArgusAbortFlag` cooperative cancellation.
 
 ```java
 // snippet-id: streaming-chat-abort
-import cc.projectargus.libargus.ArgusAbortFlag;
 import cc.projectargus.libargus.langchain4j.LibArgusStreamingChatModel;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.PartialResponse;
+import dev.langchain4j.model.chat.response.PartialResponseContext;
+import dev.langchain4j.model.chat.response.PartialThinking;
+import dev.langchain4j.model.chat.response.PartialThinkingContext;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import java.nio.file.Path;
 import java.util.List;
@@ -113,9 +120,9 @@ public class StreamingChatExample {
     public static void main(String[] args) {
         Path modelPath = Path.of(args.length > 0 ? args[0] : "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf");
 
-        try (ArgusAbortFlag abortFlag = new ArgusAbortFlag();
-             LibArgusStreamingChatModel streamModel = LibArgusStreamingChatModel.builder()
+        try (LibArgusStreamingChatModel streamModel = LibArgusStreamingChatModel.builder()
                 .modelPath(modelPath)
+                .returnThinking(true)
                 .contextLength(8192)
                 .gpuLayers(0)
                 .maxOutputTokens(256)
@@ -127,12 +134,17 @@ public class StreamingChatExample {
                     .messages(List.of(UserMessage.from("Write a haiku about CPU cache lines.")))
                     .build();
 
-            streamModel.doChat(request, new StreamingChatResponseHandler() {
+            streamModel.chat(request, new StreamingChatResponseHandler() {
                 @Override
-                public void onPartialResponse(String tokenPiece) {
-                    System.out.print(tokenPiece);
+                public void onPartialThinking(PartialThinking partialThinking, PartialThinkingContext context) {
+                    System.out.print(partialThinking.text());
+                }
+
+                @Override
+                public void onPartialResponse(PartialResponse partialResponse, PartialResponseContext context) {
+                    System.out.print(partialResponse.text());
                     System.out.flush();
-                    // Call abortFlag.abort() from any thread (e.g. UI Stop button) to halt immediately
+                    // Call context.streamingHandle().cancel() at any time to abort native decoding
                 }
 
                 @Override
@@ -145,7 +157,7 @@ public class StreamingChatExample {
                 public void onError(Throwable error) {
                     done.completeExceptionally(error);
                 }
-            }, abortFlag);
+            });
 
             done.join();
         }
@@ -155,15 +167,18 @@ public class StreamingChatExample {
 
 ---
 
-## 4. Bidirectional Document Embeddings for Local RAG (`LibArgusEmbeddingModel`)
+## 4. Bidirectional Document Embeddings & Matryoshka RAG (`LibArgusEmbeddingModel`)
 
-`LibArgusEmbeddingModel` implements `EmbeddingModel` with L2-normalized vector extraction and cumulative `TokenUsage` tracking. Setting `.causalAttn(false)` preserves bidirectional non-causal attention masks required by BERT, `EmbeddingGemma 2`, and `jina-embeddings-v3`, and automatically sizes `uBatch` to `contextLength`.
+`LibArgusEmbeddingModel` implements `EmbeddingModel` with L2-normalized vector extraction, asymmetric `EmbeddingInputType` (`QUERY` vs. `DOCUMENT`) prefixing, Matryoshka `EmbeddingRequest.dimensions()` slicing, `EmbeddingModelListener` observability, and cumulative `TokenUsage` tracking. Setting `.causalAttn(false)` preserves bidirectional non-causal attention masks required by BERT, `EmbeddingGemma 2`, and `jina-embeddings-v3`, and automatically sizes `uBatch` to `contextLength`.
 
 ```java
 // snippet-id: rag-embeddings
 import cc.projectargus.libargus.langchain4j.LibArgusEmbeddingModel;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.request.EmbeddingInputType;
+import dev.langchain4j.model.embedding.request.EmbeddingRequest;
+import dev.langchain4j.model.embedding.response.EmbeddingResponse;
 import dev.langchain4j.model.output.Response;
 import java.nio.file.Path;
 import java.util.List;
@@ -177,6 +192,8 @@ public class EmbeddingRagExample {
                 .contextLength(512)
                 .gpuLayers(0)
                 .causalAttn(false) // Preserves bidirectional non-causal attention masks
+                .queryPrefix("search_query: ")
+                .documentPrefix("search_document: ")
                 .normalize(true)
                 .build()) {
 
@@ -186,16 +203,21 @@ public class EmbeddingRagExample {
             );
 
             Response<List<Embedding>> result = embeddingModel.embedAll(docs);
+            EmbeddingResponse queryResp = embeddingModel.embed(EmbeddingRequest.builder()
+                    .input("How does libargus execute Whisper ASR and LLM inference?")
+                    .inputType(EmbeddingInputType.QUERY)
+                    .build());
+
             float[] v0 = result.content().get(0).vector();
             float[] v1 = result.content().get(1).vector();
             double dot = 0.0;
             for (int i = 0; i < v0.length; i++) {
                 dot += (double) v0[i] * v1[i];
             }
-            System.out.printf("Dimension: %d | Segments: %d | Prompt tokens: %d%n",
+            System.out.printf("Dimension: %d | Segments: %d | Query tokens: %d%n",
                     result.content().get(0).dimension(),
                     result.content().size(),
-                    result.tokenUsage().inputTokenCount());
+                    queryResp.tokenUsage().inputTokenCount());
             System.out.printf("Cosine similarity (doc0 vs doc1): %.4f%n", dot);
         }
     }
@@ -204,13 +226,13 @@ public class EmbeddingRagExample {
 
 ---
 
-## 5. Zero-Trust Multimodal Vision & Audio Chat (`ImageContent` & `AudioContent`)
+## 5. Zero-Trust Multimodal Vision, Audio & Video Chat (`ImageContent`, `AudioContent` & `VideoContent`)
 
-When `.mmprojPath(...)` is configured on `LibArgusChatModel` or `LibArgusStreamingChatModel`, `UserMessage` instances containing `ImageContent` and `AudioContent` are automatically projected via `ArgusMultimodalContext` in-process.
+When `.mmprojPath(...)` is configured on `LibArgusChatModel` or `LibArgusStreamingChatModel`, `UserMessage` instances containing `ImageContent`, `AudioContent`, and `VideoContent` are automatically projected via `ArgusMultimodalContext` in-process (with bounded `.videoFps(...)` and `.maxVideoFrames(...)` extraction for video streams).
 
 > [!IMPORTANT]
 > **Zero-Trust Media Sandbox Policy:**
-> * **Inline Base64 (`ImageContent` / `AudioContent`):** Enabled by default and guarded by a pre-decode `.maxMediaBytes(...)` cap (default `64 MiB`) prior to Java heap allocation.
+> * **Inline Binary / Base64 (`ImageContent` / `AudioContent` / `VideoContent`):** Enabled by default and guarded by a pre-decode `.maxMediaBytes(...)` cap (default `64 MiB`) prior to Java heap allocation.
 > * **Remote URLs (`http://`, `https://`):** Unconditionally rejected to prevent Server-Side Request Forgery (SSRF).
 > * **Local `file:` URIs:** Rejected by default unless confined to a canonical sandbox directory via `.allowedMediaRoot(Path)` (which resolves `toRealPath()` to block `../` traversal and symlink escapes) or explicitly enabled via `.allowLocalFileMedia(true)`.
 
@@ -239,6 +261,7 @@ public class MultimodalChatExample {
                 .multimodalUseGpu(false)
                 .allowedMediaRoot(mediaSandbox) // Confines file:// URIs to mediaSandbox
                 .maxMediaBytes(32L * 1024 * 1024) // 32 MiB pre-decode cap
+                .maxVideoFrames(16)
                 .contextLength(8192)
                 .maxOutputTokens(256)
                 .build()) {
@@ -260,7 +283,7 @@ public class MultimodalChatExample {
 
 ## 6. Zero-Duplicate-VRAM Model Sharing (`ArgusModel` Shared Across Models & Token Estimator)
 
-When passing an externally loaded `.model(ArgusModel)` to `LibArgusChatModel`, `LibArgusStreamingChatModel`, `LibArgusEmbeddingModel`, or `LibArgusTokenCountEstimator`, closing the LangChain4j wrapper closes only its dedicated `ArgusContext` while leaving the shared `ArgusModel` weights resident in memory.
+When passing an externally loaded `.model(ArgusModel)` to `LibArgusChatModel`, `LibArgusStreamingChatModel`, `LibArgusEmbeddingModel`, `LibArgusTextToSpeechModel`, or `LibArgusTokenCountEstimator`, closing the LangChain4j wrapper closes only its dedicated `ArgusContext` while leaving the shared `ArgusModel` weights resident in memory.
 
 ```java
 // snippet-id: shared-model-lifecycle
@@ -306,3 +329,66 @@ public class SharedModelExample {
     }
 }
 ```
+
+---
+
+## 7. In-Process Speech Synthesis (TTS) & Whisper Transcription (ASR)
+
+`LibArgusTextToSpeechModel` (`TextToSpeechModel`) synthesizes canonical `audio/wav` payloads via Speech-LLM + WavTokenizer vocoder DSP, while `LibArgusAudioTranscriptionModel` (`AudioTranscriptionModel`) decodes multi-rate/multi-channel RIFF/WAVE or raw PCM audio on Android and desktop/server JVMs without `javax.sound.sampled` and transcribes via `ArgusAudioContext` (Whisper).
+
+```java
+// snippet-id: speech-tts-and-whisper-asr
+import cc.projectargus.libargus.langchain4j.LibArgusAudioTranscriptionModel;
+import cc.projectargus.libargus.langchain4j.LibArgusTextToSpeechModel;
+import dev.langchain4j.data.audio.Audio;
+import dev.langchain4j.model.audio.TextToSpeechRequest;
+import dev.langchain4j.model.audio.TextToSpeechResponse;
+import java.nio.file.Path;
+
+public class SpeechPipelineExample {
+    public static void main(String[] args) {
+        Path ttsModelPath = Path.of(args.length > 0 ? args[0] : "models/outetts-0.2-500m.gguf");
+        Path vocoderPath = Path.of(args.length > 1 ? args[1] : "models/wavtokenizer-large-75token.gguf");
+        Path whisperPath = Path.of(args.length > 2 ? args[2] : "models/whisper-base.en.gguf");
+
+        try (LibArgusTextToSpeechModel tts = LibArgusTextToSpeechModel.builder()
+                .modelPath(ttsModelPath)
+                .vocoderModelPath(vocoderPath)
+                .gpuLayers(0)
+                .contextLength(4096)
+                .voice("athena", 42)
+                .build();
+             LibArgusAudioTranscriptionModel whisper = LibArgusAudioTranscriptionModel.builder()
+                .modelPath(whisperPath)
+                .gpuLayers(0)
+                .trimOutput(true)
+                .build()) {
+
+            TextToSpeechResponse synthesized = tts.synthesize(
+                TextToSpeechRequest.builder()
+                    .text("Welcome to Project Argus.")
+                    .voice("athena")
+                    .build()
+            );
+            Audio wavAudio = synthesized.audio();
+            String transcript = whisper.transcribeToText(wavAudio);
+            System.out.printf("WAV bytes: %d | Transcript: %s%n",
+                    wavAudio.binaryData().length,
+                    transcript);
+        }
+    }
+}
+```
+
+---
+
+## 8. `1.23.0` Observability, Video Bounds & GPU-Pinned Async Reference
+
+| Capability | Builder / Request API | Architectural Behavior |
+| :--- | :--- | :--- |
+| **`<think>` Reasoning Traces** | `.returnThinking(true)` (`false` by default) | Separates `<think>...</think>` (and prompt-suffixed `<think>`) via `LibArgusThinkingParser` into `AiMessage.thinking()` and `onPartialThinking(...)` with zero BPE tag-fragment leaks. |
+| **Observability Listeners** | `.addListener(ChatModelListener)` / `.addListener(EmbeddingModelListener)` | Invokes LangChain4j `onRequest`, `onResponse` (with `modelName` & `TokenUsage`), and `onError` hooks across sync, streaming, and async execution. |
+| **GPU-Pinned Async & Reactive `Flow.Publisher`** | `.asyncExecutor(Executor)` (`null` by default) | Enables `chatAsync(...)`, `embedAsync(...)`, and demand-aware `StreamingChatModel.chat(ChatRequest)` (`Flow.Publisher<ChatModelStreamingEvent>`) with `Subscription.cancel()` wired into `ArgusAbortFlag`. Intentionally throws/emits `AsyncNotSupportedException` when unset rather than defaulting to `ForkJoinPool.commonPool()`, preserving CUDA thread-local (`cublasHandle_t`) carrier affinity. |
+| **Asymmetric & Matryoshka Embeddings** | `EmbeddingRequest.builder().inputType(QUERY \| DOCUMENT).dimensions(d)` | Selects `.queryPrefix(...)` vs. `.documentPrefix(...)` per request (or per `TextSegment` via `argus.embedding_type`) and slices + L2-renormalizes Matryoshka vectors in `[1, nEmbd]`. |
+| **Bounded `VideoContent` Projection** | `.videoFps(1.0f)`, `.videoTimestampIntervalMs(1000L)`, `.maxVideoFrames(16)` | Extracts bounded video frames and timestamp markers via `ArgusVideo` into 1:1 `<__media__>` projector slots while escaping untrusted `<__media__>` literals inside user text. |
+| **Sub-Second Whisper Utterances** | `.padShortAudioToOneSecond(true)` (`true` by default) | Zero-pads `< 1.0 s` (`< 16,000` sample) commands (`"Yes"`, `"Stop"`) with trailing silence so `whisper.cpp` never drops sub-second utterances. |

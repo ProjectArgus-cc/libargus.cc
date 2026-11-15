@@ -8,6 +8,7 @@ import cc.projectargus.libargus.ArgusSamplerConfig;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.ChatResponseMetadata;
 import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.TokenUsage;
 import java.util.ArrayList;
@@ -16,12 +17,48 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Shared parameter resolution, stop-sequence merging, and telemetry mapping utilities
- * for {@link LibArgusChatModel} and {@link LibArgusStreamingChatModel}.
+ * Shared parameter resolution, stop-sequence merging, reasoning assembly, and telemetry mapping
+ * utilities for {@link LibArgusChatModel} and {@link LibArgusStreamingChatModel}.
  */
 final class LibArgusChatSupport {
 
     private LibArgusChatSupport() {}
+
+    static ChatRequestParameters resolveEffectiveParameters(
+        ChatRequestParameters defaultParams,
+        ChatRequestParameters requestParams
+    ) {
+        if (defaultParams == null) {
+            return requestParams;
+        }
+        if (requestParams == null) {
+            return defaultParams;
+        }
+        return defaultParams.overrideWith(requestParams);
+    }
+
+    static String resolveModelName(
+        String configuredModelName,
+        ChatRequestParameters effectiveParams,
+        ArgusModel model
+    ) {
+        if (effectiveParams != null && effectiveParams.modelName() != null && !effectiveParams.modelName().isEmpty()) {
+            return effectiveParams.modelName();
+        }
+        if (configuredModelName != null && !configuredModelName.isEmpty()) {
+            return configuredModelName;
+        }
+        if (model != null && !model.isClosed()) {
+            try {
+                String ggufName = model.getMetadataValue("general.name");
+                if (ggufName != null && !ggufName.isEmpty()) {
+                    return ggufName;
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return null;
+    }
 
     static ArgusSamplerConfig resolveSamplerConfig(ArgusSamplerConfig base, ChatRequestParameters params) {
         if (params == null) {
@@ -102,15 +139,52 @@ final class LibArgusChatSupport {
         };
     }
 
-    static ChatResponse buildChatResponse(ArgusContext context, ArgusGenerationResult result) {
+    static ChatResponse buildChatResponse(
+        ArgusContext context,
+        ArgusGenerationResult result,
+        String modelName,
+        boolean returnThinking,
+        boolean promptEndsWithOpenThink
+    ) {
+        LibArgusThinkingParser.ParsedOutput parsed = returnThinking
+            ? LibArgusThinkingParser.parseComplete(result.text(), promptEndsWithOpenThink)
+            : null;
+        return buildChatResponse(context, result, modelName, parsed);
+    }
+
+    static ChatResponse buildChatResponse(
+        ArgusContext context,
+        ArgusGenerationResult result,
+        String modelName,
+        LibArgusThinkingParser.ParsedOutput parsedThinking
+    ) {
         ArgusPerfTimings perf = context.getPerfTimings();
         int inputTokens = result.promptTokens() > 0 ? result.promptTokens() : Math.max(0, perf.nPromptEval());
         int outputTokens = result.generatedTokens();
         TokenUsage usage = new TokenUsage(inputTokens, outputTokens);
-        return ChatResponse.builder()
-            .aiMessage(AiMessage.from(result.text()))
+        FinishReason finishReason = toFinishReason(result.stopReason());
+
+        final AiMessage aiMessage;
+        if (parsedThinking != null) {
+            String nonNullText = parsedThinking.text() != null ? parsedThinking.text() : "";
+            aiMessage = AiMessage.builder()
+                .text(nonNullText)
+                .thinking(parsedThinking.thinking())
+                .build();
+        } else {
+            aiMessage = AiMessage.from(result.text() != null ? result.text() : "");
+        }
+
+        ChatResponseMetadata.Builder<?> metaBuilder = ChatResponseMetadata.builder()
             .tokenUsage(usage)
-            .finishReason(toFinishReason(result.stopReason()))
+            .finishReason(finishReason);
+        if (modelName != null && !modelName.isEmpty()) {
+            metaBuilder.modelName(modelName);
+        }
+
+        return ChatResponse.builder()
+            .aiMessage(aiMessage)
+            .metadata(metaBuilder.build())
             .build();
     }
 }

@@ -18,3 +18,5 @@ __pycache__/
 candidate/
 receipts/
 test-outputs/
+.pytest_cache/
+bindings/java/libargus-native-*/src/main/resources/natives/
